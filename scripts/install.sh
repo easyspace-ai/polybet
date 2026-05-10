@@ -90,8 +90,7 @@ install_cli_binary() {
     fail "Could not determine latest release. Check your network connection."
   fi
 
-  local version="${latest#v}"
-  local url="https://github.com/polybet-ai/polybet/releases/download/${latest}/polybet-cli-${version}-${OS}-${ARCH}.tar.gz"
+  local url="https://github.com/polybet-ai/polybet/releases/download/${latest}/polybet_${OS}_${ARCH}.tar.gz"
   local tmp_dir
   tmp_dir=$(mktemp -d)
 

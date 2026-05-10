@@ -1,4 +1,4 @@
-const RELEASE_ARCHIVE_PREFIX = "polybet-cli-";
+const VERSIONED_CLI_PREFIX = "polybet-cli-";
 
 function platformArchiveDescriptor(
   platform: NodeJS.Platform = process.platform,
@@ -35,28 +35,32 @@ export function selectPlatformReleaseAssetName(
   );
   const names = [...assetNames];
 
-  // Prefer the versioned `polybet-cli-<v>-<os>-<arch>.<ext>` name; fall
-  // back to the legacy `multica_<os>_<arch>.<ext>` so older releases that
-  // only ship the legacy archive keep working.
-  const suffix = `-${os}-${mappedArch}.${ext}`;
-  const matches = names.filter(
-    (name) =>
-      name.startsWith(RELEASE_ARCHIVE_PREFIX) && name.endsWith(suffix),
-  );
-
-  if (matches.length === 1) {
-    return matches[0];
+  const canonicalName = `polybet_${os}_${mappedArch}.${ext}`;
+  if (names.includes(canonicalName)) {
+    return canonicalName;
   }
-  if (matches.length > 1) {
+
+  // Older releases shipped `polybet-cli-<semver>-<os>-<arch>.<ext>`.
+  const versionedSuffix = `-${os}-${mappedArch}.${ext}`;
+  const versionedMatches = names.filter(
+    (name) =>
+      name.startsWith(VERSIONED_CLI_PREFIX) && name.endsWith(versionedSuffix),
+  );
+  if (versionedMatches.length === 1) {
+    return versionedMatches[0];
+  }
+  if (versionedMatches.length > 1) {
     throw new Error(
-      `multiple release assets matched current platform ${suffix}: ${matches.join(", ")}`,
+      `multiple release assets matched current platform ${versionedSuffix}: ${versionedMatches.join(", ")}`,
     );
   }
 
-  const legacyName = `multica_${os}_${mappedArch}.${ext}`;
-  if (names.includes(legacyName)) {
-    return legacyName;
+  const multicaLegacy = `multica_${os}_${mappedArch}.${ext}`;
+  if (names.includes(multicaLegacy)) {
+    return multicaLegacy;
   }
 
-  throw new Error(`no release asset found for current platform: ${suffix}`);
+  throw new Error(
+    `no release asset found for current platform (expected ${canonicalName} or older naming)`,
+  );
 }

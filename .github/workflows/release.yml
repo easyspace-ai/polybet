@@ -66,11 +66,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Build the Desktop installers for Linux and Windows and upload them to
-  # the GitHub Release that the `release` job above just published. macOS
-  # Desktop continues to ship via the manual `release-desktop` skill so it
-  # can be signed + notarized with Apple Developer credentials that are
-  # not (yet) wired into CI.
+  # Build Desktop installers and attach them to the same GitHub Release.
+  # Unsigned builds: DMG/ZIP (mac), NSIS installer exe (win), AppImage/deb/rpm
+  # (linux). Code signing + notarization for mac can be added later via repo
+  # secrets (CSC_LINK, APPLE_ID, etc.); without them, `package.mjs` disables
+  # notarization and electron-builder uses ad-hoc signing where applicable.
   desktop:
     needs: release
     strategy:
@@ -81,6 +81,8 @@ jobs:
             target: linux
           - os: windows-latest
             target: win
+          - os: macos-latest
+            target: mac
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -124,9 +126,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # electron-builder's GitHub publisher reads this:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable code signing on Linux/Windows for now — the public
-          # release is unsigned for these platforms, the CLI carries the
-          # trust boundary. Set CSC_LINK in repo secrets to enable
-          # Windows signing later.
+          # Disable Apple/Microsoft auto-discovery so CI ships unsigned
+          # desktop builds unless CSC_LINK / Apple secrets are configured.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: node scripts/package.mjs --${{ matrix.target }} --x64 --arm64 --publish always

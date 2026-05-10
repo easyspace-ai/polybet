@@ -23,10 +23,9 @@ builds:
       - arm64
 
 archives:
-  # Legacy archive name kept so already-released CLIs (whose `polybet update`
-  # looks for `multica_{os}_{arch}.{ext}`) can keep self-updating. Remove
-  # once those versions are no longer in use.
-  - id: legacy
+  # One artifact per OS×arch: e.g. polybet_darwin_arm64.tar.gz,
+  # polybet_windows_amd64.zip (binary inside is `polybet` / `polybet.exe`).
+  - id: default
     formats:
       - tar.gz
     format_overrides:
@@ -34,16 +33,6 @@ archives:
         formats:
           - zip
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
-  # Versioned archive name used by current CLI / install scripts /
-  # desktop bootstrap going forward.
-  - id: versioned
-    formats:
-      - tar.gz
-    format_overrides:
-      - goos: windows
-        formats:
-          - zip
-    name_template: "{{ .ProjectName }}-cli-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
 
 checksum:
   name_template: "checksums.txt"

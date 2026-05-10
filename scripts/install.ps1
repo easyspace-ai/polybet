@@ -192,8 +192,7 @@ function Install-CliBinary {
         Write-Fail "Could not determine latest release. Check your network connection."
     }
 
-    $version = $latest.TrimStart('v')
-    $url = "https://github.com/polybet-ai/polybet/releases/download/$latest/polybet-cli-$version-windows-$arch.zip"
+    $url = "https://github.com/polybet-ai/polybet/releases/download/$latest/polybet_windows_$arch.zip"
     $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "polybet-install"
 
     if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
@@ -218,12 +217,14 @@ function Install-CliBinary {
         }
         $zipFile = Join-Path $tmpDir "polybet.zip"
         $actualHash = (Get-FileHash -Path $zipFile -Algorithm SHA256).Hash.ToLower()
-        $releaseAsset = "polybet-cli-$version-windows-$arch.zip"
-        $legacyAsset = "multica_windows_$arch.zip"
+        $canonicalAsset = "polybet_windows_$arch.zip"
+        $legacyCliAsset = "polybet-cli-$($latest.TrimStart('v'))-windows-$arch.zip"
+        $legacyMulticaAsset = "multica_windows_$arch.zip"
         $expectedLine = ($checksumContent -split "`r?`n") |
             Where-Object {
-                $_ -match [regex]::Escape($releaseAsset) -or
-                $_ -match [regex]::Escape($legacyAsset)
+                $_ -match [regex]::Escape($canonicalAsset) -or
+                $_ -match [regex]::Escape($legacyCliAsset) -or
+                $_ -match [regex]::Escape($legacyMulticaAsset)
             } |
             Select-Object -First 1
         if ($expectedLine) {
@@ -234,7 +235,7 @@ function Install-CliBinary {
             }
             Write-Ok "Checksum verified"
         } else {
-            Write-Warn "Could not find checksum entry for $releaseAsset — skipping verification."
+            Write-Warn "Could not find checksum entry for $canonicalAsset — skipping verification."
         }
     } catch {
         Write-Warn "Could not download checksums.txt — skipping verification."
