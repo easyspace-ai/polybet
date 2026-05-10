@@ -1,0 +1,21 @@
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "base-nova",
+  "rsc": false,
+  "tsx": true,
+  "tailwind": {
+    "config": "",
+    "css": "styles/tokens.css",
+    "baseColor": "zinc",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "iconLibrary": "lucide",
+  "aliases": {
+    "components": "@polybet/ui/components",
+    "ui": "@polybet/ui/components/ui",
+    "hooks": "@polybet/ui/hooks",
+    "lib": "@polybet/ui/lib",
+    "utils": "@polybet/ui/lib/utils"
+  }
+}

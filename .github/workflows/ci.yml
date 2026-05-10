@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify reserved-slugs.ts is up to date
+        # Re-runs the generator and fails on any drift from the
+        # checked-in TypeScript output. The Go side embeds the JSON
+        # source directly, so a passing diff here proves both sides
+        # share one source of truth.
+        run: |
+          pnpm generate:reserved-slugs
+          git diff --exit-code -- packages/core/paths/reserved-slugs.ts
+
+      - name: Build, type check, lint, and test
+        run: pnpm exec turbo build typecheck lint test
+
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Build
+        run: cd server && go build ./...
+
+      - name: Test
+        run: cd server && go test ./...

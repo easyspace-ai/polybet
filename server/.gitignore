@@ -1,0 +1,12 @@
+# Local secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Build output
+/bin/
+dist/
+
+# SQLite dev DB (if kept under module root)
+data/
