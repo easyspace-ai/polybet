@@ -4,6 +4,9 @@ electronVersion: 39.2.6
 directories:
   buildResources: build
 files:
+  # Never pack prior electron-builder output (e.g. dist/win-x64/win-unpacked).
+  # Sequential win x64 + arm64 would otherwise nest the first build into the second (~multi‑GB, 7za E_FAIL).
+  - "!dist/**/*"
   - "!**/.vscode/*"
   - "!src/*"
   - "!electron.vite.config.*"

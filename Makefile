@@ -25,7 +25,7 @@
 
 SERVER := $(CURDIR)/server
 
-.PHONY: help install deps dashboard-build dashboard-embed go-build-server run-server test-go lint-dashboard desktop-resources desktop-build desktop-package desktop-package-win clean-dashboard-embed all-desktop release-tag-push
+.PHONY: help install deps dashboard-build dashboard-embed go-build-server run-server test-go lint-dashboard desktop-resources desktop-build desktop-package desktop-package-win clean-desktop-package-artifacts clean-dashboard-embed all-desktop release-tag-push
 
 help:
 	@echo "Polybet Makefile"
@@ -40,6 +40,7 @@ help:
 	@echo "  make desktop-build        - desktop-resources + electron-vite build"
 	@echo "  make desktop-package      - desktop-build + electron-builder (see apps/desktop/scripts/package.mjs)"
 	@echo "  make desktop-package-win  - desktop-build + Windows x64 + arm64 installers only (--publish never)"
+	@echo "  make clean-desktop-package-artifacts - rm apps/desktop/{dist,out} + server/bin/*-* (frees GB before packaging if disk full)"
 	@echo "  make all-desktop          - desktop-package (convenience)"
 	@echo ""
 	@echo "  GitHub Release (triggers .github/workflows/release.yml)"
@@ -90,6 +91,16 @@ desktop-package: desktop-build
 
 desktop-package-win: desktop-build
 	cd "$(CURDIR)/apps/desktop" && pnpm run package:win
+
+# Electron-builder output + prior win-unpacked trees are large; cross-built Go
+# CLIs live under server/bin/<os>-<arch>/. Use when `go link` fails with ENOSPC.
+clean-desktop-package-artifacts:
+	@rm -rf "$(CURDIR)/apps/desktop/dist" "$(CURDIR)/apps/desktop/out"
+	@echo "Removed apps/desktop/dist and apps/desktop/out"
+	@if [ -d "$(SERVER)/bin" ]; then \
+		find "$(SERVER)/bin" -mindepth 1 -maxdepth 1 -type d \( -name 'darwin-*' -o -name 'linux-*' -o -name 'windows-*' \) -exec rm -rf {} + 2>/dev/null || true; \
+		echo "Removed server/bin/*-* cross-compile dirs (left server/bin/polybet untouched if present)."; \
+	fi
 
 all-desktop: desktop-package
 

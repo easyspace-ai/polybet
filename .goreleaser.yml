@@ -4,7 +4,7 @@ project_name: polybet
 
 builds:
   - id: polybet
-    main: ./cmd/polybet
+    main: ./cmd/server
     dir: server
     binary: polybet
     ldflags:
