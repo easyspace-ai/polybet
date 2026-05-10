@@ -103,27 +103,37 @@ if (hasGo()) {
     `[bundle-cli] go build → ${srcBinary} (${goos}/${goarch}, version=${version} commit=${commit})`,
   );
   await mkdir(join(serverDir, "bin", `${goos}-${goarch}`), { recursive: true });
-  execFileSync(
-    "go",
-    [
-      "build",
-      "-ldflags",
-      ldflags,
-      "-o",
-      srcBinary,
-      "./cmd/server",
-    ],
-    {
-      cwd: serverDir,
-      stdio: "inherit",
-      env: {
-        ...process.env,
-        CGO_ENABLED: "0",
-        GOOS: goos,
-        GOARCH: goarch,
+  try {
+    execFileSync(
+      "go",
+      [
+        "build",
+        "-ldflags",
+        ldflags,
+        "-o",
+        srcBinary,
+        "./cmd/server",
+      ],
+      {
+        cwd: serverDir,
+        stdio: "inherit",
+        env: {
+          ...process.env,
+          CGO_ENABLED: "0",
+          GOOS: goos,
+          GOARCH: goarch,
+        },
       },
-    },
-  );
+    );
+  } catch (err) {
+    console.error(
+      "[bundle-cli] go build failed. If the linker reported 'no space left on device' (ENOSPC), " +
+        "free disk space on the volume containing server/bin, or run " +
+        "`make clean-desktop-package-artifacts` to drop large desktop dist/out + cross-compile dirs, " +
+        "then rebuild.",
+    );
+    throw err;
+  }
 } else {
   console.warn(
     "[bundle-cli] `go` not found in PATH — skipping polybet build. " +
