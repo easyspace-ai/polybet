@@ -5,8 +5,11 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,7 +17,7 @@ import (
 
 	"github.com/easyspace-ai/polybet/internal/homesettings"
 	"github.com/easyspace-ai/polybet/internal/polyprov"
-	"github.com/easyspace-ai/polybet/internal/service/balancesvc"
+	"github.com/easyspace-ai/polybet/internal/rediska"
 	"github.com/easyspace-ai/polybet/internal/service/marketsvc"
 	"github.com/easyspace-ai/polybet/internal/service/polysession"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
@@ -23,6 +26,49 @@ import (
 	"github.com/easyspace-ai/polybet/internal/store"
 	"github.com/easyspace-ai/polybet/internal/webui"
 )
+
+type simpleCache struct {
+	mu    sync.RWMutex
+	data  map[string]cacheItem
+	ttl   time.Duration
+}
+
+type cacheItem struct {
+	value     any
+	expiresAt int64
+}
+
+func newSimpleCache(ttl time.Duration) *simpleCache {
+	return &simpleCache{
+		data: make(map[string]cacheItem),
+		ttl:  ttl,
+	}
+}
+
+func (c *simpleCache) Get(key string) (any, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	item, ok := c.data[key]
+	if !ok {
+		return nil, false
+	}
+	if time.Now().Unix() > item.expiresAt {
+		return nil, false
+	}
+	return item.value, true
+}
+
+func (c *simpleCache) Set(key string, value any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.data[key] = cacheItem{
+		value:     value,
+		expiresAt: time.Now().Add(c.ttl).Unix(),
+	}
+}
+
+var accountsCache = newSimpleCache(10 * time.Second)
+var tasksCache = newSimpleCache(10 * time.Second)
 
 func tradeResultsLog(rs []tradesvc.TradeResult) string {
 	if len(rs) == 0 {
@@ -229,7 +275,7 @@ func NewRouter(d Deps) *gin.Engine {
 		})
 
 		api.GET("/balances", func(c *gin.Context) {
-			sum, err := balancesvc.Fetch(c, d.Cfg, d.Store)
+			sum, fromCache, err := d.BalanceCache.GetWithRefresh(c)
 			if err != nil {
 				c.JSON(500, gin.H{"error": "balances_failed", "message": err.Error()})
 				return
@@ -240,10 +286,27 @@ func NewRouter(d Deps) *gin.Engine {
 					"id": x.ID, "name": x.Name, "isActive": x.IsActive, "polymarket": x.Polymarket,
 				})
 			}
-			c.JSON(200, gin.H{"polymarket": sum.Polymarket, "polymarketAccounts": accts})
+			c.JSON(200, gin.H{"polymarket": sum.Polymarket, "polymarketAccounts": accts, "cached": fromCache})
 		})
 
 		api.GET("/polymarket/accounts", func(c *gin.Context) {
+			if cached, ok := accountsCache.Get("list"); ok {
+				go func() {
+					accts, err := d.Store.ListPolymarketAccounts(context.Background())
+					if err == nil {
+						out := make([]gin.H, 0, len(accts))
+						for _, x := range accts {
+							out = append(out, gin.H{
+								"id": x.ID, "name": x.Name, "funderAddress": x.FunderAddress,
+								"isActive": x.IsActive, "createdAt": x.CreatedAt.UTC().Format(time.RFC3339Nano),
+							})
+						}
+						accountsCache.Set("list", out)
+					}
+				}()
+				c.JSON(200, cached)
+				return
+			}
 			accts, err := d.Store.ListPolymarketAccounts(c)
 			if err != nil {
 				c.JSON(500, gin.H{"error": "list_accounts"})
@@ -256,6 +319,7 @@ func NewRouter(d Deps) *gin.Engine {
 					"isActive": x.IsActive, "createdAt": x.CreatedAt.UTC().Format(time.RFC3339Nano),
 				})
 			}
+			accountsCache.Set("list", out)
 			c.JSON(200, out)
 		})
 
@@ -325,15 +389,58 @@ func NewRouter(d Deps) *gin.Engine {
 
 		api.GET("/risk/positions", func(c *gin.Context) {
 			meta := risksvc.Meta{OutboundProxyConfigured: d.Cfg.HTTPPlatformProxy != ""}
-			rows, meta2, err := d.Risk.ListRiskPositionsEnriched(c, meta)
+			fetch := func() (rediska.RiskFetchResult, error) {
+				rows, m, err := d.Risk.ListRiskPositionsEnriched(c, meta)
+				if err != nil {
+					return rediska.RiskFetchResult{}, err
+				}
+				return rediska.RiskFetchResult{
+					Positions: rows,
+					Meta: rediska.RiskMeta{
+						UserWsConnected:         m.UserWsConnected,
+						UserWsConnecting:        m.UserWsConnecting,
+						OutboundProxyConfigured: m.OutboundProxyConfigured,
+						MinOpenRiskShares:       m.MinOpenRiskShares,
+					},
+				}, nil
+			}
+			rows, meta2, fromCache, err := d.RiskCache.GetWithRefresh(c, fetch)
 			if err != nil {
 				c.JSON(500, gin.H{"error": "risk"})
 				return
 			}
-			c.JSON(200, gin.H{"positions": rows, "meta": meta2})
+			c.JSON(200, gin.H{"positions": rows, "meta": meta2, "cached": fromCache})
 		})
 
 		api.GET("/risk/tasks", func(c *gin.Context) {
+			cacheKey := "list"
+			if cached, ok := tasksCache.Get(cacheKey); ok {
+				go func() {
+					tasks, err := d.Store.ListRiskTasksRecent(context.Background(), 40)
+					if err == nil {
+						out := make([]gin.H, 0, len(tasks))
+						for _, t := range tasks {
+							pid := interface{}(nil)
+							if t.PositionID.Valid {
+								pid = t.PositionID.String
+							}
+							le := interface{}(nil)
+							if t.LastError.Valid {
+								le = t.LastError.String
+							}
+							out = append(out, gin.H{
+								"id": t.ID, "type": t.Type, "positionId": pid, "status": t.Status,
+								"attempts": t.Attempts, "lastError": le,
+								"nextRunAt": t.NextRunAt.UTC().Format(time.RFC3339Nano),
+								"updatedAt": t.UpdatedAt.UTC().Format(time.RFC3339Nano),
+							})
+						}
+						tasksCache.Set(cacheKey, gin.H{"tasks": out})
+					}
+				}()
+				c.JSON(200, cached)
+				return
+			}
 			limit := 40
 			if l, err := strconv.Atoi(c.DefaultQuery("limit", "40")); err == nil && l > 0 {
 				limit = l
@@ -360,6 +467,7 @@ func NewRouter(d Deps) *gin.Engine {
 					"updatedAt": t.UpdatedAt.UTC().Format(time.RFC3339Nano),
 				})
 			}
+			tasksCache.Set(cacheKey, gin.H{"tasks": out})
 			c.JSON(200, gin.H{"tasks": out})
 		})
 
@@ -449,10 +557,67 @@ func NewRouter(d Deps) *gin.Engine {
 			})
 		})
 
+		api.GET("/setup/init-status", func(c *gin.Context) {
+			if d.InitService == nil {
+				c.JSON(500, gin.H{"error": "init_service_not_available"})
+				return
+			}
+			status := d.InitService.GetStatus()
+			c.JSON(200, status)
+		})
+
 		api.POST("/setup/complete", func(c *gin.Context) {
 			_ = d.Store.UpsertBotConfig(c, "onboardingComplete", "true")
 			snapshotHomeBotSettings(c.Request.Context(), d.Store)
 			c.JSON(200, gin.H{"ok": true})
+		})
+
+		// Log endpoints
+		api.GET("/logs", func(c *gin.Context) {
+			if d.LogService == nil {
+				c.JSON(500, gin.H{"error": "log_service_not_available"})
+				return
+			}
+			logs := d.LogService.GetAll()
+			c.JSON(200, gin.H{"logs": logs})
+		})
+
+		api.GET("/logs/errors", func(c *gin.Context) {
+			if d.LogService == nil {
+				c.JSON(500, gin.H{"error": "log_service_not_available"})
+				return
+			}
+			logs := d.LogService.GetErrors()
+			c.JSON(200, gin.H{"logs": logs})
+		})
+
+		// Status endpoints
+		api.GET("/status", func(c *gin.Context) {
+			if d.InitService == nil {
+				c.JSON(500, gin.H{"error": "service_not_available"})
+				return
+			}
+			initStatus := d.InitService.GetStatus()
+			hubSize := 0
+			if d.Hub != nil {
+				hubSize = d.Hub.ClientCount()
+			}
+			c.JSON(200, gin.H{
+				"initStatus": initStatus,
+				"wsClients": hubSize,
+				"serverTime": time.Now().Format("2006-01-02 15:04:05"),
+			})
+		})
+
+		// Restart endpoint
+		api.POST("/restart", func(c *gin.Context) {
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				cmd := exec.Command(os.Args[0])
+				cmd.Start()
+				os.Exit(0)
+			}()
+			c.JSON(200, gin.H{"ok": true, "message": "restarting"})
 		})
 	}
 

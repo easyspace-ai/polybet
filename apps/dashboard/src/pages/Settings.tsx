@@ -3,8 +3,9 @@ import { getConfig, putConfig, type ConfigRow } from '../lib/api';
 import { toast } from '../components/ui/use-toast';
 import { cn } from '../lib/utils';
 import { useOddsFormat } from '../hooks/useOddsFormat';
+import { useTheme, type Theme } from '../hooks/useTheme';
 import { type OddsFormat } from '../lib/oddsFormat';
-import { Trash2 } from 'lucide-react';
+import { Trash2, RefreshCw, Download, CheckCircle } from 'lucide-react';
 import {
   DEFAULT_EVENT_CLASSIFICATION_TAGS,
   parseEventClassificationTags,
@@ -44,7 +45,7 @@ const DEFAULT_PRICE_ROWS: PriceStopLossRangeRow[] = [
   { id: 'r6', name: '70-80¢', minCents: 70, maxCents: 80, fundPct: 16, stopLossPct: 20 },
 ];
 
-type SettingsTab = 'general' | 'proxy' | 'telegram' | 'tags' | 'prices';
+type SettingsTab = 'general' | 'proxy' | 'telegram' | 'tags' | 'prices' | 'version';
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: 'general', label: '通用 / 路由' },
@@ -52,6 +53,7 @@ const TABS: { id: SettingsTab; label: string }[] = [
   { id: 'telegram', label: '电报' },
   { id: 'tags', label: '赛事分类' },
   { id: 'prices', label: '价格区间' },
+  { id: 'version', label: '版本' },
 ];
 
 function OddsFormatToggle() {
@@ -60,8 +62,8 @@ function OddsFormatToggle() {
     <div
       className="mb-4 rounded-[var(--tm-rad)] border border-tm-bd bg-tm-bg-el px-3.5 py-3"
     >
-      <div className="font-mono text-[11px] font-semibold text-tm-tx">赔率显示</div>
-      <div className="mt-1 font-mono text-[10px] leading-[1.5] text-tm-tx-mut">
+      <div className="font-mono text-[13px] font-semibold text-tm-tx">赔率显示</div>
+      <div className="mt-1 font-mono text-[12px] leading-[1.5] text-tm-tx-mut">
         控制看板中赔率的展示方式：欧洲盘（如 2.06）、美式盘（如 +106 / -120）或隐含概率（如
         48.5%）。仅保存在本机浏览器，不影响机器人实际行为。
       </div>
@@ -72,8 +74,44 @@ function OddsFormatToggle() {
             type="button"
             onClick={() => setFormat(opt.value)}
             className={cn(
-              'px-3 py-1.5 font-mono text-[10px] font-bold tracking-wider transition-colors',
+              'px-3 py-1.5 font-mono text-[12px] font-bold tracking-wider transition-colors',
               format === opt.value
+                ? 'bg-tm-accent text-black'
+                : 'text-tm-tx-dim hover:text-tm-tx hover:bg-tm-bg-el',
+            )}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const THEME_OPTIONS: { value: Theme; label: string }[] = [
+  { value: 'light', label: '白天' },
+  { value: 'dark', label: '夜间' },
+];
+
+function ThemeToggle() {
+  const [theme, setTheme] = useTheme();
+  return (
+    <div
+      className="mb-4 rounded-[var(--tm-rad)] border border-tm-bd bg-tm-bg-el px-3.5 py-3"
+    >
+      <div className="font-mono text-[13px] font-semibold text-tm-tx">主题模式</div>
+      <div className="mt-1 font-mono text-[12px] leading-[1.5] text-tm-tx-mut">
+        切换界面配色风格：白天模式白色背景，夜间模式深色背景。仅保存在本机浏览器。
+      </div>
+      <div className="mt-2.5 inline-flex rounded-[var(--tm-rad)] border border-tm-bd bg-tm-bg-sunk overflow-hidden">
+        {THEME_OPTIONS.map((opt) => (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => setTheme(opt.value)}
+            className={cn(
+              'px-3 py-1.5 font-mono text-[12px] font-bold tracking-wider transition-colors',
+              theme === opt.value
                 ? 'bg-tm-accent text-black'
                 : 'text-tm-tx-dim hover:text-tm-tx hover:bg-tm-bg-el',
             )}
@@ -280,9 +318,10 @@ export function Settings() {
 
           {!loading && tab === 'general' && (
             <>
-              <div className="mb-3 font-mono text-[10px] font-semibold tracking-[0.2em] text-tm-tx-dim">
+              <div className="mb-3 font-mono text-[12px] font-semibold tracking-[0.2em] text-tm-tx-dim">
                 显示
               </div>
+              <ThemeToggle />
               <OddsFormatToggle />
 
               <div className="mb-4 rounded-[var(--tm-rad)] border border-tm-bd bg-tm-bg-el px-3.5 py-3">
@@ -684,7 +723,197 @@ export function Settings() {
               </button>
             </div>
           )}
+
+          {!loading && tab === 'version' && <VersionTab />}
         </div>
+      </div>
+    </div>
+  );
+}
+
+declare global {
+  interface Window {
+    updater?: {
+      checkForUpdates: () => Promise<{ ok: true; currentVersion: string; latestVersion: string; available: boolean } | { ok: false; error: string }>;
+      downloadUpdate: () => Promise<void>;
+      installUpdate: () => Promise<void>;
+      onUpdateAvailable: (callback: (info: { version: string; releaseNotes?: string }) => void) => () => void;
+      onDownloadProgress: (callback: (progress: { percent: number }) => void) => () => void;
+      onUpdateDownloaded: (callback: () => void) => () => void;
+    };
+  }
+}
+
+function VersionTab() {
+  const [checking, setChecking] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [versionInfo, setVersionInfo] = useState<{ current: string; latest: string; available: boolean } | null>(null);
+  const [updateReady, setUpdateReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const isElectron = typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron');
+  const updater = isElectron ? window.updater : null;
+
+  useEffect(() => {
+    if (!updater) return;
+
+    const unsubAvailable = updater.onUpdateAvailable((info) => {
+      setVersionInfo((prev) => prev ? { ...prev, available: true, latest: info.version } : null);
+      showUpdateDialog(info.version, info.releaseNotes);
+    });
+
+    const unsubProgress = updater.onDownloadProgress((progress) => {
+      setDownloadProgress(progress.percent);
+    });
+
+    const unsubDownloaded = updater.onUpdateDownloaded(() => {
+      setUpdateReady(true);
+      setDownloading(false);
+    });
+
+    return () => {
+      unsubAvailable();
+      unsubProgress();
+      unsubDownloaded();
+    };
+  }, [updater]);
+
+  const showUpdateDialog = (version: string, releaseNotes?: string) => {
+    const confirmed = confirm(
+      `发现新版本 v${version}！\n\n${releaseNotes ? `更新内容：\n${releaseNotes}\n\n` : ''}是否立即更新？更新将自动重启应用。`
+    );
+    if (confirmed) {
+      handleDownload();
+    }
+  };
+
+  const handleCheck = async () => {
+    if (!updater) {
+      setError('仅在 Electron 客户端支持版本检查');
+      return;
+    }
+    setChecking(true);
+    setError(null);
+    try {
+      const result = await updater.checkForUpdates();
+      if (result.ok) {
+        setVersionInfo({ current: result.currentVersion, latest: result.latestVersion, available: result.available });
+        if (result.available) {
+          showUpdateDialog(result.latestVersion, undefined);
+        }
+      } else {
+        setError(result.error);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const handleDownload = async () => {
+    if (!updater) return;
+    setDownloading(true);
+    setDownloadProgress(0);
+    try {
+      await updater.downloadUpdate();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setDownloading(false);
+    }
+  };
+
+  const handleInstall = async () => {
+    if (!updater) return;
+    await updater.installUpdate();
+  };
+
+  return (
+    <div>
+      <div className="mb-4 font-mono text-[12px] font-semibold tracking-[0.2em] text-tm-tx-dim">
+        版本信息
+      </div>
+
+      <div className="rounded-[var(--tm-rad)] border border-tm-bd bg-tm-bg-el px-4 py-4">
+        {!isElectron ? (
+          <div className="font-mono text-[11px] text-tm-tx-dim">
+            版本检查仅在桌面客户端中可用
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <div className="font-mono text-[11px] text-tm-tx-mut">当前版本</div>
+                <div className="font-mono text-[14px] font-bold text-tm-tx">
+                  {versionInfo?.current || '检测中...'}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleCheck}
+                disabled={checking || downloading}
+                className={cn(
+                  'flex items-center gap-2 rounded-sm px-3 py-2 font-mono text-[10px] font-bold',
+                  checking || downloading
+                    ? 'bg-tm-bg-sunk text-tm-tx-mut cursor-not-allowed'
+                    : 'bg-tm-accent text-black hover:bg-tm-accent/90',
+                )}
+              >
+                <RefreshCw className={cn('w-3 h-3', checking && 'animate-spin')} />
+                {checking ? '检查中...' : '检查更新'}
+              </button>
+            </div>
+
+            {versionInfo && (
+              <div className="mb-4 font-mono text-[11px] text-tm-tx-mut">
+                最新版本: <span className={versionInfo.available ? 'text-tm-pos font-bold' : ''}>{versionInfo.latest}</span>
+                {versionInfo.available && !updateReady && !downloading && (
+                  <span className="ml-2 text-tm-accent">(有可用更新)</span>
+                )}
+              </div>
+            )}
+
+            {error && (
+              <div className="mb-3 rounded-sm border border-tm-neg/30 bg-tm-neg/10 px-3 py-2 font-mono text-[11px] text-tm-neg">
+                {error}
+              </div>
+            )}
+
+            {downloading && (
+              <div className="mb-3">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-mono text-[10px] text-tm-tx-mut">下载中...</span>
+                  <span className="font-mono text-[10px] text-tm-tx">{downloadProgress.toFixed(0)}%</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-tm-bg-sunk overflow-hidden">
+                  <div
+                    className="h-full bg-tm-accent transition-all duration-300"
+                    style={{ width: `${downloadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {updateReady && (
+              <div className="flex items-center gap-3 p-3 rounded-sm bg-tm-pos/10 border border-tm-pos/30">
+                <CheckCircle className="w-5 h-5 text-tm-pos" />
+                <div className="flex-1">
+                  <div className="font-mono text-[11px] font-bold text-tm-pos">更新已下载</div>
+                  <div className="font-mono text-[10px] text-tm-tx-mut">点击下方按钮安装更新并重启</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleInstall}
+                  className="flex items-center gap-2 rounded-sm px-3 py-2 bg-tm-pos text-black font-mono text-[10px] font-bold hover:bg-tm-pos/90"
+                >
+                  <Download className="w-3 h-3" />
+                  安装并重启
+                </button>
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

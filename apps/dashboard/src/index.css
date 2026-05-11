@@ -70,6 +70,38 @@
     --tm-font-ui:   'Inter', system-ui, sans-serif;
   }
 
+  /* Light mode (day theme) */
+  .light {
+    --background: 210 20% 98%;
+    --foreground: 220 15% 10%;
+    --card: 210 10% 96%;
+    --card-foreground: 220 15% 10%;
+    --popover: 210 10% 96%;
+    --popover-foreground: 220 15% 10%;
+    --primary: 172 70% 55%;
+    --primary-foreground: 220 15% 10%;
+    --secondary: 210 15% 90%;
+    --secondary-foreground: 220 15% 10%;
+    --muted: 210 15% 90%;
+    --muted-foreground: 220 8% 40%;
+    --accent: 210 15% 85%;
+    --accent-foreground: 220 15% 10%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 220 10% 96%;
+    --border: 210 10% 85%;
+    --input: 210 10% 85%;
+    --ring: 172 70% 55%;
+
+    --tm-bg: 0 0% 100%;
+    --tm-bg-sunk: 210 15% 96%;
+    --tm-bg-el: 210 10% 94%;
+    --tm-bd: 210 10% 85%;
+    --tm-bd-st: 210 10% 80%;
+    --tm-tx: 220 15% 10%;
+    --tm-tx-dim: 220 8% 40%;
+    --tm-tx-mut: 220 8% 30%;
+  }
+
   * {
     @apply border-border;
   }

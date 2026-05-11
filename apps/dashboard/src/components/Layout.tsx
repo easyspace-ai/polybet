@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
-import { LineChart, History as HistoryIcon, Settings as SettingsIcon, Shield, Wallet } from 'lucide-react';
+import { LineChart, History as HistoryIcon, Settings as SettingsIcon, Shield, Wallet, FileText } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { GITHUB_REPO_URL } from '../lib/constants';
 
@@ -33,6 +33,7 @@ const navItems = [
   ...(!isPublic ? [
     { to: '/history',  label: '历史', icon: HistoryIcon,  end: undefined },
     { to: '/accounts', label: '账号', icon: Wallet,      end: undefined },
+    { to: '/logs',     label: '日志', icon: FileText,    end: undefined },
     { to: '/settings', label: '设置', icon: SettingsIcon, end: undefined },
   ] : []),
 ];

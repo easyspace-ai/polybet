@@ -12,6 +12,7 @@ import { AutopilotDetailPage } from "./pages/autopilot-detail-page";
 import { SkillDetailPage } from "./pages/skill-detail-page";
 import { AgentDetailPage } from "./pages/agent-detail-page";
 import { RuntimeDetailPage } from "./pages/runtime-detail-page";
+import { LoadingPage } from "./pages/loading-page";
 import { IssuesPage } from "@polybet/views/issues/components";
 import { ProjectsPage } from "@polybet/views/projects/components";
 import { AutopilotsPage } from "@polybet/views/autopilots/components";
@@ -77,6 +78,7 @@ export const appRoutes: RouteObject[] = [
   {
     element: <PageShell />,
     children: [
+      { path: "loading", element: <LoadingPage /> },
       { index: true, element: null },
       {
         path: ":workspaceSlug",

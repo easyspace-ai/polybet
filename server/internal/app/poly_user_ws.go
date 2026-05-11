@@ -5,7 +5,9 @@ import (
 	polymarket "github.com/easyspace-ai/polysdk"
 	"time"
 
+	"github.com/easyspace-ai/polybet/internal/service/balancesvc"
 	"github.com/easyspace-ai/polybet/internal/service/polysession"
+	"github.com/easyspace-ai/polybet/internal/service/risksvc"
 )
 
 func (a *App) polyUserWSLoop(ctx context.Context) {
@@ -83,6 +85,15 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 					a.Log.Warn("poly_user_ws_trade_apply_err", "trade_id", ev.ID, "asset_id", ev.AssetID, "status", ev.Status, "err", err.Error())
 				} else if applied {
 					a.Log.Info("poly_user_ws_trade_applied", "trade_id", ev.ID, "asset_id", ev.AssetID, "side", ev.Side, "size", ev.Size, "price", ev.Price, "status", ev.Status)
+					// Broadcast position update
+					meta := risksvc.Meta{OutboundProxyConfigured: a.Cfg.HTTPPlatformProxy != ""}
+					if rows, _, err := a.Risk.ListRiskPositionsEnriched(context.Background(), meta); err == nil {
+						a.Hub.BroadcastJSON(map[string]any{"type": "position_update", "data": rows})
+					}
+					// Broadcast balance update
+					if summary, err := balancesvc.Fetch(context.Background(), a.Cfg, a.Store); err == nil {
+						a.Hub.BroadcastJSON(map[string]any{"type": "balance_update", "data": summary})
+					}
 				} else {
 					a.Log.Debug("poly_user_ws_trade_skip", "trade_id", ev.ID, "status", ev.Status)
 				}

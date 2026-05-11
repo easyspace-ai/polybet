@@ -14,6 +14,9 @@ import (
 	"github.com/easyspace-ai/polybet/internal/debounce"
 	"github.com/easyspace-ai/polybet/internal/homesettings"
 	"github.com/easyspace-ai/polybet/internal/httpserver"
+	"github.com/easyspace-ai/polybet/internal/rediska"
+	"github.com/easyspace-ai/polybet/internal/service/initsvc"
+	"github.com/easyspace-ai/polybet/internal/service/logsvc"
 	"github.com/easyspace-ai/polybet/internal/service/marketsvc"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
 	"github.com/easyspace-ai/polybet/internal/store"
@@ -23,18 +26,23 @@ import (
 )
 
 type App struct {
-	Cfg        *config.Config
-	DB         *sql.DB
-	Store      *store.Store
-	Cache      *bookcache.Cache
-	Hub        *wsrelay.Hub
-	Risk       *risksvc.Service
-	SyncEngine *marketsync.Engine
-	Debounce   *debounce.Debouncer
-	Log        *slog.Logger
-	httpSrv    *http.Server
-	publicSrv  *http.Server
-	wg         sync.WaitGroup
+	Cfg           *config.Config
+	DB            *sql.DB
+	Store         *store.Store
+	Cache         *bookcache.Cache
+	Hub           *wsrelay.Hub
+	Risk          *risksvc.Service
+	SyncEngine    *marketsync.Engine
+	Debounce      *debounce.Debouncer
+	Log           *slog.Logger
+	Rediska       *rediska.Cache
+	BalanceCache  *rediska.BalanceCache
+	RiskCache     *rediska.RiskCache
+	InitService   *initsvc.Service
+	LogService    *logsvc.Service
+	httpSrv       *http.Server
+	publicSrv     *http.Server
+	wg            sync.WaitGroup
 }
 
 func New(cfg *config.Config, db *sql.DB, log *slog.Logger) *App {
@@ -47,9 +55,23 @@ func New(cfg *config.Config, db *sql.DB, log *slog.Logger) *App {
 	hub := wsrelay.NewHub()
 	risk := risksvc.New(cfg, st, cache, log)
 	syncEng := marketsync.NewEngine(cfg, st, cache, log)
+
+	rediskaDB, err := rediska.OpenMemory()
+	if err != nil {
+		log.Warn("rediska_open_failed", "err", err)
+	} else {
+		log.Info("rediska_initialized")
+	}
+	balanceCache := rediska.NewBalanceCache(rediskaDB, st, cfg, log)
+	riskCache := rediska.NewRiskCache(rediskaDB, log)
+	initSvc := initsvc.New(cfg, st, hub, risk, log)
+	logSvc := logsvc.New()
+
 	return &App{
 		Cfg: cfg, DB: db, Store: st, Cache: cache, Hub: hub, Risk: risk,
 		SyncEngine: syncEng, Debounce: debounce.New(120 * time.Millisecond), Log: log,
+		Rediska: rediskaDB, BalanceCache: balanceCache, RiskCache: riskCache, InitService: initSvc,
+		LogService: logSvc,
 	}
 }
 
@@ -89,6 +111,7 @@ func (a *App) Run(ctx context.Context) error {
 
 	deps := httpserver.Deps{
 		Cfg: a.Cfg, DB: a.DB, Store: a.Store, Cache: a.Cache, Hub: a.Hub, Risk: a.Risk, Debounce: a.Debounce,
+		BalanceCache: a.BalanceCache, RiskCache: a.RiskCache, InitService: a.InitService, LogService: a.LogService,
 	}
 	engine := httpserver.NewRouter(deps)
 	a.httpSrv = &http.Server{Addr: a.Cfg.Host + ":" + a.Cfg.Port, Handler: engine, ReadHeaderTimeout: 10 * time.Second}
@@ -113,6 +136,17 @@ func (a *App) Run(ctx context.Context) error {
 			}
 		}()
 	}
+
+	// Start init service in background
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		if err := a.InitService.Run(ctx); err != nil {
+			a.Log.Error("init_service", "err", err)
+		}
+		a.Log.Info("init_service_complete")
+	}()
+
 
 	// Initial Gamma/market sync can take minutes on slow networks. HTTP must
 	// listen first so Electron (and ops) can pass /api/health while sync runs.

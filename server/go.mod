@@ -9,6 +9,8 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
+	github.com/mattn/go-sqlite3 v1.14.44
+	github.com/nalgeon/redka v1.0.1
 	github.com/shopspring/decimal v1.4.0
 	modernc.org/sqlite v1.34.5
 )

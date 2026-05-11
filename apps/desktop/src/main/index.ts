@@ -273,6 +273,19 @@ if (!gotTheLock) {
       app.relaunch();
       app.exit(0);
     });
+    ipcMain.handle("polybet:restart-sidecar", async () => {
+      const currentConfig = await loadPolybetProjectConfigFromDisk();
+      if (!currentConfig.ok) {
+        return { ok: false, error: "Cannot restart: missing project config" };
+      }
+      stopEmbeddedPolybetSidecar();
+      await new Promise((r) => setTimeout(r, 500));
+      const started = await maybeStartSportsRouterSidecar(currentConfig.config);
+      if (!started) {
+        return { ok: false, error: "Failed to restart sidecar" };
+      }
+      return { ok: true };
+    });
     ipcMain.handle(
       "polybet-project:verify-outbound",
       async (

@@ -99,6 +99,9 @@ const desktopAPI = {
   ): Promise<{ ok: true } | { ok: false; errors: string[] }> =>
     ipcRenderer.invoke("polybet-project:save", raw),
   relaunchApp: (): Promise<void> => ipcRenderer.invoke("app:relaunch"),
+  /** Restart the embedded Go server sidecar */
+  restartPolybetSidecar: (): Promise<{ ok: true } | { ok: false; error: string }> =>
+    ipcRenderer.invoke("polybet:restart-sidecar"),
   /** Probe Polymarket Gamma via configured proxy; on success marks verified and reloads the window. */
   verifyPolymarketOutbound: (
     opts?: { outboundProxyUrl?: string },

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useNavigate } from "react-router-dom";
 import type { PolybetProjectBootstrap } from "../../shared/polybet-project-config";
+import { LoadingPage } from "./pages/loading-page";
 
 function readBootstrap(): PolybetProjectBootstrap {
   return window.desktopAPI.polybetBootstrap;
@@ -370,14 +372,35 @@ function AppContent() {
   );
 }
 
+function LoadingPageWrapper() {
+  const [ready, setReady] = useState(false);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const checkReady = async () => {
+      try {
+        const res = await fetch("/api/setup/init-status");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.complete) {
+            setReady(true);
+          }
+        }
+      } catch {}
+    };
+    checkReady();
+  }, []);
+
+  if (ready) {
+    return <AppContent />;
+  }
+  return <LoadingPage />;
+}
+
 export default function App() {
   const bootstrap = readBootstrap();
-  const blockSetup =
-    bootstrap.needsProjectSetup ||
-    bootstrap.needsOutboundVerification ||
-    bootstrap.outboundProbeFailed;
-  if (blockSetup) {
+  if (bootstrap.needsProjectSetup) {
     return <PolybetProjectSetup />;
   }
-  return <AppContent />;
+  return <LoadingPageWrapper />;
 }
