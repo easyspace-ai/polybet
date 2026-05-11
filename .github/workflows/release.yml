@@ -66,19 +66,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Build Desktop installers and attach them to the same GitHub Release.
-  # Unsigned builds: DMG/ZIP (mac), NSIS installer exe (win), AppImage/deb/rpm
-  # (linux). Code signing + notarization for mac can be added later via repo
-  # secrets (CSC_LINK, APPLE_ID, etc.); without them, `package.mjs` disables
-  # notarization and electron-builder uses ad-hoc signing where applicable.
+  # Build Desktop installers and attach to the same GitHub Release.
+  # Unsigned builds: DMG (mac), NSIS installer (win). Code signing can be added
+  # later via repo secrets (CSC_LINK, APPLE_ID).
   desktop:
     needs: release
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: linux
           - os: windows-latest
             target: win
           - os: macos-latest
@@ -120,13 +116,10 @@ jobs:
         shell: bash
         run: make dashboard-embed
 
-      - name: Package Desktop installers (${{ matrix.target }})
+      - name: Package Desktop (${{ matrix.target }} x64)
         working-directory: apps/desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # electron-builder's GitHub publisher reads this:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable Apple/Microsoft auto-discovery so CI ships unsigned
-          # desktop builds unless CSC_LINK / Apple secrets are configured.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: node scripts/package.mjs --${{ matrix.target }} --x64 --arm64 --publish always
+        run: node scripts/package.mjs --${{ matrix.target }} --x64 --publish always
