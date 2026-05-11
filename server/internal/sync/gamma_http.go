@@ -31,6 +31,7 @@ type gammaMarket struct {
 
 type gammaEvent struct {
 	ID        string        `json:"id"`
+	Slug      string        `json:"slug"`
 	Title     string        `json:"title"`
 	StartDate string        `json:"startDate"`
 	EndDate   string        `json:"endDate"`
@@ -38,6 +39,42 @@ type gammaEvent struct {
 }
 
 func fetchGammaEvents(ctx context.Context, httpProxy string, seriesID int) ([]gammaEvent, error) {
+	const maxRetries = 3
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			slog.Warn("gamma_http_retry", "attempt", attempt+1, "series_id", seriesID, "backoff", backoff.String())
+			time.Sleep(backoff)
+		}
+
+		events, err := doFetchGammaEvents(ctx, httpProxy, seriesID)
+		if err == nil {
+			return events, nil
+		}
+
+		lastErr = err
+		if !isRetryableError(err) {
+			return nil, err
+		}
+		slog.Warn("gamma_http_retryable_error", "series_id", seriesID, "attempt", attempt+1, "err", err.Error())
+	}
+
+	return nil, lastErr
+}
+
+func isRetryableError(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "EOF") ||
+		strings.Contains(s, "timeout") ||
+		strings.Contains(s, "context deadline") ||
+		strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "no such host") ||
+		strings.Contains(s, "temporary failure")
+}
+
+func doFetchGammaEvents(ctx context.Context, httpProxy string, seriesID int) ([]gammaEvent, error) {
 	var all []gammaEvent
 	offset := 0
 	const limit = 500

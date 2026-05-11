@@ -32,4 +32,6 @@ type MarketQuote struct {
 	MainLine     bool
 	Outcomes     []OutcomeOdds
 	PolyEventID  string
+	// PolySlug is the Polymarket web path segment under /event/<slug> when present on Gamma.
+	PolySlug string
 }

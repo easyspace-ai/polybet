@@ -8,3 +8,15 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+export interface DesktopAPI {
+  playSound: (soundName: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+}
+
+declare global {
+  interface Window {
+    desktopAPI?: DesktopAPI;
+  }
+}
+
+export {};

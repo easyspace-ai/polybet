@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -100,11 +101,6 @@ func (a *App) Run(ctx context.Context) error {
 		} else {
 			a.Log.Info("home_bot_settings_applied_if_present", "path", p)
 		}
-		if err := homesettings.SnapshotToFile(ctx, a.Store); err != nil {
-			a.Log.Warn("home_bot_settings_snapshot_failed", "path", p, "err", err.Error())
-		} else {
-			a.Log.Info("home_bot_settings_snapshot_ok", "path", p)
-		}
 	} else {
 		a.Log.Warn("home_bot_settings_path_failed", "err", err.Error())
 	}
@@ -112,6 +108,7 @@ func (a *App) Run(ctx context.Context) error {
 	deps := httpserver.Deps{
 		Cfg: a.Cfg, DB: a.DB, Store: a.Store, Cache: a.Cache, Hub: a.Hub, Risk: a.Risk, Debounce: a.Debounce,
 		BalanceCache: a.BalanceCache, RiskCache: a.RiskCache, InitService: a.InitService, LogService: a.LogService,
+		App: a,
 	}
 	engine := httpserver.NewRouter(deps)
 	a.httpSrv = &http.Server{Addr: a.Cfg.Host + ":" + a.Cfg.Port, Handler: engine, ReadHeaderTimeout: 10 * time.Second}
@@ -153,7 +150,9 @@ func (a *App) Run(ctx context.Context) error {
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
-		if err := a.SyncEngine.Once(ctx); err != nil {
+		syncCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		if err := a.SyncEngine.Once(syncCtx); err != nil {
 			a.Log.Warn("boot_market_sync", "err", err)
 		} else {
 			a.Log.Info("boot_market_sync_ok")
@@ -223,12 +222,18 @@ func (a *App) syncTicker(ctx context.Context) {
 			a.Log.Info("market_sync_ticker_fire", "interval_sec", iv)
 			if err := a.SyncEngine.Once(context.Background()); err != nil {
 				a.Log.Warn("market_sync_ticker_err", "err", err)
+				if a.LogService != nil {
+					a.LogService.Error("市场同步", "同步失败: "+err.Error())
+				}
 			}
 			if markets, err := marketsvc.BuildMarketsPayload(context.Background(), a.Store, a.Cache); err != nil {
 				a.Log.Warn("market_snapshot_build_err", "err", err)
 			} else {
 				a.Log.Info("market_snapshot_broadcast", "markets", len(markets))
 				a.Hub.BroadcastJSON(map[string]any{"type": "marketsSnapshot", "data": markets})
+				if a.LogService != nil {
+					a.LogService.Info("市场同步", fmt.Sprintf("同步完成, 共 %d 个市场", len(markets)))
+				}
 			}
 		}
 	}

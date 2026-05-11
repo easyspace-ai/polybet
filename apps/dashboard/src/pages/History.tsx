@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
-import { getTrades, getBalances, type Trade, type BalanceSummary } from '../lib/api';
+import { getTrades, type Trade } from '../lib/api';
+import { useBalanceCache } from '../hooks/useBalanceCache';
+import { postCacheRefresh } from '../lib/api';
 import { cn } from '../lib/utils';
 import { formatOdds } from '../lib/oddsFormat';
 import { useOddsFormat } from '../hooks/useOddsFormat';
@@ -13,15 +15,29 @@ function BalanceCard({
   label,
   amount,
   accent,
+  onRefresh,
 }: {
   label: string;
   amount: number | null;
   accent: string;
+  onRefresh?: () => void;
 }) {
   return (
-    <div className="flex-1 rounded-sm border border-tm-bd bg-tm-bg-el px-3 py-2.5">
-      <div className={cn('font-mono text-[9px] font-semibold tracking-[0.2em]', accent)}>
-        {label}
+    <div className="flex-1 rounded-sm border border-tm-bd bg-tm-bg-el px-3 py-2">
+      <div className="flex items-center justify-between">
+        <div className={cn('font-mono text-[9px] font-semibold tracking-[0.2em]', accent)}>
+          {label}
+        </div>
+        {onRefresh && (
+          <button
+            type="button"
+            onClick={() => void onRefresh()}
+            className="font-mono text-[9px] text-tm-tx-mut hover:text-tm-tx"
+            title="刷新余额"
+          >
+            ↻
+          </button>
+        )}
       </div>
       <div className="mt-1 font-mono text-[18px] font-semibold text-tm-tx">
         {amount == null ? (
@@ -130,7 +146,7 @@ export function History() {
   const [page, setPage] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [balances, setBalances] = useState<BalanceSummary | null>(null);
+  const { balance } = useBalanceCache();
   const limit = 20;
 
   useEffect(() => {
@@ -144,12 +160,6 @@ export function History() {
       .catch((err) => setError(err instanceof Error ? err.message : '加载成交记录失败'))
       .finally(() => setLoading(false));
   }, [page]);
-
-  useEffect(() => {
-    getBalances()
-      .then(setBalances)
-      .catch(() => setBalances({ polymarket: null, polymarketAccounts: [] }));
-  }, []);
 
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
@@ -189,17 +199,20 @@ export function History() {
           <div className="flex gap-3">
             <BalanceCard
               label="Polymarket（当前）"
-              amount={balances?.polymarket ?? null}
+              amount={balance?.polymarket ?? null}
               accent="text-tm-poly"
+              onRefresh={async () => {
+                await postCacheRefresh();
+              }}
             />
           </div>
-          {(balances?.polymarketAccounts?.length ?? 0) > 0 && (
+          {(balance?.polymarketAccounts?.length ?? 0) > 0 && (
             <div className="rounded-sm border border-tm-bd bg-tm-bg-el px-3 py-2">
               <p className="font-mono text-[9px] font-semibold tracking-[0.2em] text-tm-tx-mut mb-2">
                 各账号 pUSD
               </p>
               <ul className="space-y-1.5">
-                {balances!.polymarketAccounts!.map((row) => (
+                {balance!.polymarketAccounts!.map((row) => (
                   <li key={row.id} className="flex justify-between font-mono text-[11px] text-tm-tx">
                     <span>
                       {row.name}

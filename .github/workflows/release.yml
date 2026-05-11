@@ -79,6 +79,10 @@ jobs:
             target: win
           - os: macos-latest
             target: mac
+            arch: x64
+          - os: macos-latest
+            target: mac
+            arch: arm64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -116,10 +120,10 @@ jobs:
         shell: bash
         run: make dashboard-embed
 
-      - name: Package Desktop (${{ matrix.target }} x64)
+      - name: Package Desktop (${{ matrix.target }} ${{ matrix.arch }})
         working-directory: apps/desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: node scripts/package.mjs --${{ matrix.target }} --x64 --publish always
+        run: node scripts/package.mjs --${{ matrix.target }} --${{ matrix.arch }} --publish always

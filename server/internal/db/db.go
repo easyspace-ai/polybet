@@ -16,7 +16,6 @@ import (
 var migrations embed.FS
 
 func Open(databaseURL string) (*sql.DB, error) {
-	// modernc.org/sqlite expects "file:path" or memory
 	dsn := databaseURL
 	if strings.HasPrefix(dsn, "file:") {
 		if !strings.Contains(dsn, "_pragma=") && !strings.Contains(dsn, "?") {
@@ -73,24 +72,39 @@ func ensureSQLiteParentDir(dsn string) error {
 	return os.MkdirAll(dir, 0o755)
 }
 
+// Migrate applies embedded SQL migrations in order (version 1 = 001_init.sql, etc.).
 func Migrate(ctx context.Context, conn *sql.DB) error {
 	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
 		return fmt.Errorf("schema_migrations: %w (check DATABASE_URL path exists or is writable; SQLite often reports SQLITE_CANTOPEN as 'out of memory')", err)
 	}
 	var v int
 	_ = conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&v)
-	if v >= 1 {
-		return nil
+
+	steps := []struct {
+		version int
+		file    string
+	}{
+		{1, "migrations/001_init.sql"},
+		{2, "migrations/002_events_poly_slug.sql"},
 	}
-	b, err := migrations.ReadFile("migrations/001_init.sql")
-	if err != nil {
-		return err
-	}
-	if _, err := conn.ExecContext(ctx, string(b)); err != nil {
-		return fmt.Errorf("migrate 001: %w", err)
-	}
-	if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES (1)`); err != nil {
-		return err
+	for _, step := range steps {
+		if v >= step.version {
+			continue
+		}
+		if v != step.version-1 {
+			return fmt.Errorf("db migration: expected schema version %d before applying %d, found %d", step.version-1, step.version, v)
+		}
+		b, err := migrations.ReadFile(step.file)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", step.file, err)
+		}
+		if _, err := conn.ExecContext(ctx, string(b)); err != nil {
+			return fmt.Errorf("migrate %d (%s): %w", step.version, step.file, err)
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES (?)`, step.version); err != nil {
+			return fmt.Errorf("schema_migrations insert %d: %w", step.version, err)
+		}
+		v = step.version
 	}
 	return nil
 }

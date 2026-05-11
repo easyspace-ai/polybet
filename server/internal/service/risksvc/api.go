@@ -3,13 +3,16 @@ package risksvc
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/easyspace-ai/polysdk/pkg/clob/clobtypes"
 
+	"github.com/easyspace-ai/polybet/internal/gammaclient"
 	"github.com/easyspace-ai/polybet/internal/polyexec"
 	"github.com/easyspace-ai/polybet/internal/service/polysession"
+	"github.com/easyspace-ai/polybet/internal/store"
 )
 
 const reconcileMinInterval = 60 * time.Second
@@ -24,6 +27,36 @@ type Meta struct {
 	MinOpenRiskShares       float64 `json:"minOpenRiskShares"`
 }
 
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// polymarketLinks builds human-facing Polymarket URLs from local DB sync + live Gamma /markets.
+func polymarketLinks(dm store.RiskDisplayMeta, gm gammaclient.TokenMarketDisplay, title string) (eventURL, searchURL string) {
+	slug := strings.Trim(firstNonEmpty(dm.PolySlug, gm.EventSlug, gm.Slug), "/")
+	if slug != "" {
+		slug = strings.TrimPrefix(slug, "event/")
+		return "https://polymarket.com/event/" + slug, ""
+	}
+	cond := strings.TrimSpace(gm.ConditionID)
+	if strings.HasPrefix(strings.ToLower(cond), "0x") {
+		return "https://polymarket.com/market/" + cond, ""
+	}
+	if id := strings.Trim(strings.TrimSpace(dm.PolyEventID), "/"); id != "" {
+		return "https://polymarket.com/event/" + id, ""
+	}
+	t := strings.TrimSpace(title)
+	if t != "" {
+		return "", "https://polymarket.com/search?q=" + url.QueryEscape(t)
+	}
+	return "", "https://polymarket.com/"
+}
+
 func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta) ([]map[string]any, Meta, error) {
 	meta = s.fillMeta(meta)
 	_ = s.st.NormalizeDustRisk(ctx, 1e-9)
@@ -35,6 +68,18 @@ func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta) ([]m
 	if err != nil {
 		return nil, meta, err
 	}
+	tokens := make([]string, 0, len(rows))
+	for _, p := range rows {
+		if tid := strings.TrimSpace(p.TokenID); tid != "" {
+			tokens = append(tokens, tid)
+		}
+	}
+	disp, derr := s.st.RiskDisplayMetaForPositions(ctx, rows)
+	if derr != nil {
+		s.log.Warn("risk_display_meta", "err", derr.Error())
+		disp = map[string]store.RiskDisplayMeta{}
+	}
+	gammaByTok := s.gammaMetaBatch(ctx, tokens)
 	out := make([]map[string]any, 0, len(rows))
 	for _, p := range rows {
 		if p.SizeShares < min && p.Status == "open" {
@@ -63,8 +108,34 @@ func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta) ([]m
 		}
 		maxPay := p.SizeShares * 1
 		pot := maxPay - p.CostUSD
+		dm := disp[p.TokenID]
+		gm := gammaByTok[p.TokenID]
+		displayTitle := strings.TrimSpace(p.Title)
+		if dm.HomeTeam != "" && dm.AwayTeam != "" {
+			displayTitle = dm.HomeTeam + " vs " + dm.AwayTeam
+		} else if strings.TrimSpace(gm.Question) != "" {
+			displayTitle = gm.Question
+		}
+		sport := firstNonEmpty(dm.Sport, gm.Category)
+		if sport != "" {
+			sport = strings.ToLower(sport)
+		}
+		eventURL, searchURL := polymarketLinks(dm, gm, displayTitle)
+		image := strings.TrimSpace(gm.Image)
+		icon := strings.TrimSpace(gm.Icon)
+		if icon == "" {
+			icon = image
+		}
+		if image == "" {
+			image = icon
+		}
 		m := map[string]any{
 			"id": p.ID, "title": p.Title, "sideLabel": p.SideLabel,
+			"displayTitle": displayTitle, "sport": sport,
+			"officialUrl": eventURL, "officialSearchUrl": searchURL,
+			"imageUrl": image,
+			"iconUrl":  icon,
+			"tokenId": p.TokenID,
 			"avgEntryCents": p.AvgEntryCents, "currentCents": curPtr,
 			"sizeShares": p.SizeShares, "costUsd": p.CostUSD,
 			"highWaterCents": hw, "stopLossPct": p.StopLossPct,

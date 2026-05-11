@@ -14,6 +14,7 @@ const isElectron =
 interface LogEntry {
   time: string;
   level: string;
+  category: string;
   message: string;
 }
 
@@ -58,6 +59,17 @@ export function LogPage() {
     }
   };
 
+  const clearLogs = async () => {
+    if (!confirm("确定要清空所有日志吗？")) return;
+    try {
+      await fetch("/api/logs/clear", { method: "POST" });
+      setLogs([]);
+      setErrors([]);
+    } catch (err) {
+      console.error("Failed to clear logs:", err);
+    }
+  };
+
   useEffect(() => {
     fetchLogs();
     fetchStatus();
@@ -70,7 +82,7 @@ export function LogPage() {
 
   useEffect(() => {
     if (logContainerRef.current) {
-      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+      logContainerRef.current.scrollTop = 0;
     }
   }, [logs, errors]);
 
@@ -93,7 +105,7 @@ export function LogPage() {
     }
   };
 
-  const currentLogs = activeTab === "errors" ? errors : logs;
+  const currentLogs = activeTab === "errors" ? [...errors].reverse() : [...logs].reverse();
 
   const getLevelColor = (level: string) => {
     switch (level) {
@@ -160,6 +172,12 @@ export function LogPage() {
         >
           刷新
         </button>
+        <button
+          onClick={clearLogs}
+          className="px-3 py-2 font-mono text-[10px] text-tm-tx-dim hover:text-tm-neg"
+        >
+          清空
+        </button>
       </div>
 
       {/* Log List */}
@@ -178,6 +196,7 @@ export function LogPage() {
               <span className={`whitespace-nowrap ${getLevelColor(log.level)}`}>
                 [{log.level}]
               </span>
+              <span className="text-sky-400 whitespace-nowrap">{log.category}</span>
               <span className="text-tm-tx break-all">{log.message}</span>
             </div>
           ))

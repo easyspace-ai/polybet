@@ -3,6 +3,7 @@ package tg
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -49,7 +50,14 @@ func Notify(ctx context.Context, cfg *config.Config, st *store.Store, log *slog.
 	}
 	token, chat := ResolveTelegramCreds(ctx, cfg, st)
 	t := strings.TrimSpace(text)
+	log.Info("telegram_notify", "token_set", token != "", "chat_set", chat != "", "proxy", func() string {
+		if cfg != nil {
+			return cfg.HTTPPlatformProxy
+		}
+		return ""
+	}())
 	if token == "" || chat == "" || t == "" {
+		log.Warn("telegram_notify_skipped", "token_empty", token == "", "chat_empty", chat == "", "text_empty", t == "")
 		return
 	}
 	if len([]rune(t)) > maxTelegramMessageRunes {
@@ -69,12 +77,32 @@ func Notify(ctx context.Context, cfg *config.Config, st *store.Store, log *slog.
 			return
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		hc := &http.Client{Timeout: 14 * time.Second}
+		var hc *http.Client
+		proxyUsed := false
+		if cfg != nil && cfg.HTTPPlatformProxy != "" {
+			if proxyURL, err := url.Parse(cfg.HTTPPlatformProxy); err == nil {
+				log.Info("telegram_using_proxy", "proxy", cfg.HTTPPlatformProxy)
+				hc = &http.Client{
+					Timeout: 14 * time.Second,
+					Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+				}
+				proxyUsed = true
+			}
+		}
+		if hc == nil {
+			log.Info("telegram_no_proxy")
+			hc = &http.Client{Timeout: 14 * time.Second}
+		}
 		resp, err := hc.Do(req)
 		if err != nil {
-			log.Warn("telegram_send_failed", "err", err.Error())
+			log.Warn("telegram_send_failed", "err", err.Error(), "proxy_used", proxyUsed)
 			return
 		}
-		resp.Body.Close()
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		log.Info("telegram_response", "status", resp.StatusCode, "body", string(body), "proxy_used", proxyUsed)
+		if resp.StatusCode != 200 {
+			log.Warn("telegram_send_error", "status", resp.StatusCode, "response", string(body))
+		}
 	}(t)
 }

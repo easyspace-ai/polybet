@@ -28,7 +28,8 @@ type Service struct {
 	st      *store.Store
 	cache   *bookcache.Cache
 	log     *slog.Logger
-	closeMu sync.Mutex // serializes ensureCloseTask inserts globally (acceptable for MVP)
+	closeMu sync.Mutex
+	closeLocks   sync.Map // map[string]*sync.Mutex per-position locks for ensureCloseTask
 
 	userWSConnected   atomic.Bool
 	userWSConnecting  atomic.Bool
@@ -36,6 +37,10 @@ type Service struct {
 	restTradesLastMs  atomic.Int64
 	userWSLastIssueMu sync.Mutex
 	userWSLastIssue   string
+
+	// Gamma /markets cache for risk UI (token id → last fetch).
+	gammaMetaMu sync.Mutex
+	gammaMeta   map[string]gammaMetaCache
 }
 
 func New(cfg *config.Config, st *store.Store, cache *bookcache.Cache, log *slog.Logger) *Service {
@@ -157,8 +162,11 @@ func (s *Service) EnqueueClosePosition(ctx context.Context, positionID string) e
 
 // queueReason: "manual" | "stop_loss" | "" (silent, e.g. batch from close_all).
 func (s *Service) ensureCloseTask(ctx context.Context, positionID, queueReason string) error {
-	s.closeMu.Lock()
-	defer s.closeMu.Unlock()
+	lockI, _ := s.closeLocks.LoadOrStore(positionID, &sync.Mutex{})
+	lock := lockI.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+
 	has, err := s.st.FindPendingCloseTask(ctx, positionID)
 	if err != nil {
 		s.log.Warn("risk_close_task_lookup_failed", "position_id", positionID, "err", err.Error())
@@ -232,49 +240,107 @@ func (s *Service) ProcessRiskTasksOnce(ctx context.Context) error {
 	if len(tasks) == 0 {
 		return nil
 	}
+
 	cl, err := polysession.ResolveAuthedCLOB(ctx, s.cfg, s.st)
 	if err != nil {
 		s.log.Warn("risk_task_batch_skip_no_clob", "task_count", len(tasks), "err", err.Error())
 		return err
 	}
-	s.log.Info("risk_task_batch_start", "count", len(tasks))
+
 	sellExtra := s.st.GetBotConfigInt(ctx, "polymarketFokSellExtraTicks", 5)
-	for i := range tasks {
-		t := tasks[i]
-		_ = s.st.SetRiskTaskRunning(ctx, t.ID)
-		var runErr error
-		logOk := true
-		switch t.Type {
-		case "close_position":
-			if t.PositionID.Valid {
-				s.log.Info("risk_task_run", "task_id", t.ID, "type", t.Type, "position_id", t.PositionID.String, "attempts", t.Attempts)
-				runErr = s.runClosePosition(ctx, cl, t.ID, t.PositionID.String, sellExtra)
-			}
-		case "close_all":
-			s.log.Info("risk_task_run", "task_id", t.ID, "type", t.Type, "attempts", t.Attempts)
-			runErr = s.runCloseAll(ctx, t.ID)
-		default:
-			logOk = false
-			s.log.Warn("risk_task_unknown_type", "task_id", t.ID, "type", t.Type)
-			_ = s.st.SetRiskTaskFailed(ctx, t.ID, t.Attempts+1, "unknown_task_type:"+t.Type, time.Now().UTC().Add(24*time.Hour))
-			runErr = nil
+	concurrency := s.st.GetBotConfigInt(ctx, "closeTaskConcurrency", 10)
+	if concurrency <= 0 {
+		concurrency = 10
+	}
+
+	s.log.Info("risk_task_batch_start", "count", len(tasks), "concurrency", concurrency)
+
+	// 按类型分组：close_all 串行执行（它内部会创建任务），close_position 并发执行
+	var closeAllTasks []store.RiskTask
+	var closePosTasks []store.RiskTask
+	for _, t := range tasks {
+		if t.Type == "close_all" {
+			closeAllTasks = append(closeAllTasks, t)
+		} else {
+			closePosTasks = append(closePosTasks, t)
 		}
+	}
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, concurrency)
+	mu := sync.Mutex{}
+	completed, failed := 0, 0
+
+	// 并发执行 close_position 任务
+	runClosePosTask := func(t store.RiskTask) {
+		defer wg.Done()
+		sem <- struct{}{}
+		defer func() { <-sem }()
+
+		_ = s.st.SetRiskTaskRunning(ctx, t.ID)
+		s.log.Info("risk_task_run", "task_id", t.ID, "type", t.Type, "position_id", t.PositionID.String, "attempts", t.Attempts)
+
+		runErr := s.runClosePosition(ctx, cl, t.ID, t.PositionID.String, sellExtra)
 		if runErr != nil {
 			att := t.Attempts + 1
 			delay := closeRetryMs(att)
-			if t.Type != "close_position" {
-				delay = defaultBackoffMs(att)
-			}
 			msg := runErr.Error()
 			if len(msg) > 2000 {
 				msg = msg[:2000]
 			}
 			s.log.Warn("risk_task_failed", "task_id", t.ID, "type", t.Type, "next_attempt", att, "retry_delay_ms", delay, "err", msg)
 			_ = s.st.SetRiskTaskFailed(ctx, t.ID, att, msg, time.Now().UTC().Add(time.Duration(delay)*time.Millisecond))
-		} else if logOk {
+			mu.Lock()
+			failed++
+			mu.Unlock()
+		} else {
 			s.log.Info("risk_task_ok", "task_id", t.ID, "type", t.Type)
+			mu.Lock()
+			completed++
+			mu.Unlock()
 		}
 	}
+
+	for _, t := range closePosTasks {
+		wg.Add(1)
+		go runClosePosTask(t)
+	}
+
+	// 串行执行 close_all 任务
+	for _, t := range closeAllTasks {
+		wg.Add(1)
+		go func(t store.RiskTask) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			_ = s.st.SetRiskTaskRunning(ctx, t.ID)
+			s.log.Info("risk_task_run", "task_id", t.ID, "type", t.Type, "attempts", t.Attempts)
+
+			runErr := s.runCloseAll(ctx, t.ID)
+			if runErr != nil {
+				att := t.Attempts + 1
+				delay := defaultBackoffMs(att)
+				msg := runErr.Error()
+				if len(msg) > 2000 {
+					msg = msg[:2000]
+				}
+				s.log.Warn("risk_task_failed", "task_id", t.ID, "type", t.Type, "next_attempt", att, "retry_delay_ms", delay, "err", msg)
+				_ = s.st.SetRiskTaskFailed(ctx, t.ID, att, msg, time.Now().UTC().Add(time.Duration(delay)*time.Millisecond))
+				mu.Lock()
+				failed++
+				mu.Unlock()
+			} else {
+				s.log.Info("risk_task_ok", "task_id", t.ID, "type", t.Type)
+				mu.Lock()
+				completed++
+				mu.Unlock()
+			}
+		}(t)
+	}
+
+	wg.Wait()
+	s.log.Info("risk_task_batch_done", "completed", completed, "failed", failed)
 	return nil
 }
 
@@ -318,16 +384,43 @@ func (s *Service) runCloseAll(ctx context.Context, taskID string) error {
 		return err
 	}
 	s.log.Info("risk_close_all_run", "task_id", taskID, "open_positions", len(rows), "min_shares", min)
-	for _, p := range rows {
-		_ = s.ensureCloseTask(ctx, p.ID, "")
+	if len(rows) == 0 {
+		return s.st.SetRiskTaskSucceeded(ctx, taskID)
 	}
+
+	// 并发创建平仓任务
+	concurrency := s.st.GetBotConfigInt(ctx, "closeAllConcurrency", 20)
+	if concurrency <= 0 {
+		concurrency = 20
+	}
+	sem := make(chan struct{}, concurrency)
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var failed int
+
+	for _, p := range rows {
+		wg.Add(1)
+		go func(positionID string) {
+			defer wg.Done()
+			sem <- struct{}{}        // 获取信号量
+			defer func() { <-sem }() // 释放
+
+			if err := s.ensureCloseTask(ctx, positionID, ""); err != nil {
+				mu.Lock()
+				failed++
+				mu.Unlock()
+				s.log.Warn("risk_close_all_task_failed", "position_id", positionID, "err", err.Error())
+			}
+		}(p.ID)
+	}
+	wg.Wait()
+
 	if err := s.st.SetRiskTaskSucceeded(ctx, taskID); err != nil {
 		return err
 	}
-	s.log.Info("risk_close_all_done", "task_id", taskID, "enqueued_closes", len(rows))
-	if len(rows) > 0 {
-		tg.Notify(ctx, s.cfg, s.st, s.log, fmt.Sprintf("Polybet 一键平仓\n已为 %d 个持仓创建平仓任务", len(rows)))
-	}
+	s.log.Info("risk_close_all_done", "task_id", taskID, "enqueued_closes", len(rows)-failed, "failed", failed)
+	tg.Notify(ctx, s.cfg, s.st, s.log, fmt.Sprintf("Polybet 一键平仓\n已为 %d 个持仓创建平仓任务", len(rows)-failed))
 	return nil
 }
 
@@ -384,7 +477,13 @@ func (s *Service) ApplyClobTradeIfNew(ctx context.Context, trade struct {
 		}
 		title := "Polymarket"
 		if trade.Market != "" {
-			title = "CLOB " + trade.Market[:minInt(len(trade.Market), 10)]
+			m := strings.TrimSpace(trade.Market)
+			// User-channel payloads sometimes carry the full market question; keep it readable.
+			if len(m) > 48 && !strings.HasPrefix(strings.ToLower(m), "0x") {
+				title = m
+			} else {
+				title = "CLOB " + m[:minInt(len(m), 12)]
+			}
 		}
 		sideLabel := trade.Outcome
 		if sideLabel == "" {

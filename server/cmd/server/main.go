@@ -29,7 +29,7 @@ func main() {
 	}
 	sqlDB, err := db.Open(cfg.DatabaseURL)
 	if err != nil {
-		slog.Error("db", "err", err)
+		slog.Error("db 1", "err", err)
 		os.Exit(1)
 	}
 	defer sqlDB.Close()

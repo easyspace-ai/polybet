@@ -32,10 +32,16 @@ func registerWS(r *gin.Engine, d Deps) {
 			ra = conn.RemoteAddr().String()
 		}
 		slog.Info("ws_dash_open", "request_id", rid, "remote_addr", ra)
+		if d.LogService != nil {
+			d.LogService.Info("WebSocket", "Dashboard 连接: "+ra)
+		}
 		d.Hub.Register(conn)
 		defer func() {
 			d.Hub.Unregister(conn)
 			slog.Info("ws_dash_close", "request_id", rid, "remote_addr", ra)
+			if d.LogService != nil {
+				d.LogService.Info("WebSocket", "Dashboard 断开: "+ra)
+			}
 		}()
 
 		meta := risksvc.Meta{OutboundProxyConfigured: d.Cfg.HTTPPlatformProxy != ""}
@@ -62,6 +68,9 @@ func registerWS(r *gin.Engine, d Deps) {
 			}
 			ty, _ := m["type"].(string)
 			switch ty {
+			case "ping":
+				conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+				continue
 			case "subscribePolyBook":
 				tid, _ := m["tokenId"].(string)
 				if tid != "" {

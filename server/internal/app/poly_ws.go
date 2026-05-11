@@ -49,6 +49,9 @@ func (a *App) polyWSLoop(ctx context.Context) {
 			continue
 		}
 		a.Log.Info("poly_ws_subscribed", "token_count", len(ids))
+		if a.LogService != nil {
+			a.LogService.Info("WebSocket", "Polymarket 盘口连接成功")
+		}
 		for {
 			select {
 			case <-subCtx.Done():
@@ -70,6 +73,9 @@ func (a *App) polyWSLoop(ctx context.Context) {
 			}
 		}
 	reconnect:
+		if a.LogService != nil {
+			a.LogService.Warn("WebSocket", "Polymarket 盘口断开, 正在重连...")
+		}
 		time.Sleep(2 * time.Second)
 	}
 }

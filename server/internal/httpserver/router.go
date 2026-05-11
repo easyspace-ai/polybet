@@ -3,8 +3,11 @@ package httpserver
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -15,7 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/easyspace-ai/polybet/internal/homesettings"
+	"github.com/easyspace-ai/polybet/internal/tg"
 	"github.com/easyspace-ai/polybet/internal/polyprov"
 	"github.com/easyspace-ai/polybet/internal/rediska"
 	"github.com/easyspace-ai/polybet/internal/service/marketsvc"
@@ -197,6 +200,9 @@ func NewRouter(d Deps) *gin.Engine {
 				return
 			}
 			slog.Info("trade_request", "request_id", rid, "outcome_id", body.OutcomeID, "side", body.Side, "size", body.Size)
+			if d.LogService != nil {
+				d.LogService.Info("交易", fmt.Sprintf("用户下单: %s $%.2f", body.OutcomeID, body.Size))
+			}
 			res := routersvc.BuildAllocationPlan(c, d.Store, d.Cache, body.OutcomeID, body.Side, body.Size)
 			if !res.OK {
 				st := mapRouterErr(res.Error)
@@ -214,6 +220,9 @@ func NewRouter(d Deps) *gin.Engine {
 			resp, code, err := tradesvc.ExecutePlan(c, d.Cfg, d.Store, d.Cache, d.Risk, res.Plan, body.Side)
 			if err != nil {
 				slog.Error("trade_execute_error", "request_id", rid, "outcome_id", body.OutcomeID, "err", err.Error())
+				if d.LogService != nil {
+					d.LogService.Error("交易", fmt.Sprintf("执行失败: %s", err.Error()))
+				}
 				c.JSON(500, gin.H{"error": "trade_failed", "message": err.Error()})
 				return
 			}
@@ -224,6 +233,19 @@ func NewRouter(d Deps) *gin.Engine {
 			} else {
 				slog.Info("trade_execute_done", "request_id", rid, "outcome_id", body.OutcomeID, "http_status", code,
 					"response_status", resp.Status, "trades", tradeResultsLog(resp.Trades))
+			}
+			if d.LogService != nil {
+				filled := 0
+				for _, t := range resp.Trades {
+					if t.Status == "filled" {
+						filled++
+					}
+				}
+				if filled > 0 {
+					d.LogService.Info("交易", fmt.Sprintf("成交 %d/%d 笔, 状态: %s", filled, len(resp.Trades), resp.Status))
+				} else {
+					d.LogService.Warn("交易", fmt.Sprintf("下单失败: %s", resp.Message))
+				}
 			}
 			c.JSON(code, resp)
 		})
@@ -270,8 +292,58 @@ func NewRouter(d Deps) *gin.Engine {
 				c.JSON(500, gin.H{"error": "update_failed"})
 				return
 			}
-			snapshotHomeBotSettings(c.Request.Context(), d.Store)
 			c.JSON(200, gin.H{"key": c.Param("key"), "value": body.Value})
+		})
+
+		api.POST("/telegram/test", func(c *gin.Context) {
+			token, chat := tg.ResolveTelegramCreds(c, d.Cfg, d.Store)
+			rid := c.GetString("request_id")
+			slog.Info("telegram_test_request", "request_id", rid, "token_set", token != "", "chat_set", chat != "", "proxy", d.Cfg.HTTPPlatformProxy)
+			if token == "" || chat == "" {
+				c.JSON(400, gin.H{"error": "telegram_not_configured", "message": "请先配置 Bot Token 和 Chat ID"})
+				return
+			}
+			ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+			defer cancel()
+			form := url.Values{}
+			form.Set("chat_id", chat)
+			form.Set("text", "hello, 我是你的polymarket. 助手")
+			u := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", url.PathEscape(token))
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(form.Encode()))
+			if err != nil {
+				slog.Warn("telegram_test_request_create_failed", "request_id", rid, "err", err.Error())
+				c.JSON(500, gin.H{"error": "request_failed", "message": err.Error()})
+				return
+			}
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			var hc *http.Client
+			if d.Cfg.HTTPPlatformProxy != "" {
+				if proxyURL, err := url.Parse(d.Cfg.HTTPPlatformProxy); err == nil {
+					slog.Info("telegram_test_using_proxy", "request_id", rid, "proxy", d.Cfg.HTTPPlatformProxy)
+					hc = &http.Client{
+						Timeout: 14 * time.Second,
+						Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+					}
+				}
+			}
+			if hc == nil {
+				slog.Info("telegram_test_no_proxy", "request_id", rid)
+				hc = &http.Client{Timeout: 14 * time.Second}
+			}
+			resp, err := hc.Do(req)
+			if err != nil {
+				slog.Warn("telegram_test_send_failed", "request_id", rid, "err", err.Error())
+				c.JSON(502, gin.H{"error": "send_failed", "message": err.Error()})
+				return
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			slog.Info("telegram_test_response", "request_id", rid, "status", resp.StatusCode, "body", string(body))
+			if resp.StatusCode != 200 {
+				c.JSON(502, gin.H{"error": "telegram_api_error", "message": fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body))})
+				return
+			}
+			c.JSON(200, gin.H{"ok": true, "message": "测试消息已发送"})
 		})
 
 		api.GET("/balances", func(c *gin.Context) {
@@ -361,6 +433,7 @@ func NewRouter(d Deps) *gin.Engine {
 				return
 			}
 			polysession.InvalidateEnvCache()
+			d.BalanceCache.Invalidate(c)
 			c.JSON(201, gin.H{"id": ac.ID, "name": ac.Name, "funderAddress": ac.FunderAddress, "isActive": ac.IsActive})
 		})
 
@@ -374,6 +447,7 @@ func NewRouter(d Deps) *gin.Engine {
 				return
 			}
 			polysession.InvalidateEnvCache()
+			d.BalanceCache.Invalidate(c)
 			c.JSON(200, gin.H{"ok": true, "id": c.Param("id")})
 		})
 
@@ -384,6 +458,7 @@ func NewRouter(d Deps) *gin.Engine {
 			}
 			_ = d.Store.DeletePolymarketAccount(c, c.Param("id"))
 			polysession.InvalidateEnvCache()
+			d.BalanceCache.Invalidate(c)
 			c.Status(204)
 		})
 
@@ -568,7 +643,6 @@ func NewRouter(d Deps) *gin.Engine {
 
 		api.POST("/setup/complete", func(c *gin.Context) {
 			_ = d.Store.UpsertBotConfig(c, "onboardingComplete", "true")
-			snapshotHomeBotSettings(c.Request.Context(), d.Store)
 			c.JSON(200, gin.H{"ok": true})
 		})
 
@@ -591,6 +665,15 @@ func NewRouter(d Deps) *gin.Engine {
 			c.JSON(200, gin.H{"logs": logs})
 		})
 
+		api.POST("/logs/clear", func(c *gin.Context) {
+			if d.LogService == nil {
+				c.JSON(500, gin.H{"error": "log_service_not_available"})
+				return
+			}
+			d.LogService.Clear()
+			c.JSON(200, gin.H{"ok": true})
+		})
+
 		// Status endpoints
 		api.GET("/status", func(c *gin.Context) {
 			if d.InitService == nil {
@@ -609,6 +692,14 @@ func NewRouter(d Deps) *gin.Engine {
 			})
 		})
 
+		// Cache refresh endpoint
+		api.POST("/cache/refresh", func(c *gin.Context) {
+			if d.App != nil {
+				d.App.InvalidateAndRebuildCache()
+			}
+			c.JSON(200, gin.H{"ok": true, "message": "cache_refreshed"})
+		})
+
 		// Restart endpoint
 		api.POST("/restart", func(c *gin.Context) {
 			go func() {
@@ -624,12 +715,6 @@ func NewRouter(d Deps) *gin.Engine {
 	registerWS(r, d)
 	webui.Mount(r)
 	return r
-}
-
-func snapshotHomeBotSettings(ctx context.Context, st *store.Store) {
-	if err := homesettings.SnapshotToFile(ctx, st); err != nil {
-		slog.Warn("home_bot_settings_snapshot_failed", "err", err.Error())
-	}
 }
 
 func mapRouterErr(e *routersvc.RouterError) int {
@@ -652,7 +737,7 @@ func riskRowFromPosition(p *store.RiskPosition) gin.H {
 	hw := p.HighWaterCents
 	trail := hw * (1 - p.StopLossPct/100)
 	return gin.H{
-		"id": p.ID, "title": p.Title, "sideLabel": p.SideLabel,
+		"id": p.ID, "title": p.Title, "sideLabel": p.SideLabel, "tokenId": p.TokenID,
 		"avgEntryCents": p.AvgEntryCents, "currentCents": nil,
 		"sizeShares": p.SizeShares, "costUsd": p.CostUSD,
 		"highWaterCents": hw, "stopLossPct": p.StopLossPct, "trailingStopCents": trail,

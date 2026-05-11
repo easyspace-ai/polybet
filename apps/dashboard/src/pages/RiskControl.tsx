@@ -1,14 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  getRiskPositions,
-  getRiskTasks,
   patchRiskPosition,
   postRiskCloseAll,
   postRiskClosePosition,
-  type RiskPositionRow,
-  type RiskPositionsMeta,
-  type RiskTaskRow,
 } from '../lib/api';
+import { useRiskControlCache } from '../hooks/useRiskControlCache';
+import { postCacheRefresh } from '../lib/api';
 import { toast } from '../components/ui/use-toast';
 import { cn } from '../lib/utils';
 
@@ -44,37 +41,30 @@ function sourceLabel(source: string | undefined): string {
   return source ?? '—';
 }
 
+/** Small emoji tile — Gamma sport string is best-effort (nba, nfl, …). */
+function sportEmoji(sport: string | undefined): string {
+  const s = (sport ?? '').toLowerCase();
+  if (!s) return '📊';
+  if (s.includes('nba') || s.includes('basket') || s.includes('wnba') || s.includes('ncaa')) return '🏀';
+  if (s.includes('nfl') || s.includes('football')) return '🏈';
+  if (s.includes('nhl') || s.includes('hockey')) return '🏒';
+  if (s.includes('mlb') || s.includes('baseball')) return '⚾';
+  if (s.includes('soccer') || s.includes('epl') || s.includes('mls') || s.includes('fifa')) return '⚽';
+  if (s.includes('mma') || s.includes('ufc')) return '🥊';
+  if (s.includes('tennis')) return '🎾';
+  if (s.includes('golf')) return '⛳';
+  if (s.includes('crypto') || s.includes('btc') || s.includes('eth')) return '◆';
+  return '📊';
+}
+
 export function RiskControl() {
-  const [positions, setPositions] = useState<RiskPositionRow[]>([]);
-  const [meta, setMeta] = useState<RiskPositionsMeta | null>(null);
-  const [tasks, setTasks] = useState<RiskTaskRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { positions, meta, tasks, loading, refresh } = useRiskControlCache();
   const [error, setError] = useState<string | null>(null);
   const [closingId, setClosingId] = useState<string | null>(null);
   const [closingAll, setClosingAll] = useState(false);
   /** Draft inputs keyed by position id — reset when `positions` refresh. */
   const [drafts, setDrafts] = useState<Record<string, { sl: string; hw: string }>>({});
   const [patchingKey, setPatchingKey] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      const [p, t] = await Promise.all([getRiskPositions(), getRiskTasks(50)]);
-      setPositions(p.positions);
-      setMeta(p.meta ?? null);
-      setTasks(t.tasks);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '加载失败');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-    const id = setInterval(() => void load(), 5000);
-    return () => clearInterval(id);
-  }, [load]);
 
   useEffect(() => {
     const next: Record<string, { sl: string; hw: string }> = {};
@@ -89,7 +79,7 @@ export function RiskControl() {
     try {
       await postRiskClosePosition(id);
       toast({ title: '已排队', description: '平仓任务已加入队列（失败会自动重试）', variant: 'success' });
-      await load();
+      refresh();
     } catch (e) {
       toast({
         title: '失败',
@@ -113,7 +103,7 @@ export function RiskControl() {
     try {
       await patchRiskPosition(id, { stopLossPct: n });
       toast({ title: '已更新', description: `止损% = ${n}`, variant: 'success' });
-      await load();
+      refresh();
     } catch (e) {
       toast({
         title: '失败',
@@ -137,7 +127,7 @@ export function RiskControl() {
     try {
       await patchRiskPosition(id, { highWaterCents: n });
       toast({ title: '已更新', description: `最高水位 = ${n}¢`, variant: 'success' });
-      await load();
+      refresh();
     } catch (e) {
       toast({
         title: '失败',
@@ -154,7 +144,7 @@ export function RiskControl() {
     try {
       await postRiskCloseAll();
       toast({ title: '已排队', description: '已为所有持仓创建平仓任务', variant: 'success' });
-      await load();
+      refresh();
     } catch (e) {
       toast({
         title: '失败',
@@ -173,6 +163,16 @@ export function RiskControl() {
         <span className="font-mono text-[10px] font-semibold tracking-[0.2em] text-tm-tx-dim">
           风控
         </span>
+        <button
+          type="button"
+          onClick={async () => {
+            await postCacheRefresh();
+          }}
+          className="font-mono text-[10px] text-tm-tx-mut hover:text-tm-tx"
+          title="刷新持仓"
+        >
+          ↻
+        </button>
         <button
           type="button"
           disabled={closingAll || positions.length === 0}
@@ -283,11 +283,10 @@ export function RiskControl() {
 
         {positions.length > 0 && (
           <div className="overflow-x-auto rounded-sm border border-tm-bd">
-            <table className="w-full min-w-[1120px] border-collapse font-mono text-[10px]">
+            <table className="w-full min-w-[1040px] border-collapse font-mono text-[10px]">
               <thead>
                 <tr className="border-b border-tm-bd bg-tm-bg-el text-tm-tx-mut text-left">
-                  <th className="px-2 py-2 font-semibold">盘口</th>
-                  <th className="px-2 py-2 font-semibold w-[72px]">来源</th>
+                  <th className="px-2 py-2 font-semibold min-w-[260px]">市场</th>
                   <th className="px-2 py-2 font-semibold">均价 → 当前</th>
                   <th className="px-2 py-2 font-semibold">份额</th>
                   <th className="px-2 py-2 font-semibold">成本</th>
@@ -305,17 +304,84 @@ export function RiskControl() {
                     row.pnlUsd != null && row.costUsd > 0
                       ? (row.pnlUsd / row.costUsd) * 100
                       : null;
+                  const display = (row.displayTitle?.trim() || row.title).trim();
+                  const polyHref =
+                    (row.officialUrl?.trim() || row.officialSearchUrl?.trim() || '') || null;
+                  const artImg = row.imageUrl?.trim() || '';
+                  const artIcon = row.iconUrl?.trim() || '';
+                  const artUrls =
+                    artImg && artIcon && artImg !== artIcon
+                      ? [artImg, artIcon]
+                      : [artImg || artIcon].filter(Boolean);
                   return (
                     <tr key={row.id} className="border-b border-tm-bd/80 hover:bg-tm-bg-el/40">
                       <td className="px-2 py-2 align-top">
-                        <div className="text-tm-tx font-semibold leading-snug max-w-[220px]">{row.title}</div>
-                        <div className="mt-0.5 text-tm-tx-dim">{row.sideLabel}</div>
-                        {row.status === 'closing' && (
-                          <span className="mt-1 inline-block text-[9px] text-amber-400">平仓中…</span>
-                        )}
-                      </td>
-                      <td className="px-2 py-2 text-tm-tx-dim whitespace-nowrap align-top">
-                        {sourceLabel(row.source)}
+                        <div className="flex gap-2.5 min-w-0 max-w-[360px]">
+                          <div
+                            className={cn(
+                              'relative flex h-10 shrink-0 items-center justify-center overflow-hidden rounded-md border border-tm-bd bg-tm-bg-el text-[17px] leading-none',
+                              artUrls.length > 1 ? 'w-[42px] gap-px' : 'w-10',
+                            )}
+                            title={row.sport ? `运动: ${row.sport}` : '市场'}
+                          >
+                            {artUrls.length === 0 && (
+                              <span
+                                className="absolute inset-0 flex items-center justify-center"
+                                aria-hidden
+                              >
+                                {sportEmoji(row.sport)}
+                              </span>
+                            )}
+                            {artUrls.length > 0 && (
+                              <div className="relative z-10 flex h-full w-full min-w-0">
+                                {artUrls.map((src) => (
+                                  <img
+                                    key={src}
+                                    src={src}
+                                    alt=""
+                                    className="h-full min-w-0 flex-1 object-cover"
+                                    loading="lazy"
+                                    referrerPolicy="no-referrer"
+                                    onError={(e) => {
+                                      e.currentTarget.remove();
+                                    }}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="min-w-0">
+                              {polyHref ? (
+                                <a
+                                  href={polyHref}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-[11px] font-semibold leading-snug text-tm-accent underline decoration-tm-bd/80 underline-offset-2 hover:text-sky-300 hover:decoration-sky-400/60"
+                                  title="在 Polymarket 打开"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  {display}
+                                </a>
+                              ) : (
+                                <div className="text-[11px] font-semibold leading-snug text-tm-tx">{display}</div>
+                              )}
+                            </div>
+                            <div className="mt-1 inline-flex max-w-full flex-wrap items-baseline gap-x-1 gap-y-0 rounded-md border border-rose-500/25 bg-rose-500/10 px-1.5 py-0.5 text-[9px] font-medium text-rose-100/95">
+                              <span>{row.sideLabel}</span>
+                              <span className="text-tm-tx-mut">{fmtCents(row.avgEntryCents)}</span>
+                              <span>
+                                {row.sizeShares.toFixed(1)} 份额
+                              </span>
+                            </div>
+                            {!(polyHref && row.source === 'polymarket_clob') && (
+                              <div className="mt-1 text-[9px] text-tm-tx-dim">{sourceLabel(row.source)}</div>
+                            )}
+                            {row.status === 'closing' && (
+                              <span className="mt-1 inline-block text-[9px] text-amber-400">平仓中…</span>
+                            )}
+                          </div>
+                        </div>
                       </td>
                       <td className="px-2 py-2 text-tm-tx whitespace-nowrap">
                         {fmtCents(row.avgEntryCents)}

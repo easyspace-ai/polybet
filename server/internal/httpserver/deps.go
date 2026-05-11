@@ -27,4 +27,5 @@ type Deps struct {
 	RiskCache     *rediska.RiskCache
 	InitService   *initsvc.Service
 	LogService    *logsvc.Service
+	App           interface{ InvalidateAndRebuildCache() }
 }

@@ -188,6 +188,7 @@ func quoteFromMoneyline12(ev gammaEvent, lg League) (*domain.MarketQuote, error)
 		BetType:     "12",
 		MainLine:    true,
 		PolyEventID: ev.ID,
+		PolySlug:    strings.TrimSpace(ev.Slug),
 		Outcomes: []domain.OutcomeOdds{
 			{
 				Label:       homeLabel,

@@ -206,8 +206,22 @@ export const getMarketStats = () => apiFetch<MarketStatsResponse>('/api/stats/ma
 
 export interface RiskPositionRow {
   id: string;
+  /** Raw title stored on the position (may be CLOB shorthand). */
   title: string;
+  /** Human-friendly event title when synced from Gamma (e.g. "Team A vs Team B"). */
+  displayTitle?: string;
+  /** Lowercase sport hint from Gamma (e.g. nba, nfl) for UI icon. */
+  sport?: string;
+  /** Primary Polymarket event URL when slug/event id is known. */
+  officialUrl?: string;
+  /** Fallback search on polymarket.com when no direct event link. */
+  officialSearchUrl?: string;
+  /** Polymarket/Gamma `image` (cover) when available. */
+  imageUrl?: string;
+  /** Polymarket/Gamma `icon`; often same as imageUrl. */
+  iconUrl?: string;
   sideLabel: string;
+  tokenId: string;
   avgEntryCents: number;
   currentCents: number | null;
   sizeShares: number;
@@ -282,6 +296,11 @@ export const putConfig = (key: string, value: string) =>
     body: JSON.stringify({ value }),
   });
 
+export const testTelegram = () =>
+  apiFetch<{ ok: boolean; message: string }>('/api/telegram/test', {
+    method: 'POST',
+  });
+
 export interface SetupStatus {
   needsOnboarding: boolean;
   proxyConfigured: boolean;
@@ -292,3 +311,6 @@ export const getSetupStatus = () => apiFetch<SetupStatus>('/api/setup/status');
 
 export const postSetupComplete = () =>
   apiFetch<{ ok: boolean }>('/api/setup/complete', { method: 'POST' });
+
+export const postCacheRefresh = () =>
+  apiFetch<{ ok: boolean; message: string }>('/api/cache/refresh', { method: 'POST' });

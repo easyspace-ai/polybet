@@ -21,6 +21,11 @@ asarUnpack:
   - node_modules/which
   - node_modules/isexe
   - node_modules/cross-spawn
+extraResources:
+  - from: resources/sounds
+    to: sounds
+    filter:
+      - "**/*.mp3"
 mac:
   # Disable signing for local dev builds - set CSC_IDENTITY_AUTO_DISCOVERY
   # or CODE_SIGNING_KEYCHAIN in CI to enable

@@ -17,6 +17,7 @@ import { RiskControl } from './pages/RiskControl';
 import { Setup } from './pages/Setup';
 import { LogPage } from './pages/log-page';
 import { getSetupStatus, type SetupStatus } from './lib/api';
+import { useSoundNotifications } from './hooks/useSoundNotifications';
 
 const isPublic = import.meta.env.VITE_PUBLIC_MODE === 'true';
 
@@ -225,6 +226,7 @@ function OnboardingGate() {
 }
 
 export default function App() {
+  useSoundNotifications();
   return (
     <BrowserRouter>
       <Routes>

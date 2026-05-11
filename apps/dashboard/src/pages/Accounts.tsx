@@ -6,10 +6,9 @@ import {
   createPolymarketAccount,
   activatePolymarketAccount,
   deletePolymarketAccount,
-  getBalances,
   type PolymarketAccountListItem,
-  type PolymarketAccountBalanceRow,
 } from '../lib/api';
+import { useBalanceCache } from '../hooks/useBalanceCache';
 import { cn } from '../lib/utils';
 
 function formatUsd(n: number): string {
@@ -18,22 +17,21 @@ function formatUsd(n: number): string {
 
 export function Accounts() {
   const [accounts, setAccounts] = useState<PolymarketAccountListItem[]>([]);
-  const [balances, setBalances] = useState<PolymarketAccountBalanceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const { balance, refresh: refreshBalance } = useBalanceCache();
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [list, bal] = await Promise.all([listPolymarketAccounts(), getBalances()]);
+      const list = await listPolymarketAccounts();
       setAccounts(list);
-      setBalances(bal.polymarketAccounts ?? []);
     } catch (err) {
       toast({
         title: '加载失败',
-        description: err instanceof Error ? err.message : '无法读取账号或余额',
+        description: err instanceof Error ? err.message : '无法读取账号',
         variant: 'destructive',
       });
     } finally {
@@ -45,7 +43,9 @@ export function Accounts() {
     void load();
   }, [load]);
 
-  const balanceById = new Map(balances.map((b) => [b.id, b.polymarket]));
+  const balanceById = new Map(
+    (balance?.polymarketAccounts ?? []).map((b) => [b.id, b.polymarket]),
+  );
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -63,6 +63,7 @@ export function Accounts() {
       setName('');
       setPrivateKey('');
       await load();
+      refreshBalance();
     } catch (err) {
       toast({
         title: '添加失败',
@@ -79,6 +80,7 @@ export function Accounts() {
       await activatePolymarketAccount(id);
       toast({ title: '已切换', description: '后续下单将使用该账号', variant: 'success' });
       await load();
+      refreshBalance();
     } catch (err) {
       toast({
         title: '切换失败',
@@ -94,6 +96,7 @@ export function Accounts() {
       await deletePolymarketAccount(id);
       toast({ title: '已删除', variant: 'default' });
       await load();
+      refreshBalance();
     } catch (err) {
       toast({
         title: '删除失败',

@@ -11,7 +11,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/store"
 )
 
-const balanceCacheTTL = 10 * time.Second
+const balanceCacheTTL = 1 * time.Hour
 const balanceKey = "balance:summary"
 
 type BalanceCache struct {
@@ -44,6 +44,24 @@ func (b *BalanceCache) Get(ctx context.Context) (*balancesvc.Summary, bool, erro
 		b.log.Warn("balance_cache_get", "err", err)
 	}
 	return &summary, found, nil
+}
+
+func (b *BalanceCache) Invalidate(ctx context.Context) {
+	if b == nil || b.cache == nil {
+		return
+	}
+	if err := b.cache.Delete(ctx, balanceKey); err != nil {
+		b.log.Warn("balance_cache_invalidate", "err", err)
+	} else {
+		b.log.Info("balance_cache_invalidated")
+	}
+}
+
+func (b *BalanceCache) Set(ctx context.Context, summary *balancesvc.Summary) error {
+	if b == nil || b.cache == nil {
+		return nil
+	}
+	return b.cache.Set(ctx, balanceKey, summary, balanceCacheTTL)
 }
 
 func (b *BalanceCache) RefreshAsync(ctx context.Context) {

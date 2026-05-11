@@ -1,21 +1,14 @@
 import { useState, useEffect, useCallback, Fragment } from 'react';
-import { getConfig, putConfig, type ConfigRow } from '../lib/api';
+import { getConfig, putConfig, testTelegram, type ConfigRow } from '../lib/api';
 import { toast } from '../components/ui/use-toast';
 import { cn } from '../lib/utils';
-import { useOddsFormat } from '../hooks/useOddsFormat';
 import { useTheme, type Theme } from '../hooks/useTheme';
-import { type OddsFormat } from '../lib/oddsFormat';
+import { useSoundSettings } from '../hooks/useSoundSettings';
 import { Trash2, RefreshCw, Download, CheckCircle } from 'lucide-react';
 import {
   DEFAULT_EVENT_CLASSIFICATION_TAGS,
   parseEventClassificationTags,
 } from '../lib/eventClassification';
-
-const ODDS_FORMAT_OPTIONS: { value: OddsFormat; label: string }[] = [
-  { value: 'decimal', label: '欧赔' },
-  { value: 'american', label: '美式' },
-  { value: 'percent', label: '概率' },
-];
 
 const RESERVED_CONFIG_KEYS = new Set([
   'httpPlatformProxyUrl',
@@ -45,7 +38,7 @@ const DEFAULT_PRICE_ROWS: PriceStopLossRangeRow[] = [
   { id: 'r6', name: '70-80¢', minCents: 70, maxCents: 80, fundPct: 16, stopLossPct: 20 },
 ];
 
-type SettingsTab = 'general' | 'proxy' | 'telegram' | 'tags' | 'prices' | 'version';
+type SettingsTab = 'general' | 'proxy' | 'telegram' | 'tags' | 'prices' | 'sound' | 'version';
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: 'general', label: '通用 / 路由' },
@@ -53,40 +46,9 @@ const TABS: { id: SettingsTab; label: string }[] = [
   { id: 'telegram', label: '电报' },
   { id: 'tags', label: '赛事分类' },
   { id: 'prices', label: '价格区间' },
+  { id: 'sound', label: '声音' },
   { id: 'version', label: '版本' },
 ];
-
-function OddsFormatToggle() {
-  const [format, setFormat] = useOddsFormat();
-  return (
-    <div
-      className="mb-4 rounded-[var(--tm-rad)] border border-tm-bd bg-tm-bg-el px-3.5 py-3"
-    >
-      <div className="font-mono text-[13px] font-semibold text-tm-tx">赔率显示</div>
-      <div className="mt-1 font-mono text-[12px] leading-[1.5] text-tm-tx-mut">
-        控制看板中赔率的展示方式：欧洲盘（如 2.06）、美式盘（如 +106 / -120）或隐含概率（如
-        48.5%）。仅保存在本机浏览器，不影响机器人实际行为。
-      </div>
-      <div className="mt-2.5 inline-flex rounded-[var(--tm-rad)] border border-tm-bd bg-tm-bg-sunk overflow-hidden">
-        {ODDS_FORMAT_OPTIONS.map((opt) => (
-          <button
-            key={opt.value}
-            type="button"
-            onClick={() => setFormat(opt.value)}
-            className={cn(
-              'px-3 py-1.5 font-mono text-[12px] font-bold tracking-wider transition-colors',
-              format === opt.value
-                ? 'bg-tm-accent text-black'
-                : 'text-tm-tx-dim hover:text-tm-tx hover:bg-tm-bg-el',
-            )}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 const THEME_OPTIONS: { value: Theme; label: string }[] = [
   { value: 'light', label: '白天' },
@@ -177,6 +139,7 @@ export function Settings() {
   const [proxyDraft, setProxyDraft] = useState('');
   const [tgTokenDraft, setTgTokenDraft] = useState('');
   const [tgChatDraft, setTgChatDraft] = useState('');
+  const [testingTg, setTestingTg] = useState(false);
   const [tags, setTags] = useState<string[]>([...DEFAULT_EVENT_CLASSIFICATION_TAGS]);
   const [tagInput, setTagInput] = useState('');
   const [priceRows, setPriceRows] = useState<PriceStopLossRangeRow[]>(() =>
@@ -322,7 +285,6 @@ export function Settings() {
                 显示
               </div>
               <ThemeToggle />
-              <OddsFormatToggle />
 
               <div className="mb-4 rounded-[var(--tm-rad)] border border-tm-bd bg-tm-bg-el px-3.5 py-3">
                 <div className="font-mono text-[11px] font-semibold text-tm-tx">配置文件</div>
@@ -487,6 +449,33 @@ export function Settings() {
                   )}
                 >
                   {saving === 'telegram' ? '保存中…' : '保存电报配置'}
+                </button>
+                <button
+                  type="button"
+                  disabled={testingTg || !tgTokenDraft || !tgChatDraft}
+                  onClick={async () => {
+                    setTestingTg(true);
+                    try {
+                      await testTelegram();
+                      toast({ title: '测试成功', description: '测试消息已发送到 Telegram', variant: 'success' });
+                    } catch (err) {
+                      toast({
+                        title: '测试失败',
+                        description: err instanceof Error ? err.message : '未知错误',
+                        variant: 'destructive',
+                      });
+                    } finally {
+                      setTestingTg(false);
+                    }
+                  }}
+                  className={cn(
+                    'w-full rounded-[var(--tm-rad)] py-2 font-mono text-[10px] font-bold tracking-wider mt-2',
+                    testingTg || !tgTokenDraft || !tgChatDraft
+                      ? 'bg-tm-bg-sunk text-tm-tx-mut cursor-not-allowed'
+                      : 'bg-sky-600 text-white hover:bg-sky-500',
+                  )}
+                >
+                  {testingTg ? '发送中…' : '发送测试消息'}
                 </button>
               </div>
             </div>
@@ -724,6 +713,8 @@ export function Settings() {
             </div>
           )}
 
+          {!loading && tab === 'sound' && <SoundTestTab />}
+
           {!loading && tab === 'version' && <VersionTab />}
         </div>
       </div>
@@ -742,6 +733,199 @@ declare global {
       onUpdateDownloaded: (callback: () => void) => () => void;
     };
   }
+}
+
+function SoundTestTab() {
+  const [playing, setPlaying] = useState<string | null>(null);
+  const { settings, setEnabled, setBuyEnabled, setSellEnabled, setAlertEnabled } = useSoundSettings();
+
+  const isElectron = typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron');
+
+  const playSound = async (soundName: string) => {
+    const api = (window as unknown as { desktopAPI?: { playSound?: (s: string) => Promise<{ ok: true } | { ok: false; error: string }> } }).desktopAPI;
+    if (!isElectron || !api?.playSound) {
+      toast({
+        title: '无法播放',
+        description: '仅在桌面客户端中支持声音播放',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setPlaying(soundName);
+    try {
+      const result = await api.playSound(soundName);
+      if (result.ok) {
+        toast({ title: '播放成功', description: `已播放 ${soundName} 声音`, variant: 'success' });
+      } else {
+        toast({ title: '播放失败', description: result.error, variant: 'destructive' });
+      }
+    } catch (err) {
+      toast({ title: '播放失败', description: err instanceof Error ? err.message : '未知错误', variant: 'destructive' });
+    } finally {
+      setPlaying(null);
+    }
+  };
+
+  const soundItems: { key: string; label: string; desc: string }[] = [
+    { key: 'buy', label: '开单', desc: '买入成交提示音' },
+    { key: 'sell', label: '平仓', desc: '卖出成交提示音' },
+    { key: 'alert', label: '系统错误', desc: '异常情况告警音' },
+  ];
+
+  return (
+    <div>
+      <div className="mb-4 font-mono text-[12px] font-semibold tracking-[0.2em] text-tm-tx-dim">
+        声音提醒
+      </div>
+
+      {!isElectron ? (
+        <div className="font-mono text-[11px] text-tm-tx-dim">
+          声音提醒仅在桌面客户端中可用
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="rounded-[var(--tm-rad)] border border-tm-bd bg-tm-bg-el px-4 py-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="font-mono text-[12px] font-semibold text-tm-tx">声音提醒</div>
+                <div className="font-mono text-[10px] text-tm-tx-mut">开启/关闭所有声音提醒</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEnabled(!settings.enabled)}
+                className={cn(
+                  'relative w-11 h-6 rounded-full transition-colors',
+                  settings.enabled ? 'bg-tm-accent' : 'bg-tm-bg-sunk',
+                )}
+              >
+                <span
+                  className={cn(
+                    'absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform',
+                    settings.enabled ? 'left-[22px]' : 'left-0.5',
+                  )}
+                />
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-[var(--tm-rad)] border border-tm-bd bg-tm-bg-el px-4 py-3 space-y-3">
+            <div className="font-mono text-[11px] font-semibold text-tm-tx">分类开关</div>
+            
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="font-mono text-[11px] text-tm-tx">开单提醒</div>
+                <div className="font-mono text-[9px] text-tm-tx-mut">买入成交提示音</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBuyEnabled(!settings.buyEnabled)}
+                disabled={!settings.enabled}
+                className={cn(
+                  'relative w-9 h-5 rounded-full transition-colors',
+                  settings.buyEnabled && settings.enabled ? 'bg-tm-accent' : 'bg-tm-bg-sunk',
+                  !settings.enabled && 'opacity-50',
+                )}
+              >
+                <span
+                  className={cn(
+                    'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform',
+                    settings.buyEnabled && settings.enabled ? 'left-[18px]' : 'left-0.5',
+                  )}
+                />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="font-mono text-[11px] text-tm-tx">平仓提醒</div>
+                <div className="font-mono text-[9px] text-tm-tx-mut">卖出/止损成交提示音</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSellEnabled(!settings.sellEnabled)}
+                disabled={!settings.enabled}
+                className={cn(
+                  'relative w-9 h-5 rounded-full transition-colors',
+                  settings.sellEnabled && settings.enabled ? 'bg-tm-accent' : 'bg-tm-bg-sunk',
+                  !settings.enabled && 'opacity-50',
+                )}
+              >
+                <span
+                  className={cn(
+                    'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform',
+                    settings.sellEnabled && settings.enabled ? 'left-[18px]' : 'left-0.5',
+                  )}
+                />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="font-mono text-[11px] text-tm-tx">系统提醒</div>
+                <div className="font-mono text-[9px] text-tm-tx-mut">WebSocket 断开等告警音</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAlertEnabled(!settings.alertEnabled)}
+                disabled={!settings.enabled}
+                className={cn(
+                  'relative w-9 h-5 rounded-full transition-colors',
+                  settings.alertEnabled && settings.enabled ? 'bg-tm-accent' : 'bg-tm-bg-sunk',
+                  !settings.enabled && 'opacity-50',
+                )}
+              >
+                <span
+                  className={cn(
+                    'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform',
+                    settings.alertEnabled && settings.enabled ? 'left-[18px]' : 'left-0.5',
+                  )}
+                />
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-[var(--tm-rad)] border border-tm-bd bg-tm-bg-el px-4 py-3">
+            <div className="font-mono text-[11px] font-semibold text-tm-tx mb-3">测试播放</div>
+            <div className="font-mono text-[10px] leading-[1.55] text-tm-tx-mut mb-3">
+              点击下方按钮测试播放对应的提示音。
+            </div>
+            <div className="grid gap-3">
+              {soundItems.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => playSound(item.key)}
+                  disabled={playing !== null || !settings.enabled}
+                  className={cn(
+                    'flex items-center justify-between rounded-[var(--tm-rad)] border border-tm-bd bg-tm-bg px-3 py-2 transition-colors',
+                    playing !== null || !settings.enabled
+                      ? 'opacity-50 cursor-not-allowed'
+                      : 'hover:border-tm-accent hover:bg-tm-bg-el/80',
+                  )}
+                >
+                  <div className="text-left">
+                    <div className="font-mono text-[11px] font-semibold text-tm-tx">{item.label}</div>
+                    <div className="font-mono text-[9px] text-tm-tx-mut">{item.desc}</div>
+                  </div>
+                  <div
+                    className={cn(
+                      'flex h-6 w-6 items-center justify-center rounded-full font-mono text-[9px] font-bold',
+                      playing === item.key
+                        ? 'bg-tm-accent text-black animate-pulse'
+                        : 'bg-tm-bg-sunk text-tm-tx-mut',
+                    )}
+                  >
+                    {playing === item.key ? '...' : '▶'}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function VersionTab() {

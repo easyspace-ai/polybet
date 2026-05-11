@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, nativeImage, Notification } from "electron";
 import { join } from "path";
+import { stat } from "fs/promises";
 import { electronApp, optimizer, is } from "@electron-toolkit/utils";
 import fixPathImport from "fix-path";
 
@@ -37,6 +38,56 @@ import {
 // by the `is.dev` branch below.
 const DEV_ICON_PATH = join(__dirname, "../../resources/icon.png");
 
+// Sound file paths
+const SOUNDS_DIR = join(__dirname, "../../resources/sounds");
+const SOUND_FILES: Record<string, string> = {
+  buy: join(SOUNDS_DIR, "buy.mp3"),
+  sell: join(SOUNDS_DIR, "sell.mp3"),
+  alert: join(SOUNDS_DIR, "alert.mp3"),
+};
+
+async function playSoundFile(soundName: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const filePath = SOUND_FILES[soundName];
+  if (!filePath) {
+    return { ok: false, error: `Unknown sound: ${soundName}` };
+  }
+  try {
+    await stat(filePath);
+  } catch {
+    return { ok: false, error: `Sound file not found: ${filePath}` };
+  }
+
+  const { spawn } = await import("child_process");
+  const platform = process.platform;
+
+  return new Promise((resolve) => {
+    let player: ReturnType<typeof spawn>;
+
+    if (platform === "darwin") {
+      player = spawn("afplay", [filePath]);
+    } else if (platform === "linux") {
+      player = spawn("paplay", [filePath], { stdio: "ignore" });
+    } else if (platform === "win32") {
+      player = spawn("powershell", ["-c", `(New-Object System.Media.SoundPlayer '${filePath.replace(/'/g, "''")}').PlaySync()`], { stdio: "ignore" });
+    } else {
+      resolve({ ok: false, error: `Unsupported platform: ${platform}` });
+      return;
+    }
+
+    player.on("error", (err) => {
+      resolve({ ok: false, error: `Failed to play sound: ${err.message}` });
+    });
+
+    player.on("exit", (code) => {
+      if (code === 0) {
+        resolve({ ok: true });
+      } else {
+        resolve({ ok: false, error: `Player exited with code ${code}` });
+      }
+    });
+  });
+}
+
 // macOS/Linux GUI launches inherit a minimal PATH from launchd that omits
 // the user's shell config (~/.zshrc, Homebrew, nvm, ~/.local/bin, etc.).
 // Run the user's login shell once to recover the real PATH so the bundled
@@ -65,6 +116,34 @@ let runtimeConfigResult: RuntimeConfigResult = {
   error: { message: "Runtime config has not loaded yet" },
 };
 
+/** True when the window and its webContents can receive IPC (not torn down). */
+function isMainWindowLive(w: BrowserWindow | null = mainWindow): w is BrowserWindow {
+  return (
+    w !== null && !w.isDestroyed() && !w.webContents.isDestroyed()
+  );
+}
+
+/** Focus / restore without throwing if the native window is mid-teardown (dev reload, quit race). */
+function safeFocusMainWindow(): void {
+  if (!isMainWindowLive()) return;
+  try {
+    const w = mainWindow!;
+    if (w.isMinimized()) w.restore();
+    w.focus();
+  } catch {
+    // ignore — Electron throws "Object has been destroyed" if C++ side is gone
+  }
+}
+
+function sendToMainRenderer(channel: string, ...payload: unknown[]): void {
+  if (!isMainWindowLive()) return;
+  try {
+    mainWindow!.webContents.send(channel, ...payload);
+  } catch {
+    // ignore
+  }
+}
+
 // --- Deep link helpers ---------------------------------------------------
 
 function handleDeepLink(url: string): void {
@@ -75,9 +154,7 @@ function handleDeepLink(url: string): void {
     // polybet://auth/callback?token=<jwt>
     if (parsed.hostname === "auth" && parsed.pathname === "/callback") {
       const token = parsed.searchParams.get("token");
-      if (token && mainWindow) {
-        mainWindow.webContents.send("auth:token", token);
-      }
+      if (token) sendToMainRenderer("auth:token", token);
       return;
     }
 
@@ -87,9 +164,7 @@ function handleDeepLink(url: string): void {
     // route persistence, so deep-linking the same invite twice stays safe.
     if (parsed.hostname === "invite") {
       const id = parsed.pathname.replace(/^\//, "");
-      if (id && mainWindow) {
-        mainWindow.webContents.send("invite:open", decodeURIComponent(id));
-      }
+      if (id) sendToMainRenderer("invite:open", decodeURIComponent(id));
       return;
     }
   } catch {
@@ -161,7 +236,7 @@ function createWindow(): void {
     const current = getSystemLocale();
     if (current === lastKnownSystemLocale) return;
     lastKnownSystemLocale = current;
-    mainWindow?.webContents.send("locale:system-changed", current);
+    sendToMainRenderer("locale:system-changed", current);
   });
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -221,10 +296,10 @@ function createWindow(): void {
 // without fighting for the shared single-instance lock. The suffix is
 // appended to the app name + userData path, so each worktree gets its own
 // lock file. Default (no env var) keeps behavior unchanged — the common
-// single-worktree case still lands at "Multica Canary".
+// single-worktree case still lands at "Poly Bot".
 const DEV_APP_NAME = process.env.DESKTOP_APP_SUFFIX
-  ? `Multica Canary ${process.env.DESKTOP_APP_SUFFIX}`
-  : "Multica Canary";
+  ? `Poly Bot ${process.env.DESKTOP_APP_SUFFIX}`
+  : "Poly Bot";
 
 if (is.dev) {
   app.setName(DEV_APP_NAME);
@@ -251,10 +326,7 @@ if (!gotTheLock) {
 } else {
   // Windows/Linux: second instance passes deep link via argv
   app.on("second-instance", (_event, argv) => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+    safeFocusMainWindow();
 
     // On Windows the deep link URL is the last argv entry
     const deepLinkUrl = argv.find((arg) => arg.startsWith(`${PROTOCOL}://`));
@@ -328,10 +400,18 @@ if (!gotTheLock) {
           };
         }
         const dash = getLocalDashboardURL();
-        if (mainWindow && dash) {
-          await mainWindow.loadURL(dash);
-        } else {
-          mainWindow?.reload();
+        if (isMainWindowLive() && dash) {
+          try {
+            await mainWindow!.loadURL(dash);
+          } catch {
+            /* window gone mid-await */
+          }
+        } else if (isMainWindowLive()) {
+          try {
+            mainWindow!.reload();
+          } catch {
+            /* ignore */
+          }
         }
         return { ok: true };
       },
@@ -431,7 +511,12 @@ if (!gotTheLock) {
     // without fighting the native window controls' hit-test.
     ipcMain.handle("window:setImmersive", (_event, immersive: boolean) => {
       if (process.platform !== "darwin") return;
-      mainWindow?.setWindowButtonVisibility(!immersive);
+      if (!isMainWindowLive()) return;
+      try {
+        mainWindow!.setWindowButtonVisibility(!immersive);
+      } catch {
+        /* ignore */
+      }
     });
 
     // IPC: show a native OS notification for a new inbox item. The renderer
@@ -460,14 +545,19 @@ if (!gotTheLock) {
         if (!Notification.isSupported()) return;
         const notification = new Notification({ title, body });
         notification.on("click", () => {
-          if (!mainWindow) return;
-          if (mainWindow.isMinimized()) mainWindow.restore();
-          mainWindow.show();
-          mainWindow.focus();
+          if (!isMainWindowLive()) return;
+          try {
+            const w = mainWindow!;
+            if (w.isMinimized()) w.restore();
+            w.show();
+            w.focus();
+          } catch {
+            return;
+          }
           // Ship the full context back — the renderer pins the route to the
           // source workspace (slug), marks the row read (itemId), and uses
           // issueKey as the ?issue=<…> selector.
-          mainWindow.webContents.send("inbox:open", {
+          sendToMainRenderer("inbox:open", {
             slug,
             itemId,
             issueKey,
@@ -492,16 +582,18 @@ if (!gotTheLock) {
       }
     });
 
+    // IPC: play a sound file (buy, sell, or alert)
+    ipcMain.handle("sound:play", async (_event, soundName: string) => {
+      return playSoundFile(soundName);
+    });
+
     createWindow();
 
     setupAutoUpdater(() => mainWindow);
 
     // macOS: deep link arrives via open-url event
     app.on("open-url", (_event, url) => {
-      if (mainWindow) {
-        if (mainWindow.isMinimized()) mainWindow.restore();
-        mainWindow.focus();
-      }
+      safeFocusMainWindow();
       handleDeepLink(url);
     });
 

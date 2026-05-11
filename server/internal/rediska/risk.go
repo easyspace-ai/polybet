@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-const riskCacheTTL = 10 * time.Second
+const riskCacheTTL = 1 * time.Hour
+const riskPositionsKey = "risk:positions"
 
 type RiskMeta struct {
 	UserWsConnected         bool    `json:"userWsConnected"`
@@ -39,7 +40,7 @@ type riskCacheData struct {
 
 type RiskFetchResult struct {
 	Positions []map[string]any
-	Meta       RiskMeta
+	Meta      RiskMeta
 }
 
 func (r *RiskCache) Get(ctx context.Context) ([]map[string]any, RiskMeta, bool, error) {
@@ -47,7 +48,7 @@ func (r *RiskCache) Get(ctx context.Context) ([]map[string]any, RiskMeta, bool, 
 		return nil, RiskMeta{}, false, nil
 	}
 	var data riskCacheData
-	found, err := r.cache.Get(ctx, "risk:positions", &data)
+	found, err := r.cache.Get(ctx, riskPositionsKey, &data)
 	if err != nil && err.Error() != "key not found" {
 		r.log.Warn("risk_cache_get", "err", err)
 	}
@@ -55,6 +56,27 @@ func (r *RiskCache) Get(ctx context.Context) ([]map[string]any, RiskMeta, bool, 
 		return data.Positions, data.Meta, true, nil
 	}
 	return nil, RiskMeta{}, false, err
+}
+
+func (r *RiskCache) Invalidate(ctx context.Context) {
+	if r == nil || r.cache == nil {
+		return
+	}
+	if err := r.cache.Delete(ctx, riskPositionsKey); err != nil {
+		r.log.Warn("risk_cache_invalidate", "err", err)
+	} else {
+		r.log.Info("risk_cache_invalidated")
+	}
+}
+
+func (r *RiskCache) Set(ctx context.Context, result RiskFetchResult) error {
+	if r == nil || r.cache == nil {
+		return nil
+	}
+	return r.cache.Set(ctx, riskPositionsKey, riskCacheData{
+		Positions: result.Positions,
+		Meta:      result.Meta,
+	}, riskCacheTTL)
 }
 
 func (r *RiskCache) RefreshAsync(ctx context.Context, fetch func() (RiskFetchResult, error)) {
@@ -70,11 +92,10 @@ func (r *RiskCache) RefreshAsync(ctx context.Context, fetch func() (RiskFetchRes
 			r.log.Warn("risk_cache_refresh", "err", err)
 			return
 		}
-		data := riskCacheData{
+		if err := r.cache.Set(context.Background(), riskPositionsKey, riskCacheData{
 			Positions: result.Positions,
 			Meta:      result.Meta,
-		}
-		if err := r.cache.Set(context.Background(), "risk:positions", data, riskCacheTTL); err != nil {
+		}, riskCacheTTL); err != nil {
 			r.log.Warn("risk_cache_set", "err", err)
 		}
 		r.log.Info("risk_cache_refreshed", "count", len(result.Positions))
@@ -93,7 +114,7 @@ func (r *RiskCache) GetWithRefresh(ctx context.Context, fetch func() (RiskFetchR
 		return nil, RiskMeta{}, false, err
 	}
 	if r.cache != nil {
-		_ = r.cache.Set(ctx, "risk:positions", riskCacheData{
+		_ = r.cache.Set(ctx, riskPositionsKey, riskCacheData{
 			Positions: result.Positions,
 			Meta:      result.Meta,
 		}, riskCacheTTL)

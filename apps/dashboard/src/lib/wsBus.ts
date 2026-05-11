@@ -7,6 +7,15 @@ export type MarketLifecycleMessage =
   | { type: 'marketUpsert'; data: Market }
   | { type: 'marketRemoved'; id: string };
 
+export interface BalanceUpdateData {
+  polymarket: number | null;
+  polymarketAccounts: { id: string; name: string; isActive: boolean; polymarket: number | null }[];
+}
+
+export type BalanceUpdateMessage = { type: 'balance_update'; data: BalanceUpdateData };
+
+export type PositionUpdateMessage = { type: 'position_update'; data: unknown[] };
+
 export interface BestOddsEntry {
   marketHash: string;
   isMakerBettingOutcomeOne: boolean;
@@ -49,6 +58,8 @@ type IncomingMessage =
   | { type: 'polyBookUpdate'; tokenId: string; levels: BookLevel[] }
   | { type: 'polyOddsSnapshot'; data: PolyOddsEntry[] }
   | { type: 'polyOddsUpdate'; tokenId: string; takerOdds: number; updatedAt: number }
+  | { type: 'balance_update'; data: BalanceUpdateData }
+  | { type: 'position_update'; data: unknown[] }
   | MarketLifecycleMessage;
 
 type OddsListener = (msg: { type: 'snapshot'; data: BestOddsEntry[] } | { type: 'update'; data: BestOddsEntry }) => void;
@@ -57,6 +68,8 @@ type PolyBookListener = (frame: PolyBookFrame) => void;
 type PolyOddsListener = (msg: PolyOddsMessage) => void;
 type MarketLifecycleListener = (msg: MarketLifecycleMessage) => void;
 type StatusListener = (connected: boolean) => void;
+type BalanceUpdateListener = (msg: BalanceUpdateMessage) => void;
+type PositionUpdateListener = (msg: PositionUpdateMessage) => void;
 
 const WS_URL = (() => {
   if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL as string;
@@ -69,12 +82,15 @@ const WS_URL = (() => {
 class WsBus {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
   private oddsListeners = new Set<OddsListener>();
   private bookListeners = new Set<BookListener>();
   private polyBookListeners = new Set<PolyBookListener>();
   private polyOddsListeners = new Set<PolyOddsListener>();
   private marketLifecycleListeners = new Set<MarketLifecycleListener>();
   private statusListeners = new Set<StatusListener>();
+  private balanceUpdateListeners = new Set<BalanceUpdateListener>();
+  private positionUpdateListeners = new Set<PositionUpdateListener>();
   // Mirror of the bot's market list. Populated by `marketsSnapshot` on WS
   // connect, then patched by `marketUpsert` / `marketRemoved`. Replayed to
   // late subscribers so a remounting page sees the current state without
@@ -87,10 +103,18 @@ class WsBus {
   private connect(): void {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
 
+    console.log('[ws] Connecting to', WS_URL);
     const ws = new WebSocket(WS_URL);
     this.ws = ws;
 
     ws.onopen = () => {
+      console.log('[ws] WebSocket connected');
+      if (this.pingTimer) clearInterval(this.pingTimer);
+      this.pingTimer = setInterval(() => {
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 30_000);
       for (const l of this.statusListeners) l(true);
       for (const tokenId of this.polyBookSubRefs.keys()) {
         this.send({ type: 'subscribePolyBook', tokenId });
@@ -137,15 +161,25 @@ class WsBus {
       } else if (msg.type === 'marketRemoved') {
         this.marketsCache.delete(msg.id);
         for (const l of this.marketLifecycleListeners) l(msg);
+      } else if (msg.type === 'balance_update') {
+        for (const l of this.balanceUpdateListeners) l(msg);
+      } else if (msg.type === 'position_update') {
+        for (const l of this.positionUpdateListeners) l(msg);
       }
     };
 
     ws.onerror = () => {
+      console.warn('[ws] WebSocket error');
       for (const l of this.statusListeners) l(false);
     };
 
     ws.onclose = () => {
+      console.warn('[ws] WebSocket closed, reconnecting in 3s...');
       this.ws = null;
+      if (this.pingTimer) {
+        clearInterval(this.pingTimer);
+        this.pingTimer = null;
+      }
       for (const l of this.statusListeners) l(false);
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = setTimeout(() => this.connect(), 3_000);
@@ -196,6 +230,16 @@ class WsBus {
     this.statusListeners.add(listener);
     listener(this.ws?.readyState === WebSocket.OPEN);
     return () => { this.statusListeners.delete(listener); };
+  }
+
+  onBalanceUpdate(listener: BalanceUpdateListener): () => void {
+    this.balanceUpdateListeners.add(listener);
+    return () => { this.balanceUpdateListeners.delete(listener); };
+  }
+
+  onPositionUpdate(listener: PositionUpdateListener): () => void {
+    this.positionUpdateListeners.add(listener);
+    return () => { this.positionUpdateListeners.delete(listener); };
   }
 
   onPolyBook(listener: PolyBookListener): () => void {

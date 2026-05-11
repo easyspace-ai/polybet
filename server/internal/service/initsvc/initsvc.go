@@ -102,6 +102,9 @@ func (s *Service) setComplete(complete bool) {
 func (s *Service) Run(ctx context.Context) error {
 	s.log.Info("init_service_start")
 
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	if err := s.checkConfig(ctx); err != nil {
 		s.log.Error("init_config_check_failed", "err", err)
 		return err

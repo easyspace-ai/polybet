@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/easyspace-ai/polybet/internal/domain"
@@ -29,9 +30,9 @@ func (s *Store) UpsertPolyMarketQuote(ctx context.Context, q *domain.MarketQuote
 	if err == sql.ErrNoRows {
 		eventID = "e_poly_" + q.PolyEventID
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO events(id, sport, league, home_team, away_team, start_time, status, poly_event_id)
-			VALUES(?,?,?,?,?,?, 'active', ?)`,
-			eventID, q.Sport, q.League, q.HomeTeam, q.AwayTeam, st, q.PolyEventID)
+			INSERT INTO events(id, sport, league, home_team, away_team, start_time, status, poly_event_id, poly_slug)
+			VALUES(?,?,?,?,?,?, 'active', ?, ?)`,
+			eventID, q.Sport, q.League, q.HomeTeam, q.AwayTeam, st, q.PolyEventID, nullIfEmptyString(q.PolySlug))
 		if err != nil {
 			return err
 		}
@@ -39,8 +40,9 @@ func (s *Store) UpsertPolyMarketQuote(ctx context.Context, q *domain.MarketQuote
 		return err
 	} else {
 		_, err = tx.ExecContext(ctx, `
-			UPDATE events SET sport=?, league=?, home_team=?, away_team=?, start_time=?, status='active' WHERE id=?`,
-			q.Sport, q.League, q.HomeTeam, q.AwayTeam, st, eventID)
+			UPDATE events SET sport=?, league=?, home_team=?, away_team=?, start_time=?, status='active',
+				poly_slug=COALESCE(NULLIF(TRIM(?), ''), poly_slug) WHERE id=?`,
+			q.Sport, q.League, q.HomeTeam, q.AwayTeam, st, q.PolySlug, eventID)
 		if err != nil {
 			return err
 		}
@@ -117,4 +119,11 @@ func nullIfEmpty(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+func nullIfEmptyString(s string) interface{} {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return strings.TrimSpace(s)
 }

@@ -152,12 +152,12 @@ const desktopAPI = {
    */
   setUnreadBadge: (count: number) =>
     ipcRenderer.send("badge:set", Math.max(0, Math.floor(count))),
-  /**
-   * Subscribe to "open this inbox row" requests sent by the main process
-   * when the user clicks an OS notification banner. Returns an unsubscribe
-   * function. The payload echoes the `slug`, `itemId`, and `issueKey` that
-   * were passed to `showNotification`.
-   */
+/**
+    * Subscribe to "open this inbox row" requests sent by the main process
+    * when the user clicks an OS notification banner. Returns an unsubscribe
+    * function. The payload echoes the `slug`, `itemId`, and `issueKey` that
+    * were passed to `showNotification`.
+    */
   onInboxOpen: (
     callback: (payload: {
       slug: string;
@@ -174,6 +174,11 @@ const desktopAPI = {
       ipcRenderer.removeListener("inbox:open", handler);
     };
   },
+  /**
+   * Play a sound file: "buy", "sell", or "alert"
+   */
+  playSound: (soundName: string): Promise<{ ok: true } | { ok: false; error: string }> =>
+    ipcRenderer.invoke("sound:play", soundName),
 };
 
 const updaterAPI = {

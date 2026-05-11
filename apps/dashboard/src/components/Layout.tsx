@@ -56,7 +56,7 @@ export function Layout() {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
         {/* Mobile top header (≤md). Hidden on desktop. */}
         <header className="md:hidden h-11 shrink-0 flex items-center justify-between px-3 bg-tm-bg-sunk border-b border-tm-bd">
-          <span className="font-mono text-[11px] font-bold tracking-[0.18em] text-tm-accent">SPMA</span>
+          <img src="/logo.png" alt="Logo" className="w-auto object-contain" />
           <div className="flex items-center gap-3">
             {isPublic && (
               <a
@@ -82,7 +82,7 @@ export function Layout() {
         {/* Desktop left rail (≥md). Hidden on mobile. */}
         <aside className="hidden md:flex w-14 shrink-0 flex-col items-stretch bg-tm-bg-sunk border-r border-tm-bd">
           <div className="h-10 flex items-center justify-center border-b border-tm-bd">
-            <span className="font-mono text-[10px] font-bold tracking-[0.15em] text-tm-accent">SPMA</span>
+            <img src="/logo.png" alt="Logo" className="w-auto object-contain" />
           </div>
 
           <nav className="flex-1 flex flex-col py-2">
@@ -105,7 +105,7 @@ export function Layout() {
             ))}
           </nav>
 
-          {isPublic && (
+          {/* {isPublic && (
             <a
               href={GITHUB_REPO_URL}
               target="_blank"
@@ -124,8 +124,8 @@ export function Layout() {
               <span className="absolute inset-0 rounded-full bg-tm-pos animate-tm-pulse" />
               <span className="relative rounded-full h-1.5 w-1.5 bg-tm-pos" />
             </span>
-            <span className="font-mono text-[8px] tracking-[0.1em] text-tm-tx-mut">在线</span>
-          </div>
+            <span className="font-mono text-[8px] tracking-[0.1em] text-tm-tx-mut">在线333</span>
+          </div> */}
         </aside>
 
         <main className="flex-1 min-w-0 overflow-y-auto pb-14 md:pb-0">

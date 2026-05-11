@@ -10,7 +10,7 @@ function readStored(): OddsFormat {
   } catch {
     // localStorage unavailable (private browsing, etc.) — fall through
   }
-  return 'decimal';
+  return 'percent';
 }
 
 let current: OddsFormat = readStored();

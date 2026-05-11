@@ -97,7 +97,6 @@ function PolybetProjectSetup() {
       <p style={{ color: "#555", marginBottom: "16px", textAlign: "center" }}>
         配置保存在{" "}
         <code style={{ fontSize: "0.85em" }}>~/.polybet/polybet-project.json</code>
-        。访问 Polymarket Gamma 必须通过可用代理（或可达网络）；验证通过后才会加载核心界面。
       </p>
       {proxyGateOnly ? (
         <p
@@ -166,12 +165,12 @@ function PolybetProjectSetup() {
           style={inputStyle}
           value={outboundProxyUrl}
           onChange={(e) => setOutboundProxyUrl(e.target.value)}
-          placeholder="http://127.0.0.1:7890"
+          placeholder="http://127.0.0.1:15236"
         />
       </label>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 8 }}>
-        <button
+        {/* <button
           type="button"
           disabled={verifying || saving}
           onClick={() => void onVerify()}
@@ -186,7 +185,7 @@ function PolybetProjectSetup() {
           }}
         >
           {verifying ? "验证中…" : "验证 Polymarket 连接"}
-        </button>
+        </button> */}
         <button
           type="button"
           disabled={saving || verifying}

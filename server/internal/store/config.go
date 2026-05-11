@@ -2,21 +2,140 @@ package store
 
 import (
 	"context"
-	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"strconv"
+	"os"
+	"path/filepath"
+	"sync"
 )
 
-func (s *Store) GetBotConfig(ctx context.Context, key string) (string, bool, error) {
-	var v string
-	err := s.db.QueryRowContext(ctx, `SELECT value FROM bot_config WHERE key = ?`, key).Scan(&v)
-	if err == sql.ErrNoRows {
-		return "", false, nil
-	}
+type configFile struct {
+	mu   sync.RWMutex
+	path string
+	data map[string]string
+}
+
+func (cf *configFile) load() error {
+	cf.mu.Lock()
+	defer cf.mu.Unlock()
+
+	b, err := os.ReadFile(cf.path)
 	if err != nil {
-		return "", false, err
+		if os.IsNotExist(err) {
+			cf.data = make(map[string]string)
+			return nil
+		}
+		return err
 	}
-	return v, true, nil
+	return json.Unmarshal(b, &cf.data)
+}
+
+func (cf *configFile) save() error {
+	cf.mu.Lock()
+	defer cf.mu.Unlock()
+
+	dir := filepath.Dir(cf.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+
+	b, err := json.MarshalIndent(cf.data, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+
+	tmp := cf.path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, cf.path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func (cf *configFile) get(key string) (string, bool) {
+	cf.mu.RLock()
+	defer cf.mu.RUnlock()
+	v, ok := cf.data[key]
+	return v, ok
+}
+
+func (cf *configFile) set(key, value string) error {
+	cf.mu.Lock()
+	defer cf.mu.Unlock()
+	cf.data[key] = value
+	return cf.saveLocked()
+}
+
+func (cf *configFile) saveLocked() error {
+	if cf.data == nil {
+		return nil
+	}
+
+	dir := filepath.Dir(cf.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+
+	b, err := json.MarshalIndent(cf.data, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+
+	tmp := cf.path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, cf.path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func (cf *configFile) list() []struct{ Key, Value string } {
+	cf.mu.RLock()
+	defer cf.mu.RUnlock()
+
+	out := make([]struct{ Key, Value string }, 0, len(cf.data))
+	for k, v := range cf.data {
+		out = append(out, struct{ Key, Value string }{k, v})
+	}
+	return out
+}
+
+func configFilePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("user home dir: %w", err)
+	}
+	if home == "" {
+		return "", errors.New("empty user home dir")
+	}
+	return filepath.Join(home, ".polybet", "bot-settings.json"), nil
+}
+
+var globalConfigFile *configFile
+
+func init() {
+	path, err := configFilePath()
+	if err != nil {
+		panic("config file path: " + err.Error())
+	}
+	globalConfigFile = &configFile{path: path}
+	if err := globalConfigFile.load(); err != nil {
+		panic("load config file: " + err.Error())
+	}
+}
+
+func (s *Store) GetBotConfig(ctx context.Context, key string) (string, bool, error) {
+	v, ok := globalConfigFile.get(key)
+	return v, ok, nil
 }
 
 func (s *Store) GetBotConfigFloat(ctx context.Context, key string, def float64) float64 {
@@ -24,8 +143,8 @@ func (s *Store) GetBotConfigFloat(ctx context.Context, key string, def float64) 
 	if err != nil || !ok {
 		return def
 	}
-	f, err := strconv.ParseFloat(v, 64)
-	if err != nil {
+	var f float64
+	if _, err := fmt.Sscanf(v, "%f", &f); err != nil {
 		return def
 	}
 	return f
@@ -36,50 +155,28 @@ func (s *Store) GetBotConfigInt(ctx context.Context, key string, def int) int {
 	if err != nil || !ok {
 		return def
 	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
+	var n int
+	if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
 		return def
 	}
 	return n
 }
 
 func (s *Store) UpsertBotConfig(ctx context.Context, key, value string) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO bot_config(key, value) VALUES(?, ?)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value
-	`, key, value)
-	return err
+	return globalConfigFile.set(key, value)
 }
 
-// InsertBotConfigDefault inserts a row only when the key is absent.
-// Used for first-boot defaults so restarts never clobber user values (e.g. onboardingComplete).
 func (s *Store) InsertBotConfigDefault(ctx context.Context, key, value string) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO bot_config(key, value) VALUES(?, ?)
-		ON CONFLICT(key) DO NOTHING
-	`, key, value)
-	return err
+	if _, ok := globalConfigFile.get(key); ok {
+		return nil
+	}
+	return globalConfigFile.set(key, value)
 }
 
 func (s *Store) ListBotConfig(ctx context.Context) ([]struct{ Key, Value string }, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM bot_config ORDER BY key`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]struct{ Key, Value string }, 0)
-	for rows.Next() {
-		var k, v string
-		if err := rows.Scan(&k, &v); err != nil {
-			return nil, err
-		}
-		out = append(out, struct{ Key, Value string }{k, v})
-	}
-	return out, rows.Err()
+	return globalConfigFile.list(), nil
 }
 
-// SeedDefaultConfig mirrors bot marketSync seedDefaultConfig essentials.
-// Only inserts missing keys so values changed at runtime (including onboardingComplete) survive restarts.
 func (s *Store) SeedDefaultConfig(ctx context.Context) error {
 	rows := []struct{ k, v string }{
 		{"pollingInterval", "30"},

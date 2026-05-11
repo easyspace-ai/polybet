@@ -49,6 +49,8 @@ interface DesktopAPI {
       issueKey: string;
     }) => void,
   ) => () => void;
+  /** Play a sound file: "buy", "sell", or "alert". Returns success or error. */
+  playSound: (soundName: string) => Promise<{ ok: true } | { ok: false; error: string }>;
 }
 
 interface UpdaterAPI {

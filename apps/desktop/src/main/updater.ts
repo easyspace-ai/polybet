@@ -26,25 +26,35 @@ export type ManualUpdateCheckResult =
     }
   | { ok: false; error: string };
 
+function safeSendToWindow(
+  win: BrowserWindow | null | undefined,
+  channel: string,
+  ...payload: unknown[]
+): void {
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+  try {
+    win.webContents.send(channel, ...payload);
+  } catch {
+    /* window torn down between check and send */
+  }
+}
+
 export function setupAutoUpdater(getMainWindow: () => BrowserWindow | null): void {
   autoUpdater.on("update-available", (info) => {
-    const win = getMainWindow();
-    win?.webContents.send("updater:update-available", {
+    safeSendToWindow(getMainWindow(), "updater:update-available", {
       version: info.version,
       releaseNotes: info.releaseNotes,
     });
   });
 
   autoUpdater.on("download-progress", (progress) => {
-    const win = getMainWindow();
-    win?.webContents.send("updater:download-progress", {
+    safeSendToWindow(getMainWindow(), "updater:download-progress", {
       percent: progress.percent,
     });
   });
 
   autoUpdater.on("update-downloaded", () => {
-    const win = getMainWindow();
-    win?.webContents.send("updater:update-downloaded");
+    safeSendToWindow(getMainWindow(), "updater:update-downloaded");
   });
 
   autoUpdater.on("error", (err) => {
