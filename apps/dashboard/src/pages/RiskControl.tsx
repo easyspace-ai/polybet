@@ -3,9 +3,9 @@ import {
   patchRiskPosition,
   postRiskCloseAll,
   postRiskClosePosition,
+  postRiskOfficialRefresh,
 } from '../lib/api';
 import { useRiskControlCache } from '../hooks/useRiskControlCache';
-import { postCacheRefresh } from '../lib/api';
 import { toast } from '../components/ui/use-toast';
 import { cn } from '../lib/utils';
 
@@ -65,6 +65,7 @@ export function RiskControl() {
   /** Draft inputs keyed by position id — reset when `positions` refresh. */
   const [drafts, setDrafts] = useState<Record<string, { sl: string; hw: string }>>({});
   const [patchingKey, setPatchingKey] = useState<string | null>(null);
+  const [officialSyncing, setOfficialSyncing] = useState(false);
 
   useEffect(() => {
     const next: Record<string, { sl: string; hw: string }> = {};
@@ -165,13 +166,42 @@ export function RiskControl() {
         </span>
         <button
           type="button"
+          disabled={officialSyncing}
           onClick={async () => {
-            await postCacheRefresh();
+            setOfficialSyncing(true);
+            try {
+              const r = await postRiskOfficialRefresh();
+              if (r.syncError) {
+                toast({
+                  title: '缓存已更新',
+                  description: `官方持仓同步未完全成功：${r.syncError}`,
+                  variant: 'destructive',
+                });
+              } else {
+                toast({
+                  title: '已刷新',
+                  description: '已从官方 CLOB 同步持仓与链上余额，并更新缓存',
+                  variant: 'success',
+                });
+              }
+              refresh();
+            } catch (e) {
+              toast({
+                title: '刷新失败',
+                description: e instanceof Error ? e.message : '未知错误',
+                variant: 'destructive',
+              });
+            } finally {
+              setOfficialSyncing(false);
+            }
           }}
-          className="font-mono text-[10px] text-tm-tx-mut hover:text-tm-tx"
-          title="刷新持仓"
+          className={cn(
+            'font-mono text-[10px] text-tm-tx-mut hover:text-tm-tx',
+            officialSyncing && 'opacity-50 cursor-wait',
+          )}
+          title="从官方 CLOB 拉取持仓与余额，并更新服务端缓存"
         >
-          ↻
+          {officialSyncing ? '…' : '↻'}
         </button>
         <button
           type="button"

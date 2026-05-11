@@ -267,6 +267,10 @@ export const getRiskPositions = () =>
 export const getRiskTasks = (limit = 40) =>
   apiFetch<{ tasks: RiskTaskRow[] }>(`/api/risk/tasks?limit=${limit}`);
 
+/** CLOB REST sync of positions + on-chain reconcile, then server risk/balance cache rebuild. */
+export const postRiskOfficialRefresh = () =>
+  apiFetch<{ ok: boolean; syncError?: string }>('/api/risk/refresh', { method: 'POST' });
+
 export const patchRiskPosition = (
   id: string,
   body: { stopLossPct?: number; highWaterCents?: number },

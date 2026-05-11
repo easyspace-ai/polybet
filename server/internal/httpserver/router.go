@@ -487,6 +487,34 @@ func NewRouter(d Deps) *gin.Engine {
 			c.JSON(200, gin.H{"positions": rows, "meta": meta2, "cached": fromCache})
 		})
 
+		// Pull latest trades + on-chain conditional balances from Polymarket CLOB, then rebuild risk + balance caches.
+		api.POST("/risk/refresh", func(c *gin.Context) {
+			rid := c.GetString("request_id")
+			if d.Cfg.ReadOnlyMode {
+				slog.Warn("risk_refresh_blocked_read_only", "request_id", rid)
+				c.JSON(403, gin.H{"error": "read_only"})
+				return
+			}
+			var syncErr *string
+			if d.Risk != nil {
+				if err := d.Risk.SyncRiskFromRESTTrades(c); err != nil {
+					es := err.Error()
+					syncErr = &es
+					slog.Warn("risk_refresh_clob_sync", "request_id", rid, "err", es)
+				} else {
+					slog.Info("risk_refresh_clob_sync_ok", "request_id", rid)
+				}
+			}
+			if d.App != nil {
+				d.App.InvalidateAndRebuildCache()
+			}
+			body := gin.H{"ok": true}
+			if syncErr != nil {
+				body["syncError"] = *syncErr
+			}
+			c.JSON(200, body)
+		})
+
 		api.GET("/risk/tasks", func(c *gin.Context) {
 			cacheKey := "list"
 			if cached, ok := tasksCache.Get(cacheKey); ok {
