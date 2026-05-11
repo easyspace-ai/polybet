@@ -2,7 +2,6 @@ import { app, BrowserWindow, ipcMain, nativeImage, Notification } from "electron
 import { join } from "path";
 import { stat } from "fs/promises";
 import { electronApp, optimizer, is } from "@electron-toolkit/utils";
-import fixPathImport from "fix-path";
 
 // fix-path is ESM-only; bundled main is CJS and `require("fix-path")` yields
 // `{ default: fn }`, so default import is not callable unless we unwrap.
@@ -38,8 +37,14 @@ import {
 // by the `is.dev` branch below.
 const DEV_ICON_PATH = join(__dirname, "../../resources/icon.png");
 
-// Sound file paths
-const SOUNDS_DIR = join(__dirname, "../../resources/sounds");
+function getSoundsDir(): string {
+  if (app.isPackaged) {
+    return join(process.resourcesPath, "sounds");
+  }
+  return join(__dirname, "../../resources/sounds");
+}
+
+const SOUNDS_DIR = getSoundsDir();
 const SOUND_FILES: Record<string, string> = {
   buy: join(SOUNDS_DIR, "buy.mp3"),
   sell: join(SOUNDS_DIR, "sell.mp3"),
