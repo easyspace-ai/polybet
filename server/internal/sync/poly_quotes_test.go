@@ -1,6 +1,9 @@
 package sync
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestOutcomeIndexForTitleTeam(t *testing.T) {
 	labels := []string{"Lakers", "Celtics"}
@@ -49,6 +52,42 @@ func TestQuoteFromMoneyline12_combinedMarket(t *testing.T) {
 	}
 	if q.Outcomes[0].ExternalID != "tok-lal-yes" || q.Outcomes[1].ExternalID != "tok-bos-yes" {
 		t.Fatalf("tokens %+v", q.Outcomes)
+	}
+}
+
+func TestStartTimeFromEventPrefersGameStartTimeWithShortUTCOffset(t *testing.T) {
+	gameStart := "2026-05-12 07:00:00+00"
+	ev := gammaEvent{
+		StartDate: "2026-05-11T00:00:00Z",
+		EndDate:   "2026-05-13T07:00:00Z",
+		Markets: []gammaMarket{
+			{
+				GameStartTime: &gameStart,
+			},
+		},
+	}
+
+	got := startTimeFromEvent(ev)
+	want := time.Date(2026, time.May, 12, 7, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("startTimeFromEvent() = %s, want %s", got.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+}
+
+func TestParseGammaTimeAcceptsCommonGammaFormats(t *testing.T) {
+	cases := []string{
+		"2026-05-12 07:00:00+00",
+		"2026-05-12 07:00:00+00:00",
+		"2026-05-12T07:00:00Z",
+	}
+	for _, raw := range cases {
+		got, ok := parseGammaTime(raw)
+		if !ok {
+			t.Fatalf("parseGammaTime(%q) failed", raw)
+		}
+		if got.UTC().Format(time.RFC3339) != "2026-05-12T07:00:00Z" {
+			t.Fatalf("parseGammaTime(%q) = %s", raw, got.UTC().Format(time.RFC3339))
+		}
 	}
 }
 

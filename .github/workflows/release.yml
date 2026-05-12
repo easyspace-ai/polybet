@@ -126,4 +126,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          POLYBET_ALLOW_GENERATED_DIRTY: "true"
         run: node scripts/package.mjs --${{ matrix.target }} --${{ matrix.arch }} --publish always

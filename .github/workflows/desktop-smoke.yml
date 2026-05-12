@@ -57,6 +57,7 @@ jobs:
         working-directory: apps/desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          POLYBET_ALLOW_GENERATED_DIRTY: "true"
         run: node scripts/package.mjs --${{ matrix.target }} --x64 --arm64 --publish never
 
       - name: Upload Desktop artifacts (${{ matrix.target }})

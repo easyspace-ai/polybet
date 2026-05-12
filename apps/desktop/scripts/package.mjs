@@ -114,6 +114,14 @@ function requireCleanGit() {
   const status = sh("git status --porcelain");
   if (!status) return true;
 
+  if (process.env.POLYBET_ALLOW_GENERATED_DIRTY === "true") {
+    console.warn(
+      "[package] git working tree is dirty after generated dashboard assets; " +
+        "continuing because POLYBET_ALLOW_GENERATED_DIRTY=true.",
+    );
+    return true;
+  }
+
   const lines = status.split("\n").filter(Boolean);
   const isDirty = lines.length > 0;
 

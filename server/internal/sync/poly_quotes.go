@@ -11,6 +11,8 @@ import (
 
 const sportsFeeRate = 0.03
 
+var shortTZOffsetRe = regexp.MustCompile(`([+-]\d{2})$`)
+
 func applyFee(p, fee float64) float64 {
 	if fee == 0 {
 		return p
@@ -18,16 +20,33 @@ func applyFee(p, fee float64) float64 {
 	return p + fee*p*(1-p)
 }
 
+func parseGammaTime(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	iso := strings.Replace(raw, " ", "T", 1)
+	if shortTZOffsetRe.MatchString(iso) {
+		iso = shortTZOffsetRe.ReplaceAllString(iso, "${1}:00")
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02T15:04:05.999999Z07:00",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, iso); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
 func startTimeFromEvent(ev gammaEvent) time.Time {
 	for _, m := range ev.Markets {
 		if m.GameStartTime != nil && strings.TrimSpace(*m.GameStartTime) != "" {
-			raw := strings.TrimSpace(*m.GameStartTime)
-			iso := strings.Replace(raw, " ", "T", 1)
-			iso = strings.TrimSuffix(iso, "+00") + ":00"
-			if t, err := time.Parse(time.RFC3339, iso); err == nil {
-				return t
-			}
-			if t, err := time.Parse("2006-01-02T15:04:05Z07:00", iso); err == nil {
+			if t, ok := parseGammaTime(*m.GameStartTime); ok {
 				return t
 			}
 		}
