@@ -99,7 +99,10 @@ function dirtyPathFromStatusLine(line) {
 }
 
 function isAllowedGeneratedDirtyPath(path) {
-  return path.startsWith("server/internal/webui/dashboard-dist/");
+  return (
+    path === "apps/dashboard/src/routeTree.gen.ts" ||
+    path.startsWith("server/internal/webui/dashboard-dist/")
+  );
 }
 
 /**
@@ -137,7 +140,7 @@ function requireCleanGit() {
 
   if (process.env.CI) {
     console.warn(
-      "[package] git working tree contains generated dashboard embed files; " +
+      "[package] git working tree contains generated dashboard files; " +
         "continuing because they were produced by the release workflow.",
     );
     return true;

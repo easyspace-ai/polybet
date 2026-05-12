@@ -246,13 +246,6 @@ export function localDateKey(iso: string): string {
 export function formatDateHeader(dateKey: string): string {
   const [year, month, day] = dateKey.split('-').map(Number);
   const d = new Date(year, month - 1, day);
-  const today = new Date();
-  const tomorrow = new Date(today);
-  tomorrow.setDate(today.getDate() + 1);
-  const same = (a: Date, b: Date) =>
-    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-  if (same(d, today)) return '今天';
-  if (same(d, tomorrow)) return '明天';
   return d.toLocaleDateString('zh-CN', { weekday: 'long', month: 'short', day: 'numeric' });
 }
 

@@ -8,7 +8,7 @@ import { useBalanceCache } from "@/hooks/useBalanceCache";
 import { usePolyOrderBook } from "@/hooks/useOrderBook";
 import { groupMarkets, formatDateHeader, localDateKey, isAmericanSport, get1X2, getSpreadMLTotal, type MatchGroup, type OutcomeRow } from "@/lib/marketUtils";
 import { DEFAULT_EVENT_CLASSIFICATION_TAGS } from "@/lib/eventClassification";
-import { getOrderBook, postTrade, type OrderBookLevel } from "@/lib/api";
+import { getOrderBook, postTrade, type Market, type OrderBookLevel } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({ component: MarketsPage });
@@ -29,6 +29,45 @@ function useFetchAge(lastFetch: Date | null): string {
   if (s < 60) return `${s}秒`;
   if (s < 3600) return `${Math.floor(s / 60)}分`;
   return `${Math.floor(s / 3600)}小时`;
+}
+
+const CLOSED_MARKET_STATUSES = new Set([
+  'closed',
+  'resolved',
+  'settled',
+  'final',
+  'finalized',
+  'inactive',
+  'cancelled',
+  'canceled',
+  'expired',
+  'archived',
+]);
+
+function isOpenMarket(market: Market): boolean {
+  return !CLOSED_MARKET_STATUSES.has(market.status.toLowerCase());
+}
+
+function isSettledLikePrice(price: number | null | undefined): boolean {
+  return price != null && Number.isFinite(price) && (price <= 0.01 || price >= 0.99);
+}
+
+function isTradableMatchGroup(group: MatchGroup): boolean {
+  const primaryOutcomes = isAmericanSport(group)
+    ? (() => {
+        const { mlHome, mlAway } = getSpreadMLTotal(group);
+        return [mlHome, mlAway];
+      })()
+    : (() => {
+        const { home, draw, away } = get1X2(group);
+        return [home, draw, away];
+      })();
+  const prices = primaryOutcomes
+    .map((outcome) => outcome?.polymarket?.impliedOdds ?? null)
+    .filter((price): price is number => price != null && Number.isFinite(price));
+
+  if (prices.length === 0) return false;
+  return !prices.some(isSettledLikePrice);
 }
 
 function OddsCell({ price, active, onClick }: { price: number | null; active: boolean; onClick?: () => void }) {
@@ -252,13 +291,7 @@ function TradeSidebar({
 
   return (
     <aside className="w-[360px] max-w-[38vw] min-w-[320px] shrink-0 flex flex-col bg-sidebar/40 overflow-hidden">
-      <div className="px-6 pt-6 pb-4 border-b border-border">
-        <h2 className="text-[15px] font-semibold tracking-tight">投注单</h2>
-        <p className="mt-1 text-[11px] text-muted-foreground font-mono">
-          已选 <span className="text-foreground">{selection ? 1 : 0}</span> 项
-        </p>
-      </div>
-
+     
       <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-6 py-5 space-y-5">
         {selection ? (
           <>
@@ -298,7 +331,7 @@ function TradeSidebar({
               ) : book.length === 0 ? (
                 <div className="px-6 py-3 text-[12px] text-muted-foreground">暂无盘口深度</div>
               ) : (
-                fill.fills.slice(0, 10).map(({ level, fillFraction }, index) => (
+                fill.fills.slice(0, 5).map(({ level, fillFraction }, index) => (
                   <div
                     key={`${level.odds}-${index}`}
                     className="grid h-8 grid-cols-[44px_1fr_1fr_84px] items-center border-b border-border px-6 last:border-b-0"
@@ -380,7 +413,7 @@ function MarketsPage() {
   const [selection, setSelection] = useState<SelectedBet | null>(null);
 
   const allGroups = useMemo(() => {
-    return groupMarkets(markets);
+    return groupMarkets(markets.filter(isOpenMarket)).filter(isTradableMatchGroup);
   }, [markets]);
 
   const filteredGroups = useMemo(() => {
