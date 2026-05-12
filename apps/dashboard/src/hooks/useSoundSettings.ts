@@ -24,9 +24,7 @@ function loadSettings(): SoundSettings {
   if (!isBrowser()) return defaultSettings;
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      return { ...defaultSettings, ...JSON.parse(stored) };
-    }
+    if (stored) return { ...defaultSettings, ...JSON.parse(stored) };
   } catch {}
   return defaultSettings;
 }

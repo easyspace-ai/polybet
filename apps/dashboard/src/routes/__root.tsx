@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { AppSidebar } from "@/components/AppSidebar";
 import { Toaster } from "@/components/ui/sonner";
+import { useSoundNotifications } from "@/hooks/useSoundNotifications";
 
 import appCss from "../styles.css?url";
 
@@ -57,6 +58,7 @@ function RootShell({ children }: { children: React.ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  useSoundNotifications();
   return (
     <QueryClientProvider client={queryClient}>
       <div className="flex min-h-screen w-full bg-background text-foreground">

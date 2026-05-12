@@ -1,12 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, Fragment } from "react";
 import { TopBar } from "@/components/TopBar";
 import { useTheme } from "@/lib/theme";
 import { useConfig } from "@/hooks/useConfig";
+import { useSoundSettings } from "@/hooks/useSoundSettings";
+import { useSoundNotifications } from "@/hooks/useSoundNotifications";
 import { putConfig, testTelegram } from "@/lib/api";
 import { DEFAULT_EVENT_CLASSIFICATION_TAGS, parseEventClassificationTags } from "@/lib/eventClassification";
 import { toast } from "sonner";
-import { Monitor, Globe, Send, Tag, DollarSign, Volume2, Info, Sun, Moon, Save, Trash2 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Monitor, Globe, Send, Tag, DollarSign, Volume2, Info, Sun, Moon, Save, Trash2, RefreshCw, Download, CheckCircle } from "lucide-react";
 
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
 
@@ -462,24 +465,378 @@ function PricesTab({ rows, onSave }: { rows: { key: string; value: string }[]; o
 }
 
 function SoundTab() {
+  const [playing, setPlaying] = useState<string | null>(null);
+  const { settings, setEnabled, setBuyEnabled, setSellEnabled, setAlertEnabled } = useSoundSettings();
+
+  const isElectron = typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron');
+
+  const playSound = async (soundName: string) => {
+    const api = (window as unknown as { desktopAPI?: { playSound?: (s: string) => Promise<{ ok: true } | { ok: false; error: string }> } }).desktopAPI;
+    if (!isElectron || !api?.playSound) {
+      toast({
+        title: '无法播放',
+        description: '仅在桌面客户端中支持声音播放',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setPlaying(soundName);
+    try {
+      const result = await api.playSound(soundName);
+      if (result.ok) {
+        toast({ title: '播放成功', description: `已播放 ${soundName} 声音`, variant: 'success' });
+      } else {
+        toast({ title: '播放失败', description: result.error, variant: 'destructive' });
+      }
+    } catch (err) {
+      toast({ title: '播放失败', description: err instanceof Error ? err.message : '未知错误', variant: 'destructive' });
+    } finally {
+      setPlaying(null);
+    }
+  };
+
+  const soundItems: { key: string; label: string; desc: string }[] = [
+    { key: 'buy', label: '开单', desc: '买入成交提示音' },
+    { key: 'sell', label: '平仓', desc: '卖出成交提示音' },
+    { key: 'alert', label: '系统错误', desc: '异常情况告警音' },
+  ];
+
   return (
-    <div className="rounded-[var(--tm-rad)] border border-border bg-surface p-5">
-      <div className="text-[13px] font-semibold mb-3">声音提醒</div>
-      <div className="text-[12px] text-muted-foreground">
-        声音提醒功能需要桌面客户端支持。
+    <div>
+      <div className="mb-4 font-mono text-[12px] font-semibold tracking-[0.2em] text-muted-foreground">
+        声音提醒
       </div>
+
+      {!isElectron ? (
+        <div className="rounded-[var(--tm-rad)] border border-border bg-surface p-5">
+          <div className="text-[12px] text-muted-foreground">
+            声音提醒功能需要桌面客户端支持。当前为浏览器环境，可使用 Web Audio 播放测试音。
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="rounded-[var(--tm-rad)] border border-border bg-surface p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[13px] font-semibold">声音提醒</div>
+                <div className="text-[11.5px] text-muted-foreground">开启/关闭所有声音提醒</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEnabled(!settings.enabled)}
+                className={cn(
+                  'relative w-11 h-6 rounded-full transition-colors',
+                  settings.enabled ? 'bg-brand' : 'bg-muted',
+                )}
+              >
+                <span
+                  className={cn(
+                    'absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform',
+                    settings.enabled ? 'left-[22px]' : 'left-0.5',
+                  )}
+                />
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-[var(--tm-rad)] border border-border bg-surface p-4 space-y-3">
+            <div className="text-[11px] font-semibold">分类开关</div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[11px] text-foreground">开单提醒</div>
+                <div className="text-[9px] text-muted-foreground">买入成交提示音</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBuyEnabled(!settings.buyEnabled)}
+                disabled={!settings.enabled}
+                className={cn(
+                  'relative w-9 h-5 rounded-full transition-colors',
+                  settings.buyEnabled && settings.enabled ? 'bg-brand' : 'bg-muted',
+                  !settings.enabled && 'opacity-50',
+                )}
+              >
+                <span
+                  className={cn(
+                    'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform',
+                    settings.buyEnabled && settings.enabled ? 'left-[18px]' : 'left-0.5',
+                  )}
+                />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[11px] text-foreground">平仓提醒</div>
+                <div className="text-[9px] text-muted-foreground">卖出/止损成交提示音</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSellEnabled(!settings.sellEnabled)}
+                disabled={!settings.enabled}
+                className={cn(
+                  'relative w-9 h-5 rounded-full transition-colors',
+                  settings.sellEnabled && settings.enabled ? 'bg-brand' : 'bg-muted',
+                  !settings.enabled && 'opacity-50',
+                )}
+              >
+                <span
+                  className={cn(
+                    'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform',
+                    settings.sellEnabled && settings.enabled ? 'left-[18px]' : 'left-0.5',
+                  )}
+                />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[11px] text-foreground">系统提醒</div>
+                <div className="text-[9px] text-muted-foreground">WebSocket 断开等告警音</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAlertEnabled(!settings.alertEnabled)}
+                disabled={!settings.enabled}
+                className={cn(
+                  'relative w-9 h-5 rounded-full transition-colors',
+                  settings.alertEnabled && settings.enabled ? 'bg-brand' : 'bg-muted',
+                  !settings.enabled && 'opacity-50',
+                )}
+              >
+                <span
+                  className={cn(
+                    'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform',
+                    settings.alertEnabled && settings.enabled ? 'left-[18px]' : 'left-0.5',
+                  )}
+                />
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-[var(--tm-rad)] border border-border bg-surface p-4">
+            <div className="text-[11px] font-semibold mb-3">测试播放</div>
+            <div className="text-[10px] text-muted-foreground mb-3">
+              点击下方按钮测试播放对应的提示音。
+            </div>
+            <div className="grid gap-3">
+              {soundItems.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => playSound(item.key)}
+                  disabled={playing !== null || !settings.enabled}
+                  className={cn(
+                    'flex items-center justify-between rounded-[var(--tm-rad)] border border-border bg-background px-3 py-2 transition-colors',
+                    playing !== null || !settings.enabled
+                      ? 'opacity-50 cursor-not-allowed'
+                      : 'hover:border-brand hover:bg-accent/50',
+                  )}
+                >
+                  <div className="text-left">
+                    <div className="text-[11px] font-semibold">{item.label}</div>
+                    <div className="text-[9px] text-muted-foreground">{item.desc}</div>
+                  </div>
+                  <div
+                    className={cn(
+                      'flex h-6 w-6 items-center justify-center rounded-full font-mono text-[9px] font-bold',
+                      playing === item.key
+                        ? 'bg-brand text-black animate-pulse'
+                        : 'bg-muted text-muted-foreground',
+                    )}
+                  >
+                    {playing === item.key ? '...' : '▶'}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 function AboutTab() {
+  const [checking, setChecking] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [versionInfo, setVersionInfo] = useState<{ current: string; latest: string; available: boolean } | null>(null);
+  const [updateReady, setUpdateReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const isElectron = typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron');
+  const updater = isElectron ? window.updater : null;
+
+  useEffect(() => {
+    if (!updater) return;
+
+    const unsubAvailable = updater.onUpdateAvailable((info) => {
+      setVersionInfo((prev) => prev ? { ...prev, available: true, latest: info.version } : null);
+      showUpdateDialog(info.version, info.releaseNotes);
+    });
+
+    const unsubProgress = updater.onDownloadProgress((progress) => {
+      setDownloadProgress(progress.percent);
+    });
+
+    const unsubDownloaded = updater.onUpdateDownloaded(() => {
+      setUpdateReady(true);
+      setDownloading(false);
+    });
+
+    return () => {
+      unsubAvailable();
+      unsubProgress();
+      unsubDownloaded();
+    };
+  }, [updater]);
+
+  const showUpdateDialog = (version: string, releaseNotes?: string) => {
+    const confirmed = confirm(
+      `发现新版本 v${version}！\n\n${releaseNotes ? `更新内容：\n${releaseNotes}\n\n` : ''}是否立即更新？更新将自动重启应用。`,
+    );
+    if (confirmed) {
+      handleDownload();
+    }
+  };
+
+  const handleCheck = async () => {
+    if (!updater) {
+      setError('仅在 Electron 客户端支持版本检查');
+      return;
+    }
+    setChecking(true);
+    setError(null);
+    try {
+      const result = await updater.checkForUpdates();
+      if (result.ok) {
+        setVersionInfo({ current: result.currentVersion, latest: result.latestVersion, available: result.available });
+        if (result.available) {
+          showUpdateDialog(result.latestVersion, undefined);
+        }
+      } else {
+        setError(result.error);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const handleDownload = async () => {
+    if (!updater) return;
+    setDownloading(true);
+    setDownloadProgress(0);
+    try {
+      await updater.downloadUpdate();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setDownloading(false);
+    }
+  };
+
+  const handleInstall = async () => {
+    if (!updater) return;
+    await updater.installUpdate();
+  };
+
   return (
-    <div className="rounded-[var(--tm-rad)] border border-border bg-surface p-5">
-      <div className="text-[13px] font-semibold mb-3">关于</div>
-      <div className="space-y-2 text-[12px] text-muted-foreground">
-        <p>Polybet - 预测市场交易系统</p>
-        <p>版本: 1.0.0</p>
-        <p className="text-brand hover:underline cursor-pointer">https://github.com/easyspace-ai/polybet</p>
+    <div>
+      <div className="mb-4 font-mono text-[12px] font-semibold tracking-[0.2em] text-muted-foreground">
+        版本信息
+      </div>
+
+      <div className="rounded-[var(--tm-rad)] border border-border bg-surface p-4">
+        {!isElectron ? (
+          <div className="text-[12px] text-muted-foreground space-y-3">
+            <p>Polybet - 预测市场交易系统</p>
+            <p>版本: 1.0.0</p>
+            <p className="text-brand hover:underline cursor-pointer">
+              <a href="https://github.com/easyspace-ai/polybet" target="_blank" rel="noopener noreferrer">
+                https://github.com/easyspace-ai/polybet
+              </a>
+            </p>
+            <p className="text-muted-foreground/60">版本检查与自动更新仅在桌面客户端中可用</p>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <div className="text-[11px] text-muted-foreground">当前版本</div>
+                <div className="text-[14px] font-bold">
+                  {versionInfo?.current || '检测中...'}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleCheck}
+                disabled={checking || downloading}
+                className={cn(
+                  'flex items-center gap-2 rounded-sm px-3 py-2 font-mono text-[10px] font-bold',
+                  checking || downloading
+                    ? 'bg-muted text-muted-foreground cursor-not-allowed'
+                    : 'bg-brand text-brand-foreground hover:opacity-90',
+                )}
+              >
+                <RefreshCw className={cn('w-3 h-3', checking && 'animate-spin')} />
+                {checking ? '检查中...' : '检查更新'}
+              </button>
+            </div>
+
+            {versionInfo && (
+              <div className="mb-4 text-[11px] text-muted-foreground">
+                最新版本:{' '}
+                <span className={versionInfo.available ? 'text-brand font-bold' : ''}>{versionInfo.latest}</span>
+                {versionInfo.available && !updateReady && !downloading && (
+                  <span className="ml-2 text-brand">(有可用更新)</span>
+                )}
+              </div>
+            )}
+
+            {error && (
+              <div className="mb-3 rounded-sm border border-destructive/30 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+                {error}
+              </div>
+            )}
+
+            {downloading && (
+              <div className="mb-3">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] text-muted-foreground">下载中...</span>
+                  <span className="text-[10px]">{downloadProgress.toFixed(0)}%</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                  <div
+                    className="h-full bg-brand transition-all duration-300"
+                    style={{ width: `${downloadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {updateReady && (
+              <div className="flex items-center gap-3 p-3 rounded-sm bg-success/10 border border-success/30">
+                <CheckCircle className="w-5 h-5 text-success" />
+                <div className="flex-1">
+                  <div className="text-[11px] font-bold text-success">更新已下载</div>
+                  <div className="text-[10px] text-muted-foreground">点击下方按钮安装更新并重启</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleInstall}
+                  className="flex items-center gap-2 rounded-sm px-3 py-2 bg-success text-black font-mono text-[10px] font-bold hover:bg-success/90"
+                >
+                  <Download className="w-3 h-3" />
+                  安装并重启
+                </button>
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
