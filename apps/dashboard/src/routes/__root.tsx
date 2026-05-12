@@ -1,28 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  Outlet,
-  Link,
-  createRootRouteWithContext,
-  HeadContent,
-  Scripts,
-} from "@tanstack/react-router";
+import { Outlet, Link, createRootRouteWithContext } from "@tanstack/react-router";
 import { AppSidebar } from "@/components/AppSidebar";
 import { Toaster } from "@/components/ui/sonner";
 import { useSoundNotifications } from "@/hooks/useSoundNotifications";
 
-import appCss from "../styles.css?url";
-
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
-  head: () => ({
-    meta: [
-      { charSet: "utf-8" },
-      { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "PolyBet · AI 交易终端" },
-      { name: "description", content: "高端 Polymarket 交易与风控终端" },
-    ],
-    links: [{ rel: "stylesheet", href: appCss }],
-  }),
-  shellComponent: RootShell,
   component: RootComponent,
   notFoundComponent: NotFound,
 });
@@ -43,23 +25,6 @@ function NotFound() {
         </Link>
       </div>
     </div>
-  );
-}
-
-function RootShell({ children }: { children: React.ReactNode }) {
-  // Apply theme before paint to avoid flash
-  const themeScript = `(function(){try{var t=localStorage.getItem('polybet-theme');if(!t){t=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}if(t==='dark')document.documentElement.classList.add('dark');}catch(e){}})();`;
-  return (
-    <html lang="zh-CN">
-      <head>
-        <HeadContent />
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
-      </head>
-      <body>
-        {children}
-        <Scripts />
-      </body>
-    </html>
   );
 }
 

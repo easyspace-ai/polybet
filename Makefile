@@ -54,13 +54,13 @@ deps:
 	pnpm install
 
 dashboard-build:
-	pnpm --filter tanstack_start_ts build
+	pnpm --filter dashboard build
 
 dashboard-embed: dashboard-build
 	@test -f "$(SERVER)/go.mod" || (echo "error: missing $(SERVER)/go.mod"; exit 1)
-	@test -f "$(CURDIR)/apps/dashboard/dist/client/index.html" || (echo "error: missing apps/dashboard/dist/client/index.html"; exit 1)
+	@test -f "$(CURDIR)/apps/dashboard/dist/index.html" || (echo "error: missing apps/dashboard/dist/index.html"; exit 1)
 	@dest="$(SERVER)/internal/webui/dashboard-dist"; \
-	rm -rf "$$dest" && mkdir -p "$$dest" && cp -a "$(CURDIR)/apps/dashboard/dist/client/." "$$dest/" && \
+	rm -rf "$$dest" && mkdir -p "$$dest" && cp -a "$(CURDIR)/apps/dashboard/dist/." "$$dest/" && \
 	echo "dashboard → $$dest"
 
 go-build-server: dashboard-embed
@@ -77,7 +77,7 @@ test-go:
 	@(cd "$(SERVER)" && CGO_ENABLED=1 go test ./...)
 
 lint-dashboard:
-	pnpm --filter tanstack_start_ts lint
+	pnpm --filter dashboard lint
 
 desktop-resources: dashboard-embed
 	@test -f "$(SERVER)/go.mod" || (echo "error: missing $(SERVER)/go.mod"; exit 1)

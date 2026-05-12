@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev:web": "turbo dev --filter=tanstack_start_ts",
+    "dev:web": "turbo dev --filter=dashboard",
     "dev:desktop": "turbo dev --filter=@polybet/desktop",
     "dev:desktop:staging": "turbo dev:staging --filter=@polybet/desktop",
     "build": "turbo build",
