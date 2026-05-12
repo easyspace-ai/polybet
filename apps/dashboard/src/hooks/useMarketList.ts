@@ -1,33 +1,71 @@
-import { useEffect, useRef, useState } from 'react';
-import { wsBus } from '../lib/wsBus';
-import { getMarkets, type Market } from '../lib/api';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { getMarkets, type Market } from '@/lib/api';
+import { wsBus, type MarketLifecycleMessage } from '@/lib/wsBus';
 
-// If WS never delivers a non-empty `marketsSnapshot`, fall back to REST once after this delay.
 const WS_SNAPSHOT_FALLBACK_MS = 3_000;
 
-/**
- * Market list: hydrate from GET /api/markets (eager + timed fallback) and keep in sync
- * via WS `marketsSnapshot` / `marketUpsert` / `marketRemoved`.
- *
- * Empty WS snapshots are ignored — the server can send `data: []` on connect while sync
- * is still catching up; treating that as "done" used to skip REST entirely (no /api/markets
- * in DevTools and a blank page).
- */
-export function useMarketList(): { markets: Market[]; loading: boolean } {
-  const [markets, setMarkets] = useState<Market[]>([]);
-  const [loading, setLoading] = useState(true);
-  const cache = useRef(new Map<string, Market>());
+interface MarketListState {
+  markets: Market[];
+  loading: boolean;
+  error: string | null;
+  lastUpdate: Date | null;
+  wsConnected: boolean;
+}
+
+export function useMarketList(): MarketListState {
+  const [state, setState] = useState<MarketListState>({
+    markets: [],
+    loading: true,
+    error: null,
+    lastUpdate: null,
+    wsConnected: false,
+  });
+  
+  const cacheRef = useRef(new Map<string, Market>());
   const snapshotReceived = useRef(false);
+  const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const applyFullSnapshot = useCallback((data: Market[]) => {
+    cacheRef.current = new Map(data.map((m) => [m.id, m]));
+    setState(prev => ({
+      ...prev,
+      markets: Array.from(cacheRef.current.values()),
+      loading: false,
+      lastUpdate: new Date(),
+    }));
+  }, []);
+
+  const handleMarketMessage = useCallback((msg: MarketLifecycleMessage) => {
+    if (msg.type === 'marketsSnapshot') {
+      if (msg.data.length === 0) return;
+      snapshotReceived.current = true;
+      applyFullSnapshot(msg.data);
+    } else if (msg.type === 'marketUpsert') {
+      cacheRef.current.set(msg.data.id, msg.data);
+      setState(prev => ({
+        ...prev,
+        markets: Array.from(cacheRef.current.values()),
+        lastUpdate: new Date(),
+      }));
+    } else if (msg.type === 'marketRemoved') {
+      cacheRef.current.delete(msg.id);
+      setState(prev => ({
+        ...prev,
+        markets: Array.from(cacheRef.current.values()),
+        lastUpdate: new Date(),
+      }));
+    }
+  }, [applyFullSnapshot]);
+
+  const handleWsStatus = useCallback((connected: boolean) => {
+    setState(prev => ({ ...prev, wsConnected: connected }));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
 
-    const applyFullSnapshot = (data: Market[]) => {
-      cache.current = new Map(data.map((m) => [m.id, m]));
-      setMarkets(Array.from(cache.current.values()));
-    };
-
-    const tryHydrateFromREST = (afterErrorStillStopLoading: boolean) =>
+    // Initial REST fallback
+    const tryHydrateFromREST = (afterErrorStillStopLoading: boolean) => {
       getMarkets()
         .then((data) => {
           if (cancelled || snapshotReceived.current) return;
@@ -35,43 +73,41 @@ export function useMarketList(): { markets: Market[]; loading: boolean } {
             snapshotReceived.current = true;
             applyFullSnapshot(data);
           }
-          setLoading(false);
+          setState(prev => ({ ...prev, loading: false }));
         })
-        .catch(() => {
-          if (!cancelled && afterErrorStillStopLoading) setLoading(false);
+        .catch((err) => {
+          if (!cancelled && afterErrorStillStopLoading) {
+            setState(prev => ({
+              ...prev,
+              loading: false,
+              error: err instanceof Error ? err.message : '加载市场失败',
+            }));
+          }
         });
+    };
 
-    // Eager REST so we match DB quickly even if the first WS frame is an empty snapshot.
-    void tryHydrateFromREST(false);
+    // Start with eager REST in case WS is slow
+    tryHydrateFromREST(false);
 
-    const off = wsBus.onMarketLifecycle((msg) => {
-      if (msg.type === 'marketsSnapshot') {
-        if (msg.data.length === 0) return;
-        snapshotReceived.current = true;
-        applyFullSnapshot(msg.data);
-        setLoading(false);
-      } else if (msg.type === 'marketUpsert') {
-        cache.current.set(msg.data.id, msg.data);
-        setMarkets(Array.from(cache.current.values()));
-        setLoading(false);
-      } else if (msg.type === 'marketRemoved') {
-        cache.current.delete(msg.id);
-        setMarkets(Array.from(cache.current.values()));
-        setLoading(false);
+    // Set up WebSocket listeners
+    const offMarket = wsBus.onMarketLifecycle(handleMarketMessage);
+    const offStatus = wsBus.onStatus(handleWsStatus);
+
+    // Fallback REST if WS doesn't send snapshot in time
+    fallbackTimerRef.current = setTimeout(() => {
+      if (!snapshotReceived.current) {
+        console.log('[useMarketList] WS snapshot timeout, falling back to REST');
+        tryHydrateFromREST(true);
       }
-    });
-
-    const fallback = setTimeout(() => {
-      if (snapshotReceived.current) return;
-      void tryHydrateFromREST(true);
     }, WS_SNAPSHOT_FALLBACK_MS);
 
     return () => {
       cancelled = true;
-      clearTimeout(fallback);
-      off();
+      if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
+      offMarket();
+      offStatus();
     };
-  }, []);
+  }, [handleMarketMessage, handleWsStatus, applyFullSnapshot]);
 
-  return { markets, loading };
+  return state;
 }

@@ -1,4 +1,4 @@
-import { type Market } from './api';
+import { type Market } from '@/lib/api';
 
 export interface MatchGroup {
   name: string;
@@ -34,9 +34,6 @@ function mergePlatformOdds(
   next: { impliedOdds: number; availableSize: number },
 ): { impliedOdds: number; availableSize: number } {
   if (!existing) return { ...next };
-  // Best odds win (lowest implied probability = highest payout). Sum size
-  // across siblings on the same platform (per-team binary markets on Poly,
-  // opposite-direction spread markets).
   const better = next.impliedOdds > 0 && (existing.impliedOdds === 0 || next.impliedOdds < existing.impliedOdds);
   return {
     impliedOdds: better ? next.impliedOdds : existing.impliedOdds,
@@ -58,9 +55,6 @@ export function matchGroupKey(
 ): string {
   const parts = name.split(' vs ');
   const teamKey = parts.length === 2 ? [...parts].sort().join('\x00') : name;
-  // Bucket by 6 hours so same-game events (which can have slightly
-  // different startTimes due to platform reporting) merge while DIFFERENT
-  // games (e.g. a 3-game series on consecutive days) stay separate.
   const t = new Date(startTime).getTime();
   const bucket = Math.floor(t / (6 * 60 * 60 * 1000));
   return `${sport}\x01${league}\x01${teamKey}\x01${bucket}`;
@@ -167,9 +161,6 @@ function sortTotals(outcomes: OutcomeRow[]): OutcomeRow[] {
   return result;
 }
 
-// Returns the home-perspective signed line for a spread outcome, derived from
-// canonicalKey when present (preferred) or label parsing as a fallback.
-// "Home -1.5" / "Away +1.5" / canonical home:-1.5 / away:+1.5 all map to -1.5.
 function homeSignedLine(o: OutcomeRow, team1: string, team2: string): number | null {
   if (o.canonicalKey) {
     const m = o.canonicalKey.match(/^spread:(home|away):([+-]?\d+(?:\.\d+)?)$/);
@@ -186,12 +177,6 @@ function homeSignedLine(o: OutcomeRow, team1: string, team2: string): number | n
   return null;
 }
 
-// Layout: each row is a complementary pair — home -X next to away +X (odds
-// sum to ~1). With canonical bets, "home covers -X" and "away covers +X" are
-// different canonical keys (spread:home:-X and spread:away:+X) but they're
-// the two sides of the same wager. Group by home-perspective signed line so
-// they land in the same bucket: home-keyed rows go in .home, away-keyed
-// (homeSignedLine flipped) rows go in .away.
 function sortHandicaps(outcomes: OutcomeRow[], team1: string, team2: string): OutcomeRow[] {
   const byHomeVal = new Map<number, { home?: OutcomeRow; away?: OutcomeRow }>();
   for (const o of outcomes) {
@@ -199,7 +184,6 @@ function sortHandicaps(outcomes: OutcomeRow[], team1: string, team2: string): Ou
     if (signed === null) continue;
     if (!byHomeVal.has(signed)) byHomeVal.set(signed, {});
     const slot = byHomeVal.get(signed)!;
-    // Determine "side" by canonical key (preferred) or label prefix.
     const isHomeKey = o.canonicalKey?.startsWith('spread:home:')
       ?? o.label.startsWith(team1);
     if (isHomeKey) slot.home = o;
@@ -237,13 +221,10 @@ export function categorizeOutcomes(group: MatchGroup): {
     } else if (o.betType === 'spread') {
       handicaps.push(o);
     } else {
-      // Includes betType === '12' (two-way moneyline) and anything else —
-      // shown under "Other markets" for soccer detail view.
       others.push(o);
     }
   }
 
-  // Positive outcomes first (1/X/2), then their "Not" counterparts in the same column order
   const order = [team1, 'Draw', team2, `Not ${team1}`, 'Not Draw', `Not ${team2}`];
   matchResult.sort((a, b) => {
     const ai = order.indexOf(a.label);
@@ -251,10 +232,7 @@ export function categorizeOutcomes(group: MatchGroup): {
     return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
   });
 
-  // Sort totals by line value ascending, Over before Under at each line
   const sortedTotals = sortTotals(totals);
-
-  // Sort handicaps by home spread value ascending (most negative first), home before away
   const sortedHandicaps = sortHandicaps(handicaps, team1, team2);
 
   return { matchResult, totals: sortedTotals, handicaps: sortedHandicaps, others };
@@ -311,20 +289,13 @@ export function getSpreadMLTotal(group: MatchGroup): {
   const team1 = parts[0] ?? '';
   const team2 = parts[1] ?? '';
 
-  // Moneyline comes from the two-way (no-draw) market. For NA sports this is the
-  // only binary available; for soccer it exists alongside 1x2 and we want only it.
   const mlHome = group.outcomes.find((o) => o.betType === '12' && o.label === team1) ?? null;
   const mlAway = group.outcomes.find((o) => o.betType === '12' && o.label === team2) ?? null;
 
-  // Spreads: prefer mainLine markets; fall back to all if none marked mainLine.
-  // Display layout: home-team-perspective row paired with the away-team-perspective
-  // row at the SAME line magnitude (these are complementary outcomes — odds sum
-  // to ~1, and they correspond to one canonical "spread bet" with two sides).
   const spreads = group.outcomes.filter((o) => o.betType === 'spread');
   const mainSpreads = spreads.filter((o) => o.mainLine);
   const candidateSpreads = mainSpreads.length > 0 ? mainSpreads : spreads;
 
-  // Pick the home-side row first (label starting with team1, or canonical spread:home:*).
   const homeSpread =
     candidateSpreads.find(
       (o) => o.canonicalKey?.startsWith('spread:home:') || o.label.startsWith(team1),
@@ -333,10 +304,6 @@ export function getSpreadMLTotal(group: MatchGroup): {
   if (homeSpread) {
     const homeSigned = homeSignedLine(homeSpread, team1, team2);
     if (homeSigned !== null) {
-      // Complement of "home covers L" is "away covers -L". From the home-team
-      // frame, both have the SAME homeSignedLine (the away-side row's signed
-      // value is negated when computing homeSignedLine). So the complement is
-      // the AWAY-keyed (or away-team-prefixed) row at the same homeSignedLine.
       awaySpread =
         candidateSpreads.find((o) => {
           if (o === homeSpread) return false;
@@ -353,7 +320,6 @@ export function getSpreadMLTotal(group: MatchGroup): {
       ) ?? null;
   }
 
-  // Totals: prefer mainLine markets; match Over+Under at the same line value
   const allTotals = group.outcomes.filter((o) => o.betType === 'total');
   const mainTotals = allTotals.filter((o) => o.mainLine);
   const candidateTotals = mainTotals.length > 0 ? mainTotals : allTotals;

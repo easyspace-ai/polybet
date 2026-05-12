@@ -79,6 +79,45 @@ function sh(cmd) {
 }
 
 /**
+ * Check if the git working tree is clean. If not and CI is detected,
+ * fails the build. If local dev, warns but continues so developers
+ * can smoke-test without committing.
+ */
+function requireCleanGit() {
+  const status = sh("git status --porcelain");
+  if (!status) return true;
+
+  const lines = status.split("\n").filter(Boolean);
+  const isDirty = lines.length > 0;
+
+  if (!isDirty) return true;
+
+  const dirtyPaths = lines
+    .map((l) => l.replace(/^[ AMD?!]{2}.*/, ""))
+    .filter((p) => !p.includes("apps/desktop/") && !p.includes("packages/"));
+
+  const relevantDirty = dirtyPaths.filter(Boolean).length > 0;
+
+  if (relevantDirty || process.env.CI) {
+    console.error("[package] ERROR: git working tree is dirty.");
+    console.error("Dirty files:\n" + status);
+    console.error(
+      "\nFix: commit or stash your changes, then retry:\n" +
+        "  git add . && git stash\n" +
+        "  pnpm package\n" +
+        "  git stash pop",
+    );
+    process.exit(1);
+  }
+
+  console.warn(
+    "[package] WARNING: git working tree is dirty, but outside Desktop.\n" +
+      "  Only Desktop/dashboard changes are relevant — skipping check.",
+  );
+  return true;
+}
+
+/**
  * Strip the leading `--` that npm/pnpm insert to separate their own
  * flags from the ones meant for the underlying script.  Without this,
  * `pnpm package -- --mac --arm64 --publish always` forwards the bare
@@ -331,6 +370,8 @@ function main() {
   console.log(
     `[package] build matrix → ${buildMatrix.map(formatTarget).join(", ")}`,
   );
+
+  requireCleanGit();
 
   // Step 1: build the Electron main/preload/renderer bundles. Without
   // this step electron-builder silently packages whatever is already in

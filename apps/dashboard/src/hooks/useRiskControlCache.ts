@@ -1,35 +1,38 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import {
   getRiskPositions,
   getRiskTasks,
   type RiskPositionRow,
   type RiskPositionsMeta,
   type RiskTaskRow,
-} from '../lib/api';
-import { wsBus, type PositionUpdateMessage, type PolyBookFrame } from '../lib/wsBus';
+} from '@/lib/api';
+import { wsBus, type PositionUpdateMessage, type PolyBookFrame } from '@/lib/wsBus';
 
-interface CacheState {
+interface RiskState {
   positions: RiskPositionRow[];
   meta: RiskPositionsMeta | null;
   tasks: RiskTaskRow[];
   loading: boolean;
-  lastRefresh: number;
+  error: string | null;
+  lastRefresh: Date | null;
+  wsConnected: boolean;
 }
 
-const cache: CacheState = {
+const cache: RiskState = {
   positions: [],
   meta: null,
   tasks: [],
   loading: true,
-  lastRefresh: 0,
+  error: null,
+  lastRefresh: null,
+  wsConnected: false,
 };
 
-const subscribers = new Set<(s: CacheState) => void>();
-
+const subscribers = new Set<(state: RiskState) => void>();
 const tokenBookMap = new Map<string, PolyBookFrame>();
 
 function notifySubscribers() {
-  subscribers.forEach((fn) => fn({ ...cache }));
+  subscribers.forEach(fn => fn({ ...cache }));
 }
 
 function getBestBidCents(frame: PolyBookFrame | undefined): number | null {
@@ -59,21 +62,26 @@ function updatePositionsFromBook() {
     }
   }
   if (changed) {
-    cache.lastRefresh = Date.now();
+    cache.lastRefresh = new Date();
     notifySubscribers();
   }
 }
 
 function fetchRiskData(silent = false) {
-  if (!silent) cache.loading = true;
-  notifySubscribers();
+  if (!silent) {
+    cache.loading = true;
+    cache.error = null;
+    notifySubscribers();
+  }
 
   Promise.all([getRiskPositions(), getRiskTasks(50)])
     .then(([p, t]) => {
       cache.positions = p.positions;
       cache.meta = p.meta ?? null;
       cache.tasks = t.tasks;
-      cache.lastRefresh = Date.now();
+      cache.lastRefresh = new Date();
+      cache.loading = false;
+      cache.error = null;
 
       const tokenIds = p.positions
         .filter(pos => pos.status === 'open' && pos.tokenId)
@@ -82,16 +90,18 @@ function fetchRiskData(silent = false) {
         wsBus.subscribePolyBook(tid);
       }
     })
-    .catch(() => {})
-    .finally(() => {
+    .catch((err) => {
       cache.loading = false;
+      cache.error = err instanceof Error ? err.message : '加载风控数据失败';
+    })
+    .finally(() => {
       notifySubscribers();
     });
 }
 
 function handlePositionUpdate(msg: PositionUpdateMessage) {
   cache.positions = msg.data as RiskPositionRow[];
-  cache.lastRefresh = Date.now();
+  cache.lastRefresh = new Date();
 
   const tokenIds = cache.positions
     .filter(pos => pos.status === 'open' && pos.tokenId)
@@ -103,21 +113,25 @@ function handlePositionUpdate(msg: PositionUpdateMessage) {
   notifySubscribers();
 }
 
+function handlePolyBook(frame: PolyBookFrame) {
+  tokenBookMap.set(frame.tokenId, frame);
+  updatePositionsFromBook();
+}
+
+function handleWsStatus(connected: boolean) {
+  cache.wsConnected = connected;
+  notifySubscribers();
+}
+
 if (typeof window !== 'undefined') {
   fetchRiskData(true);
   wsBus.onPositionUpdate(handlePositionUpdate);
-
-  const handlePolyBook = (frame: PolyBookFrame) => {
-    tokenBookMap.set(frame.tokenId, frame);
-    updatePositionsFromBook();
-  };
   wsBus.onPolyBook(handlePolyBook);
-
-  const pollInterval = setInterval(() => fetchRiskData(true), 5000);
+  wsBus.onStatus(handleWsStatus);
 }
 
 export function useRiskControlCache() {
-  const [state, setState] = useState<CacheState>({ ...cache });
+  const [state, setState] = useState<RiskState>({ ...cache });
 
   useEffect(() => {
     subscribers.add(setState);
@@ -127,11 +141,18 @@ export function useRiskControlCache() {
     };
   }, []);
 
+  const refresh = useCallback(() => {
+    fetchRiskData(false);
+  }, []);
+
   return {
     positions: state.positions,
     meta: state.meta,
     tasks: state.tasks,
     loading: state.loading,
-    refresh: () => fetchRiskData(false),
+    error: state.error,
+    lastRefresh: state.lastRefresh,
+    wsConnected: state.wsConnected,
+    refresh,
   };
 }

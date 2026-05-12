@@ -46,13 +46,11 @@ export interface TradeResult {
   status: string;
   platform: string;
   txHash?: string;
-  /** Populated when status is not "filled" (e.g. CLOB / DB error text). */
   failureReason?: string;
 }
 
 export interface TradeResponse {
   status: string;
-  /** Aggregated leg failure hints (same info as trades[].failureReason). */
   message?: string;
   trades: TradeResult[];
   plan: AllocationPlan;
@@ -119,7 +117,6 @@ export interface PolymarketAccountListItem {
 
 export interface PolymarketAccountCreateBody {
   name: string;
-  /** Owner EOA private key; server derives CLOB API key + CREATE2 funder (POLY_1271). */
   privateKey: string;
 }
 
@@ -206,19 +203,12 @@ export const getMarketStats = () => apiFetch<MarketStatsResponse>('/api/stats/ma
 
 export interface RiskPositionRow {
   id: string;
-  /** Raw title stored on the position (may be CLOB shorthand). */
   title: string;
-  /** Human-friendly event title when synced from Gamma (e.g. "Team A vs Team B"). */
   displayTitle?: string;
-  /** Lowercase sport hint from Gamma (e.g. nba, nfl) for UI icon. */
   sport?: string;
-  /** Primary Polymarket event URL when slug/event id is known. */
   officialUrl?: string;
-  /** Fallback search on polymarket.com when no direct event link. */
   officialSearchUrl?: string;
-  /** Polymarket/Gamma `image` (cover) when available. */
   imageUrl?: string;
-  /** Polymarket/Gamma `icon`; often same as imageUrl. */
   iconUrl?: string;
   sideLabel: string;
   tokenId: string;
@@ -234,7 +224,6 @@ export interface RiskPositionRow {
   maxPayoffUsd: number;
   potentialProfitUsd: number;
   status: string;
-  /** bot = 本系统路由成交；polymarket_clob = CLOB 用户通道 / REST 同步 */
   source?: string;
 }
 
@@ -243,9 +232,7 @@ export interface RiskPositionsMeta {
   userWsConnecting?: boolean;
   userWsLastMessageAt: string | null;
   restTradesSyncLastAt: string | null;
-  /** Bot-reported last WS/credentials issue. */
   userWsLastIssue?: string | null;
-  /** Set when env or dashboard proxy URL is configured (Polymarket user WSS tunnels via CONNECT). */
   outboundProxyConfigured?: boolean;
   minOpenRiskShares?: number;
 }
@@ -267,7 +254,6 @@ export const getRiskPositions = () =>
 export const getRiskTasks = (limit = 40) =>
   apiFetch<{ tasks: RiskTaskRow[] }>(`/api/risk/tasks?limit=${limit}`);
 
-/** CLOB REST sync of positions + on-chain reconcile, then server risk/balance cache rebuild. */
 export const postRiskOfficialRefresh = () =>
   apiFetch<{ ok: boolean; syncError?: string }>('/api/risk/refresh', { method: 'POST' });
 

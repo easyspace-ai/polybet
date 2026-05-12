@@ -4,5 +4,7 @@ out
 .DS_Store
 .eslintcache
 *.log*
+# electron-builder update metadata (generated on each build, must not be tracked)
+latest*.yml
 # CLI binary bundled at build time (from server/bin/)
 resources/bin/

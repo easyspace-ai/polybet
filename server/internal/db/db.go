@@ -18,17 +18,13 @@ var migrations embed.FS
 func Open(databaseURL string) (*sql.DB, error) {
 	dsn := databaseURL
 	if strings.HasPrefix(dsn, "file:") {
-		if !strings.Contains(dsn, "_pragma=") && !strings.Contains(dsn, "?") {
-			dsn = dsn + "?_pragma=foreign_keys(1)"
-		} else if strings.Contains(dsn, "?") && !strings.Contains(dsn, "_pragma=") {
-			dsn = dsn + "&_pragma=foreign_keys(1)"
-		}
+		dsn = withSQLitePragmas(dsn)
 	} else if strings.Contains(dsn, "://") {
 		// prisma-style file:./dev.db -> sqlite path
 		dsn = strings.TrimPrefix(dsn, "file:")
-		dsn = "file:" + dsn + "?_pragma=foreign_keys(1)"
+		dsn = withSQLitePragmas("file:" + dsn)
 	} else {
-		dsn = "file:" + dsn + "?_pragma=foreign_keys(1)"
+		dsn = withSQLitePragmas("file:" + dsn)
 	}
 	if err := ensureSQLiteParentDir(dsn); err != nil {
 		return nil, fmt.Errorf("sqlite parent dir: %w", err)
@@ -43,6 +39,26 @@ func Open(databaseURL string) (*sql.DB, error) {
 		return nil, err
 	}
 	return conn, nil
+}
+
+func withSQLitePragmas(dsn string) string {
+	pragmas := []string{
+		"_pragma=foreign_keys(1)",
+		"_pragma=busy_timeout(10000)",
+		"_pragma=journal_mode(WAL)",
+	}
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	for _, pragma := range pragmas {
+		if strings.Contains(dsn, pragma) {
+			continue
+		}
+		dsn += sep + pragma
+		sep = "&"
+	}
+	return dsn
 }
 
 // ensureSQLiteParentDir creates the parent directory for a file: DSN so SQLite can create the db file.

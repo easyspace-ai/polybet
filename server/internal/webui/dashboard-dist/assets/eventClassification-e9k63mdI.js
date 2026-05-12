@@ -1,0 +1,1 @@
+const r=["nba","nhl"];function e(t){if(!t.trim())return[...r];try{const n=JSON.parse(t);return Array.isArray(n)?n.map(a=>String(a).trim().toLowerCase()).filter(Boolean):[...r]}catch{return[...r]}}export{r as D,e as p};

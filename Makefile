@@ -58,8 +58,9 @@ dashboard-build:
 
 dashboard-embed: dashboard-build
 	@test -f "$(SERVER)/go.mod" || (echo "error: missing $(SERVER)/go.mod"; exit 1)
+	@test -f "$(CURDIR)/apps/dashboard/dist/client/index.html" || (echo "error: missing apps/dashboard/dist/client/index.html"; exit 1)
 	@dest="$(SERVER)/internal/webui/dashboard-dist"; \
-	rm -rf "$$dest" && mkdir -p "$$dest" && cp -a "$(CURDIR)/apps/dashboard/dist/." "$$dest/" && \
+	rm -rf "$$dest" && mkdir -p "$$dest" && cp -a "$(CURDIR)/apps/dashboard/dist/client/." "$$dest/" && \
 	echo "dashboard → $$dest"
 
 go-build-server: dashboard-embed

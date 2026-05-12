@@ -1,5 +1,3 @@
-/** Lowercase league / sport tags — same shape as Settings → 赛事分类 (`eventClassificationTags`). */
-
 export const DEFAULT_EVENT_CLASSIFICATION_TAGS = ['nba', 'nhl'];
 
 export function parseEventClassificationTags(raw: string): string[] {

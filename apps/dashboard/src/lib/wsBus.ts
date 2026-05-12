@@ -91,99 +91,117 @@ class WsBus {
   private statusListeners = new Set<StatusListener>();
   private balanceUpdateListeners = new Set<BalanceUpdateListener>();
   private positionUpdateListeners = new Set<PositionUpdateListener>();
-  // Mirror of the bot's market list. Populated by `marketsSnapshot` on WS
-  // connect, then patched by `marketUpsert` / `marketRemoved`. Replayed to
-  // late subscribers so a remounting page sees the current state without
-  // waiting for a fresh snapshot.
   private marketsCache = new Map<string, Market>();
   private marketsSnapshotReceived = false;
   private polyBookSubRefs = new Map<string, number>();
   private polyOddsSubRefs = new Map<string, number>();
+  private connected = false;
+  private connecting = false;
+
+  get isConnected(): boolean {
+    return this.connected;
+  }
+
+  get isConnecting(): boolean {
+    return this.connecting;
+  }
 
   private connect(): void {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
+    if (this.connecting) return;
 
+    this.connecting = true;
     console.log('[ws] Connecting to', WS_URL);
-    const ws = new WebSocket(WS_URL);
-    this.ws = ws;
+    
+    try {
+      const ws = new WebSocket(WS_URL);
+      this.ws = ws;
 
-    ws.onopen = () => {
-      console.log('[ws] WebSocket connected');
-      if (this.pingTimer) clearInterval(this.pingTimer);
-      this.pingTimer = setInterval(() => {
-        if (this.ws?.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify({ type: 'ping' }));
+      ws.onopen = () => {
+        console.log('[ws] WebSocket connected');
+        this.connected = true;
+        this.connecting = false;
+        if (this.pingTimer) clearInterval(this.pingTimer);
+        this.pingTimer = setInterval(() => {
+          if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'ping' }));
+          }
+        }, 30_000);
+        for (const l of this.statusListeners) l(true);
+        for (const tokenId of this.polyBookSubRefs.keys()) {
+          this.send({ type: 'subscribePolyBook', tokenId });
         }
-      }, 30_000);
-      for (const l of this.statusListeners) l(true);
-      for (const tokenId of this.polyBookSubRefs.keys()) {
-        this.send({ type: 'subscribePolyBook', tokenId });
-      }
-      const polyOddsTokens = Array.from(this.polyOddsSubRefs.keys());
-      if (polyOddsTokens.length > 0) {
-        this.send({ type: 'subscribePolyOdds', tokenIds: polyOddsTokens });
-      }
-    };
-
-    ws.onmessage = (event) => {
-      let msg: IncomingMessage;
-      try {
-        msg = JSON.parse(event.data as string) as IncomingMessage;
-      } catch {
-        return;
-      }
-      if (msg.type === 'snapshot' || msg.type === 'update') {
-        for (const l of this.oddsListeners) l(msg);
-      } else if (msg.type === 'bookSnapshot' || msg.type === 'bookUpdate') {
-        const frame: BookFrame = {
-          marketHash: msg.marketHash,
-          outcomeOne: msg.outcomeOne,
-          outcomeTwo: msg.outcomeTwo,
-        };
-        for (const l of this.bookListeners) l(frame);
-      } else if (msg.type === 'polyBookSnapshot' || msg.type === 'polyBookUpdate') {
-        const frame: PolyBookFrame = { tokenId: msg.tokenId, levels: msg.levels };
-        for (const l of this.polyBookListeners) l(frame);
-      } else if (msg.type === 'polyOddsSnapshot' || msg.type === 'polyOddsUpdate') {
-        for (const l of this.polyOddsListeners) l(msg);
-      } else if (msg.type === 'marketsSnapshot') {
-        // Server may send [] before DB is ready or while building payload; do not treat
-        // that as the authoritative snapshot (would block REST fallback in useMarketList).
-        if (msg.data.length > 0) {
-          this.marketsCache.clear();
-          for (const m of msg.data) this.marketsCache.set(m.id, m);
-          this.marketsSnapshotReceived = true;
+        const polyOddsTokens = Array.from(this.polyOddsSubRefs.keys());
+        if (polyOddsTokens.length > 0) {
+          this.send({ type: 'subscribePolyOdds', tokenIds: polyOddsTokens });
         }
-        for (const l of this.marketLifecycleListeners) l(msg);
-      } else if (msg.type === 'marketUpsert') {
-        this.marketsCache.set(msg.data.id, msg.data);
-        for (const l of this.marketLifecycleListeners) l(msg);
-      } else if (msg.type === 'marketRemoved') {
-        this.marketsCache.delete(msg.id);
-        for (const l of this.marketLifecycleListeners) l(msg);
-      } else if (msg.type === 'balance_update') {
-        for (const l of this.balanceUpdateListeners) l(msg);
-      } else if (msg.type === 'position_update') {
-        for (const l of this.positionUpdateListeners) l(msg);
-      }
-    };
+      };
 
-    ws.onerror = () => {
-      console.warn('[ws] WebSocket error');
-      for (const l of this.statusListeners) l(false);
-    };
+      ws.onmessage = (event) => {
+        let msg: IncomingMessage;
+        try {
+          msg = JSON.parse(event.data as string) as IncomingMessage;
+        } catch {
+          return;
+        }
+        if (msg.type === 'snapshot' || msg.type === 'update') {
+          for (const l of this.oddsListeners) l(msg);
+        } else if (msg.type === 'bookSnapshot' || msg.type === 'bookUpdate') {
+          const frame: BookFrame = {
+            marketHash: msg.marketHash,
+            outcomeOne: msg.outcomeOne,
+            outcomeTwo: msg.outcomeTwo,
+          };
+          for (const l of this.bookListeners) l(frame);
+        } else if (msg.type === 'polyBookSnapshot' || msg.type === 'polyBookUpdate') {
+          const frame: PolyBookFrame = { tokenId: msg.tokenId, levels: msg.levels };
+          for (const l of this.polyBookListeners) l(frame);
+        } else if (msg.type === 'polyOddsSnapshot' || msg.type === 'polyOddsUpdate') {
+          for (const l of this.polyOddsListeners) l(msg);
+        } else if (msg.type === 'marketsSnapshot') {
+          if (msg.data.length > 0) {
+            this.marketsCache.clear();
+            for (const m of msg.data) this.marketsCache.set(m.id, m);
+            this.marketsSnapshotReceived = true;
+          }
+          for (const l of this.marketLifecycleListeners) l(msg);
+        } else if (msg.type === 'marketUpsert') {
+          this.marketsCache.set(msg.data.id, msg.data);
+          for (const l of this.marketLifecycleListeners) l(msg);
+        } else if (msg.type === 'marketRemoved') {
+          this.marketsCache.delete(msg.id);
+          for (const l of this.marketLifecycleListeners) l(msg);
+        } else if (msg.type === 'balance_update') {
+          for (const l of this.balanceUpdateListeners) l(msg);
+        } else if (msg.type === 'position_update') {
+          for (const l of this.positionUpdateListeners) l(msg);
+        }
+      };
 
-    ws.onclose = () => {
-      console.warn('[ws] WebSocket closed, reconnecting in 3s...');
-      this.ws = null;
-      if (this.pingTimer) {
-        clearInterval(this.pingTimer);
-        this.pingTimer = null;
-      }
-      for (const l of this.statusListeners) l(false);
+      ws.onerror = () => {
+        console.warn('[ws] WebSocket error');
+        for (const l of this.statusListeners) l(false);
+      };
+
+      ws.onclose = () => {
+        console.warn('[ws] WebSocket closed, reconnecting in 3s...');
+        this.connected = false;
+        this.connecting = false;
+        this.ws = null;
+        if (this.pingTimer) {
+          clearInterval(this.pingTimer);
+          this.pingTimer = null;
+        }
+        for (const l of this.statusListeners) l(false);
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = setTimeout(() => this.connect(), 3_000);
+      };
+    } catch (e) {
+      console.error('[ws] Failed to connect:', e);
+      this.connecting = false;
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = setTimeout(() => this.connect(), 3_000);
-    };
+    }
   }
 
   private send(payload: unknown): void {
@@ -197,7 +215,9 @@ class WsBus {
   }
 
   private ensureConnected(): void {
-    if (!this.ws) this.connect();
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.connect();
+    }
   }
 
   onOdds(listener: OddsListener): () => void {
@@ -215,11 +235,6 @@ class WsBus {
   onMarketLifecycle(listener: MarketLifecycleListener): () => void {
     this.ensureConnected();
     this.marketLifecycleListeners.add(listener);
-    // Replay the cached snapshot so a late-subscribing component (e.g. after
-    // a route change) gets the full market list without waiting for a fresh
-    // WS reconnect. Only replay if we've actually received a snapshot — an
-    // empty cache before first connect would mislead the consumer into
-    // thinking there are zero markets.
     if (this.marketsSnapshotReceived) {
       listener({ type: 'marketsSnapshot', data: Array.from(this.marketsCache.values()) });
     }
