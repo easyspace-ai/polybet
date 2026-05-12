@@ -15,7 +15,7 @@ export default defineConfig({
       // Allow parallel worktrees to run `pnpm dev:desktop` side-by-side
       // (e.g. Poly Bot alongside a primary checkout) by overriding
       // the renderer port via env. Falls back to 5173 for the common case.
-      port: Number(process.env.DESKTOP_RENDERER_PORT) || 5173,
+      port: Number(process.env.DESKTOP_RENDERER_PORT) || 8080,
       strictPort: true,
     },
     plugins: [react(), tailwindcss()],

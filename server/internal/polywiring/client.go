@@ -19,6 +19,8 @@ type AuthedCLOB struct {
 	Client clob.Client
 	Signer auth.Signer
 	APIKey *auth.APIKey
+	// FunderAddress is the Polymarket proxy wallet (same as CLOB funder query param), used for Data API /positions.
+	FunderAddress string
 }
 
 func BuildAuthedCLOB(cfg *config.Config, acct *store.PolymarketAccount) (*AuthedCLOB, error) {
@@ -48,9 +50,10 @@ func BuildAuthedCLOB(cfg *config.Config, acct *store.PolymarketAccount) (*Authed
 		opts = append(opts, polymarket.WithProxyURL(cfg.HTTPPlatformProxy))
 	}
 	root := polymarket.NewClient(opts...)
-	funder := common.HexToAddress(strings.TrimSpace(acct.FunderAddress))
+	funderStr := strings.TrimSpace(acct.FunderAddress)
+	funder := common.HexToAddress(funderStr)
 	cl := root.CLOB.WithAuth(signer, apiKey).
 		WithSignatureType(auth.SignaturePoly1271).
 		WithFunder(funder)
-	return &AuthedCLOB{Client: cl, Signer: signer, APIKey: apiKey}, nil
+	return &AuthedCLOB{Client: cl, Signer: signer, APIKey: apiKey, FunderAddress: funderStr}, nil
 }

@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { getBalances, type BalanceSummary } from '../lib/api';
-import { wsBus, type BalanceUpdateMessage } from '../lib/wsBus';
+import { useEffect, useState } from 'react';
+import { getBalances, type BalanceSummary } from '@/lib/api';
+import { wsBus, type BalanceUpdateMessage } from '@/lib/wsBus';
 
 interface CacheState {
   data: BalanceSummary | null;

@@ -54,7 +54,7 @@ deps:
 	pnpm install
 
 dashboard-build:
-	cd "$(CURDIR)/apps/dashboard" && pnpm install && pnpm run build
+	cd "$(CURDIR)/apps/dashboard" && bun install && bun run build
 
 dashboard-embed: dashboard-build
 	@test -f "$(SERVER)/go.mod" || (echo "error: missing $(SERVER)/go.mod"; exit 1)
@@ -76,7 +76,7 @@ test-go:
 	@(cd "$(SERVER)" && CGO_ENABLED=1 go test ./...)
 
 lint-dashboard:
-	cd "$(CURDIR)/apps/dashboard" && pnpm install && pnpm run lint
+	cd "$(CURDIR)/apps/dashboard" && bun install && bun run lint
 
 desktop-resources: dashboard-embed
 	@test -f "$(SERVER)/go.mod" || (echo "error: missing $(SERVER)/go.mod"; exit 1)

@@ -170,6 +170,11 @@ func (a *App) InvalidateAndRebuildCache() {
 	a.BalanceCache.Invalidate(context.Background())
 	a.RiskCache.Invalidate(context.Background())
 
+	// Force reconcile before reading from DB so stale positions are closed.
+	if err := a.Risk.ReconcileOpenRiskPositionsWithClobBalances(context.Background()); err != nil {
+		a.Log.Warn("invalidate_reconcile_err", "err", err.Error())
+	}
+
 	rows, enrichedMeta, err := a.Risk.ListRiskPositionsEnriched(context.Background(), meta)
 	if err == nil {
 		_ = a.RiskCache.Set(context.Background(), rediska.RiskFetchResult{Positions: rows, Meta: rediska.RiskMeta{

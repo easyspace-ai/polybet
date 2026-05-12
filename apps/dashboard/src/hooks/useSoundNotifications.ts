@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
-import { wsBus, type PositionUpdateMessage } from '../lib/wsBus';
-import type { RiskPositionRow } from '../lib/api';
+import { wsBus, type PositionUpdateMessage } from '@/lib/wsBus';
+import type { RiskPositionRow } from '@/lib/api';
 import { useSoundSettings } from './useSoundSettings';
 
 interface DesktopAPI {

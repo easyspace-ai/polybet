@@ -71,13 +71,16 @@ type StatusListener = (connected: boolean) => void;
 type BalanceUpdateListener = (msg: BalanceUpdateMessage) => void;
 type PositionUpdateListener = (msg: PositionUpdateMessage) => void;
 
-const WS_URL = (() => {
+function getWsUrl(): string {
   if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL as string;
   const base = import.meta.env.VITE_API_BASE_URL as string | undefined;
   if (base) return base.replace(/^http/, 'ws') + '/ws';
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.host}/ws`;
-})();
+  if (typeof window !== 'undefined') {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${window.location.host}/ws`;
+  }
+  return 'ws://localhost/ws';
+}
 
 class WsBus {
   private ws: WebSocket | null = null;
@@ -101,10 +104,12 @@ class WsBus {
   private polyOddsSubRefs = new Map<string, number>();
 
   private connect(): void {
+    if (typeof WebSocket === 'undefined') return;
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
 
-    console.log('[ws] Connecting to', WS_URL);
-    const ws = new WebSocket(WS_URL);
+    const url = getWsUrl();
+    console.log('[ws] Connecting to', url);
+    const ws = new WebSocket(url);
     this.ws = ws;
 
     ws.onopen = () => {
@@ -233,11 +238,13 @@ class WsBus {
   }
 
   onBalanceUpdate(listener: BalanceUpdateListener): () => void {
+    this.ensureConnected();
     this.balanceUpdateListeners.add(listener);
     return () => { this.balanceUpdateListeners.delete(listener); };
   }
 
   onPositionUpdate(listener: PositionUpdateListener): () => void {
+    this.ensureConnected();
     this.positionUpdateListeners.add(listener);
     return () => { this.positionUpdateListeners.delete(listener); };
   }

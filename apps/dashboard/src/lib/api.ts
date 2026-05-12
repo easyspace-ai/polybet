@@ -318,3 +318,26 @@ export const postSetupComplete = () =>
 
 export const postCacheRefresh = () =>
   apiFetch<{ ok: boolean; message: string }>('/api/cache/refresh', { method: 'POST' });
+
+export interface LogEntry {
+  time: string;
+  level: string;
+  category: string;
+  message: string;
+}
+
+export const getLogs = () => apiFetch<{ logs: LogEntry[] }>('/api/logs');
+
+export const getErrorLogs = () => apiFetch<{ logs: LogEntry[] }>('/api/logs/errors');
+
+export const clearLogs = () => apiFetch<{ ok: boolean }>('/api/logs/clear', { method: 'POST' });
+
+export interface ServerStatus {
+  initStatus?: { complete: boolean };
+  wsClients: number;
+  serverTime: string;
+}
+
+export const getStatus = () => apiFetch<ServerStatus>('/api/status');
+
+export const restartServer = () => apiFetch<{ ok: boolean }>('/api/restart', { method: 'POST' });

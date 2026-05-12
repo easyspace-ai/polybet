@@ -1,59 +1,73 @@
 import { useEffect, useState, useCallback } from 'react';
 
-export type Theme = 'dark' | 'light';
+export type Theme = 'light' | 'dark' | 'system';
 
-const STORAGE_KEY = 'theme';
+const STORAGE_KEY = 'polybet-theme';
+
+function getSystemTheme(): 'light' | 'dark' {
+  if (typeof window === 'undefined') return 'dark';
+  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
 
 function getStoredTheme(): Theme {
-  if (typeof window === 'undefined') return 'light';
-  return (localStorage.getItem(STORAGE_KEY) as Theme) || 'light';
+  if (typeof window === 'undefined') return 'system';
+  const raw = localStorage.getItem(STORAGE_KEY) as Theme | null;
+  if (raw === 'light' || raw === 'dark' || raw === 'system') return raw;
+  return 'system';
 }
 
-export { getStoredTheme, applyTheme };
+function getResolvedTheme(theme: Theme): 'light' | 'dark' {
+  return theme === 'system' ? getSystemTheme() : theme;
+}
 
-function applyTheme(theme: Theme) {
+function applyThemeClass(resolved: 'light' | 'dark') {
   if (typeof document === 'undefined') return;
-  const root = document.documentElement;
-  root.classList.remove('light', 'dark');
-  root.classList.add(theme);
+  const html = document.documentElement;
+  html.classList.remove('light', 'dark');
+  html.classList.add(resolved);
 }
 
-function subscribeTheme(callback: (theme: Theme) => void): () => void {
-  const handler = (e: StorageEvent) => {
-    if (e.key === STORAGE_KEY && e.newValue) {
-      callback(e.newValue as Theme);
-    }
-  };
-  window.addEventListener('storage', handler);
-  return () => window.removeEventListener('storage', handler);
-}
-
-export function useTheme(): [Theme, (theme: Theme) => void] {
-  const [theme, setThemeState] = useState<Theme>(getStoredTheme);
+export function useTheme(): { theme: Theme; resolvedTheme: 'light' | 'dark'; setTheme: (t: Theme) => void } {
+  const [theme, setThemeState] = useState<Theme>(() => getStoredTheme());
+  const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>(() => getResolvedTheme(getStoredTheme()));
 
   useEffect(() => {
-    applyTheme(theme);
+    applyThemeClass(resolvedTheme);
+  }, [resolvedTheme]);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: light)');
+    const onChange = () => {
+      if (theme === 'system') {
+        const resolved = getSystemTheme();
+        setResolvedTheme(resolved);
+        applyThemeClass(resolved);
+      }
+    };
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
   }, [theme]);
 
   useEffect(() => {
-    const unsub = subscribeTheme((t) => {
-      setThemeState(t);
-      applyTheme(t);
-    });
-    return unsub;
+    const handler = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY && e.newValue) {
+        const t = e.newValue as Theme;
+        setThemeState(t);
+        setResolvedTheme(getResolvedTheme(t));
+      }
+    };
+    window.addEventListener('storage', handler);
+    return () => window.removeEventListener('storage', handler);
   }, []);
 
   const setTheme = useCallback((t: Theme) => {
     localStorage.setItem(STORAGE_KEY, t);
     setThemeState(t);
-    applyTheme(t);
+    const resolved = getResolvedTheme(t);
+    setResolvedTheme(resolved);
+    applyThemeClass(resolved);
     window.dispatchEvent(new StorageEvent('storage', { key: STORAGE_KEY, newValue: t }));
   }, []);
 
-  return [theme, setTheme];
-}
-
-export function useIsLight(): boolean {
-  const [theme] = useTheme();
-  return theme === 'light';
+  return { theme, resolvedTheme, setTheme };
 }

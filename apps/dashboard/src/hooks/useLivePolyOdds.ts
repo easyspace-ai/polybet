@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { wsBus } from '../lib/wsBus';
+import { wsBus } from '@/lib/wsBus';
 
 // Maps CLOB tokenId → live post-fee taker odds (impliedOdds).
 // Polymarket outcome externalId is the CLOB tokenId (see adapter convention).

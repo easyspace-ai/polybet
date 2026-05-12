@@ -3,19 +3,26 @@ package risksvc
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"math"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/easyspace-ai/polysdk/pkg/clob/clobtypes"
 
+	"github.com/easyspace-ai/polybet/internal/dataclient"
 	"github.com/easyspace-ai/polybet/internal/gammaclient"
 	"github.com/easyspace-ai/polybet/internal/polyexec"
+	"github.com/easyspace-ai/polybet/internal/polywiring"
 	"github.com/easyspace-ai/polybet/internal/service/polysession"
 	"github.com/easyspace-ai/polybet/internal/store"
 )
 
 const reconcileMinInterval = 60 * time.Second
+
+// reconcileZeroEps: treat on-chain conditional balance at or below this as flat (Polymarket UI shows no position).
+const reconcileZeroEps = 1e-8
 
 type Meta struct {
 	UserWsConnected         bool    `json:"userWsConnected"`
@@ -155,39 +162,145 @@ func (s *Service) maybeReconcileBalances(ctx context.Context) error {
 	if time.Since(lastReconcile) < reconcileMinInterval {
 		return nil
 	}
-	lastReconcile = time.Now()
 	return s.ReconcileOpenRiskPositionsWithClobBalances(ctx)
 }
 
+// ReconcileOpenRiskPositionsWithClobBalances compares each open/closing row to Polymarket portfolio data
+// (Data API /positions — same family as the website) when possible, then falls back to CLOB balance-allowance.
 func (s *Service) ReconcileOpenRiskPositionsWithClobBalances(ctx context.Context) error {
 	cl, err := polysession.ResolveAuthedCLOB(ctx, s.cfg, s.st)
 	if err != nil {
 		return err
 	}
-	min := s.minShares(ctx)
+	return s.reconcileRiskPositionsWithAuthedCLOB(ctx, cl)
+}
+
+func polyWantsOfficialPortfolio(funder string) bool {
+	a := strings.TrimSpace(strings.ToLower(funder))
+	return strings.HasPrefix(a, "0x") && len(a) == 42 && a != "0x0000000000000000000000000000000000000000"
+}
+
+func useOfficialDataForSource(source string) bool {
+	switch strings.TrimSpace(source) {
+	case "", "polymarket_clob", "bot":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) reconcileRiskPositionsWithAuthedCLOB(ctx context.Context, cl *polywiring.AuthedCLOB) error {
+	if cl == nil || cl.Client == nil {
+		return errors.New("nil authed clob")
+	}
+	client := cl.Client
+	fund := strings.TrimSpace(cl.FunderAddress)
+
+	var official map[string]float64
+	var dataErr error
+	if polyWantsOfficialPortfolio(fund) {
+		var err error
+		official, err = dataclient.FetchPositivePositionSizes(ctx, s.cfg.HTTPPlatformProxy, fund)
+		dataErr = err
+		if err != nil && s.log != nil {
+			s.log.Warn("risk_reconcile_data_positions_err", "funder", fund, "err", err.Error())
+		}
+	}
+
 	rows, err := s.st.ListRiskPositionsOpenClosing(ctx)
 	if err != nil {
 		return err
 	}
 	for _, p := range rows {
-		bal, err := cl.Client.BalanceAllowance(ctx, &clobtypes.BalanceAllowanceRequest{
+		tok := strings.TrimSpace(p.TokenID)
+		if tok == "" {
+			if s.log != nil {
+				s.log.Debug("risk_reconcile_skip_no_token", "position_id", p.ID)
+			}
+			continue
+		}
+
+		useData := dataErr == nil && official != nil && useOfficialDataForSource(p.Source) && polyWantsOfficialPortfolio(fund)
+		if useData {
+			sz, has := official[tok]
+			if !has || sz <= reconcileZeroEps {
+				if s.log != nil {
+					s.log.Info("risk_reconcile_close_data_api", "position_id", p.ID, "token_id", tok, "has", has, "api_size", sz, "source", p.Source)
+				}
+				if closeErr := s.st.CloseRiskPosition(ctx, p.ID); closeErr != nil {
+					s.log.Error("risk_reconcile_close_err", "position_id", p.ID, "token_id", tok, "err", closeErr.Error())
+				}
+				continue
+			}
+			if sz+1e-9 < p.SizeShares {
+				ratio := sz / p.SizeShares
+				newCost := max(0, p.CostUSD*ratio)
+				if s.log != nil {
+					s.log.Info("risk_reconcile_scale_data_api", "position_id", p.ID, "token_id", tok, "db_shares", p.SizeShares, "api_shares", sz)
+				}
+				if updateErr := s.st.UpdateRiskPositionSharesCost(ctx, p.ID, sz, newCost); updateErr != nil {
+					s.log.Error("risk_reconcile_scale_err", "position_id", p.ID, "token_id", tok, "err", updateErr.Error())
+				}
+			}
+			continue
+		}
+
+		bal, err := client.BalanceAllowance(ctx, &clobtypes.BalanceAllowanceRequest{
 			AssetType: clobtypes.AssetTypeConditional,
-			TokenID:   p.TokenID,
+			TokenID:   tok,
 		})
 		if err != nil {
+			if s.log != nil {
+				s.log.Warn("risk_reconcile_balance_err", "position_id", p.ID, "token_id", tok, "err", err.Error())
+			}
+			// Fallback: if official data is available, use it even for sources that normally prefer on-chain.
+			if dataErr == nil && official != nil {
+				sz, has := official[tok]
+				if !has || sz <= reconcileZeroEps {
+					if s.log != nil {
+						s.log.Info("risk_reconcile_close_data_fallback", "position_id", p.ID, "token_id", tok, "has", has, "api_size", sz, "source", p.Source)
+					}
+					if closeErr := s.st.CloseRiskPosition(ctx, p.ID); closeErr != nil {
+						s.log.Error("risk_reconcile_close_err", "position_id", p.ID, "token_id", tok, "err", closeErr.Error())
+					}
+				} else if sz+1e-9 < p.SizeShares {
+					ratio := sz / p.SizeShares
+					newCost := max(0, p.CostUSD*ratio)
+					if s.log != nil {
+						s.log.Info("risk_reconcile_scale_data_fallback", "position_id", p.ID, "token_id", tok, "db_shares", p.SizeShares, "api_shares", sz)
+					}
+					if updateErr := s.st.UpdateRiskPositionSharesCost(ctx, p.ID, sz, newCost); updateErr != nil {
+						s.log.Error("risk_reconcile_scale_err", "position_id", p.ID, "token_id", tok, "err", updateErr.Error())
+					}
+				}
+			}
 			continue
 		}
 		onChain := polyexec.ConditionalBalanceShares(bal.Balance)
-		if onChain < min {
-			_ = s.st.CloseRiskPosition(ctx, p.ID)
+		if math.IsNaN(onChain) || math.IsInf(onChain, 0) {
+			if s.log != nil {
+				s.log.Warn("risk_reconcile_balance_bad_float", "position_id", p.ID, "token_id", tok, "balance_raw", bal.Balance)
+			}
+			continue
+		}
+		if onChain <= reconcileZeroEps {
+			if s.log != nil {
+				s.log.Info("risk_reconcile_close_zero", "position_id", p.ID, "token_id", tok, "balance_raw", bal.Balance, "on_chain", onChain)
+			}
+			if closeErr := s.st.CloseRiskPosition(ctx, p.ID); closeErr != nil {
+				s.log.Error("risk_reconcile_close_err", "position_id", p.ID, "token_id", tok, "err", closeErr.Error())
+			}
 			continue
 		}
 		if onChain+1e-9 < p.SizeShares {
 			ratio := onChain / p.SizeShares
 			newCost := max(0, p.CostUSD*ratio)
-			_ = s.st.UpdateRiskPositionSharesCost(ctx, p.ID, onChain, newCost)
+			if updateErr := s.st.UpdateRiskPositionSharesCost(ctx, p.ID, onChain, newCost); updateErr != nil {
+				s.log.Error("risk_reconcile_scale_err", "position_id", p.ID, "token_id", tok, "err", updateErr.Error())
+			}
 		}
 	}
+	lastReconcile = time.Now()
 	return nil
 }
 
@@ -196,23 +309,23 @@ func (s *Service) SyncRiskFromRESTTrades(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var tradeErr error
 	trades, err := cl.Client.Trades(ctx, &clobtypes.TradesRequest{})
 	if err != nil {
-		return err
-	}
-	n := len(trades.Data)
-	if n > 100 {
-		n = 100
-	}
-	for i := n - 1; i >= 0; i-- {
-		t := trades.Data[i]
-		_, _ = s.ApplyClobTradeIfNew(ctx, struct {
-			ID, AssetID, Side, Size, Price, Status string
-			Market, Outcome                        string
-		}{ID: t.ID, AssetID: t.AssetID, Side: t.Side, Size: t.Size, Price: t.Price, Status: t.Status, Market: t.Market, Outcome: ""})
+		tradeErr = err
+	} else {
+		n := min(len(trades.Data), 100)
+		for i := n - 1; i >= 0; i-- {
+			t := trades.Data[i]
+			_, _ = s.ApplyClobTradeIfNew(ctx, struct {
+				ID, AssetID, Side, Size, Price, Status string
+				Market, Outcome                        string
+			}{ID: t.ID, AssetID: t.AssetID, Side: t.Side, Size: t.Size, Price: t.Price, Status: t.Status, Market: t.Market, Outcome: ""})
+		}
 	}
 	s.touchRESTTradesSync()
-	return s.ReconcileOpenRiskPositionsWithClobBalances(ctx)
+	recErr := s.reconcileRiskPositionsWithAuthedCLOB(ctx, cl)
+	return errors.Join(tradeErr, recErr)
 }
 
 // ParseUserWsTradePayload mirrors Node parseUserWsTradePayload (minimal).

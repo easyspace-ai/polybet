@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { wsBus } from '../lib/wsBus';
-import { getMarkets, type Market } from '../lib/api';
+import { wsBus } from '@/lib/wsBus';
+import { getMarkets, type Market } from '@/lib/api';
 
 // If WS never delivers a non-empty `marketsSnapshot`, fall back to REST once after this delay.
 const WS_SNAPSHOT_FALLBACK_MS = 3_000;
