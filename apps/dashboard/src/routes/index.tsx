@@ -1,8 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useMemo, useEffect } from "react";
-import { Search, Circle, Zap, Moon, Sun } from "lucide-react";
+import React, { useState, useMemo, useEffect } from "react";
+import { Search, Circle, Zap } from "lucide-react";
 import { toast } from "sonner";
-import { useTheme } from "@/lib/theme";
+import { TopBar } from "@/components/TopBar";
 import { useMarketList } from "@/hooks/useMarketList";
 import { useBalanceCache } from "@/hooks/useBalanceCache";
 import { usePolyOrderBook } from "@/hooks/useOrderBook";
@@ -295,7 +295,7 @@ function TradeSidebar({
       <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-6 py-5 space-y-5">
         {selection ? (
           <>
-            <div className="rounded-lg border border-brand/30 bg-brand/5 p-4 animate-slide-up">
+            {/* <div className="rounded-lg border border-brand/30 bg-brand/5 p-4 animate-slide-up">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <span className="block text-[13px] font-semibold truncate">{selection.label}</span>
@@ -315,7 +315,7 @@ function TradeSidebar({
                   → {bestPrice ? `${(100 / bestPrice).toFixed(1)}%` : '—'}
                 </span>
               </div>
-            </div>
+            </div> */}
 
             <section className="border-y border-border -mx-6">
               <div className="grid grid-cols-[44px_1fr_1fr_84px] items-center border-b border-border px-6 py-2 text-[10px] font-mono font-semibold text-muted-foreground">
@@ -407,7 +407,6 @@ function TradeSidebar({
 }
 
 function MarketsPage() {
-  const { theme, toggle } = useTheme();
   const { markets, loading, error, lastUpdate, wsConnected } = useMarketList();
   const [activeLeague, setActiveLeague] = useState(DEFAULT_EVENT_CLASSIFICATION_TAGS[0] || 'nba');
   const [selection, setSelection] = useState<SelectedBet | null>(null);
@@ -450,44 +449,37 @@ function MarketsPage() {
   const fetchAge = useFetchAge(lastUpdate);
 
   return (
-    <div className="flex flex-1 min-h-screen overflow-hidden">
-      {/* Center: market header + content */}
-      <section className="flex-1 min-w-0 flex flex-col border-r border-border">
-        {/* Top bar inside main */}
-        <header className="h-14 px-6 flex items-center justify-between border-b border-border bg-background/80 backdrop-blur-md sticky top-0 z-20">
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-2 text-[13px] font-semibold tracking-tight">
-              <Circle className={cn("size-2 animate-breathe", wsConnected ? "fill-success text-success" : "fill-warning text-warning")} />
-              市场
+    <React.Fragment>
+      <TopBar
+        title="市场"
+        subtitle={
+          <>
+            <span className="flex items-center gap-1.5">
+              <span className={cn("size-1.5 rounded-full", wsConnected ? "bg-success animate-breathe" : "bg-warning")} />
+              WS {wsConnected ? "已连接" : "未连接"}
             </span>
             <span className="text-border">·</span>
-            <span className="text-[11px] text-muted-foreground font-mono">实时</span>
-            <span className={cn(
-              "ml-2 px-2 py-0.5 rounded-md text-[10px] font-mono",
-              wsConnected ? "bg-success/10 text-success" : "bg-warning/10 text-warning"
-            )}>
-              推送 {fetchAge}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button className="text-[11px] text-muted-foreground hover:text-foreground transition px-2 py-1">
+            <span>实时</span>
+            <span className="text-border">·</span>
+            <span>推送 {fetchAge}</span>
+          </>
+        }
+        actions={
+          <>
+            <button className="h-8 px-3 text-[12px] rounded-md border border-border bg-surface hover:bg-accent transition flex items-center gap-1.5">
               报价
             </button>
             <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-success/30 bg-success/10 text-success text-[10.5px] font-mono">
               <Circle className="size-1.5 fill-success text-success animate-breathe" />
               POLY
             </span>
-            <button
-              onClick={toggle}
-              aria-label="切换主题"
-              className="size-7 rounded-md border border-border bg-surface hover:bg-accent transition flex items-center justify-center"
-            >
-              {theme === "dark" ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
-            </button>
-          </div>
-        </header>
+          </>
+        }
+      />
 
-        <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        <section className="flex-1 min-w-0 flex flex-col border-r border-border">
+          <div className="flex flex-1 min-h-0">
           {/* League list */}
           <aside className="w-[240px] shrink-0 border-r border-border flex flex-col">
             <div className="p-4">
@@ -593,6 +585,7 @@ function MarketsPage() {
 
       <TradeSidebar selection={selection} selectedOutcome={selectedOutcome} onClear={() => setSelection(null)} />
     </div>
+    </React.Fragment>
   );
 }
 

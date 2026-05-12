@@ -1,0 +1,18 @@
+{
+  "id": "ws_e009001d",
+  "name": "polybet",
+  "slug": "polybet",
+  "defaults": {
+    "permissionMode": "safe",
+    "cyclablePermissionModes": [
+      "safe",
+      "allow-all"
+    ],
+    "enabledSourceSlugs": []
+  },
+  "localMcpServers": {
+    "enabled": true
+  },
+  "createdAt": 1778584831669,
+  "updatedAt": 1778584831671
+}

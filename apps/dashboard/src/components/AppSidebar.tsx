@@ -1,3 +1,4 @@
+import React from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { Activity, LineChart, Shield, History, Wallet, FileText, Settings, Zap } from "lucide-react";
 
@@ -14,13 +15,12 @@ export function AppSidebar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   return (
     <aside className="w-[160px] shrink-0 h-screen sticky top-0 flex flex-col bg-sidebar border-r border-sidebar-border">
-      <div className="px-5 py-5 flex items-center gap-3">
+      <div
+        className="h-14 pl-20 pr-5 flex items-center border-b border-sidebar-border"
+        style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+      >
         <div className="size-9 rounded-lg bg-brand/10 border border-brand/30 flex items-center justify-center">
           <Activity className="size-4 text-brand" />
-        </div>
-        <div className="flex flex-col leading-tight">
-          <span className="text-[15px] font-semibold tracking-tight">PolyBet</span>
-          <span className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest">AI Terminal</span>
         </div>
       </div>
 

@@ -1,3 +1,4 @@
+import React from "react";
 import { Moon, Sun } from "lucide-react";
 import { useTheme } from "@/lib/theme";
 
@@ -10,8 +11,11 @@ interface Props {
 export function TopBar({ title, subtitle, actions }: Props) {
   const { theme, toggle } = useTheme();
   return (
-    <header className="h-14 px-6 flex items-center justify-between border-b border-border bg-background/80 backdrop-blur-md sticky top-0 z-30">
-      <div className="flex items-center gap-4">
+    <header
+      className="h-14 px-6 flex items-center justify-between border-b border-border bg-background/80 backdrop-blur-md sticky top-0 z-30"
+      style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+    >
+      <div className="flex items-center gap-4" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
         <h1 className="text-[14px] font-semibold tracking-tight">{title}</h1>
         {subtitle && (
           <>
@@ -20,7 +24,7 @@ export function TopBar({ title, subtitle, actions }: Props) {
           </>
         )}
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
         {actions}
         <button
           onClick={toggle}
