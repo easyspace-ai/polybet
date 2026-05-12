@@ -317,50 +317,50 @@ function TradeSidebar({
               )}
             </section>
 
-            <section className="space-y-3 min-w-0">
-              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                <label className="font-semibold text-foreground/80">本金</label>
-                <span className="font-mono">
-                  {balanceLoading ? '余额加载中' : `可用 ${activeBalance == null ? '—' : `$${formatUsd(activeBalance)}`} USDC`}
-                </span>
-              </div>
+            <section className="space-y-4 min-w-0">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
+                  <label className="font-semibold text-foreground/80">下注金额 <span className="font-mono tracking-[0.18em] text-muted-foreground">USDC</span></label>
+                  <span className="font-mono truncate">
+                    {balanceLoading ? '余额加载中' : `可用 ${activeBalance == null ? '—' : `$${formatUsd(activeBalance)}`}`}
+                  </span>
+                </div>
 
-              <div className="grid grid-cols-[minmax(0,1fr)_96px] gap-4 items-center">
                 <div className="relative min-w-0">
                   <input
                     value={amount}
                     onChange={(e) => setAmount(e.target.value)}
                     inputMode="decimal"
-                    className="w-full h-12 min-w-0 rounded-md border border-border bg-surface px-3 pr-20 text-right text-[16px] num focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition"
-                    placeholder="0"
+                    className="w-full h-[68px] min-w-0 rounded-md border border-border bg-surface px-4 pr-[150px] text-left text-[26px] num tracking-tight focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition"
+                    placeholder="0.00"
                   />
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-mono tracking-[0.18em] text-muted-foreground">
-                    USDC
-                  </span>
+                  <div className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1.5">
+                    <button onClick={() => setByBalance(0.25)} className="h-8 rounded-md bg-muted px-2.5 text-[11px] font-mono text-muted-foreground hover:text-foreground transition">25%</button>
+                    <button onClick={() => setByBalance(0.5)} className="h-8 rounded-md bg-muted px-2.5 text-[11px] font-mono text-muted-foreground hover:text-foreground transition">50%</button>
+                    <button onClick={() => setByBalance(1)} className="h-8 rounded-md bg-muted px-2.5 text-[11px] font-mono text-muted-foreground hover:text-foreground transition">MAX</button>
+                  </div>
                 </div>
-                <div className="min-w-0 text-right">
-                  <div className="text-[10px] text-muted-foreground">潜在盈利</div>
-                  <div className="num mt-1 truncate text-[14px] font-semibold text-success">{potentialProfitLabel}</div>
-                </div>
+
+                {insufficientBalance && (
+                  <div className="text-[11px] text-danger">余额不足，请降低金额或切换账号。</div>
+                )}
               </div>
 
-              <div className="grid grid-cols-3 gap-2">
-                <button onClick={() => setByBalance(0.25)} className="h-9 rounded-md text-[11px] font-mono border border-border hover:border-brand/40 hover:text-brand transition">25%</button>
-                <button onClick={() => setByBalance(0.5)} className="h-9 rounded-md text-[11px] font-mono border border-border hover:border-brand/40 hover:text-brand transition">50%</button>
-                <button onClick={() => setByBalance(1)} className="h-9 rounded-md text-[11px] font-mono border border-border hover:border-brand/40 hover:text-brand transition">MAX</button>
-              </div>
+              <dl className="space-y-2.5 text-[12px]">
+                <Row label="平均成交价" value={formatCents(estimatePrice)} />
+                <Row label="预计份额" value={estimateShares ? estimateShares.toFixed(2) : '—'} />
+                <Row label="最大盈利" value={potentialProfitLabel} className="text-success" />
+                <Row label="未成交估算" value={unfilledPct == null || !book?.length ? '—' : `${unfilledPct.toFixed(1)}%`} />
+              </dl>
 
-              {insufficientBalance && (
-                <div className="text-[11px] text-danger">余额不足，请降低金额或切换账号。</div>
-              )}
+              <button
+                disabled={!selection || !validAmount || submitting || insufficientBalance}
+                onClick={handleSubmit}
+                className="w-full h-14 rounded-md bg-brand text-brand-foreground text-[15px] font-semibold tracking-tight hover:opacity-90 transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-[0_16px_36px_-16px_color-mix(in_oklab,var(--color-brand)_70%,transparent)]"
+              >
+                {submitting ? '下单中...' : '确认下单'}
+              </button>
             </section>
-
-            <dl className="space-y-2.5 text-[12px]">
-              <Row label="平均成交价" value={formatCents(estimatePrice)} />
-              <Row label="预计份额" value={estimateShares ? estimateShares.toFixed(2) : '—'} />
-              <Row label="最大盈利" value={estimateProfit == null ? '—' : `+$${formatUsd(estimateProfit)}`} className="text-success" />
-              <Row label="未成交估算" value={unfilledPct == null || !book?.length ? '—' : `${unfilledPct.toFixed(1)}%`} />
-            </dl>
           </>
         ) : (
           <div className="text-[12px] text-muted-foreground text-center py-10 border border-dashed border-border rounded-lg">
@@ -369,15 +369,6 @@ function TradeSidebar({
         )}
       </div>
 
-      <div className="px-6 pb-6">
-        <button
-          disabled={!selection || !validAmount || submitting || insufficientBalance}
-          onClick={handleSubmit}
-          className="w-full h-12 rounded-md bg-brand text-brand-foreground text-[14px] font-semibold tracking-tight hover:opacity-90 transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-[0_8px_24px_-8px_color-mix(in_oklab,var(--color-brand)_60%,transparent)]"
-        >
-          {submitting ? '下单中...' : '确认下单'}
-        </button>
-      </div>
     </aside>
   );
 }
