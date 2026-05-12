@@ -13,7 +13,7 @@ const items = [
 export function AppSidebar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   return (
-    <aside className="w-[232px] shrink-0 h-screen sticky top-0 flex flex-col bg-sidebar border-r border-sidebar-border">
+    <aside className="w-[160px] shrink-0 h-screen sticky top-0 flex flex-col bg-sidebar border-r border-sidebar-border">
       <div className="px-5 py-5 flex items-center gap-3">
         <div className="size-9 rounded-lg bg-brand/10 border border-brand/30 flex items-center justify-center">
           <Activity className="size-4 text-brand" />

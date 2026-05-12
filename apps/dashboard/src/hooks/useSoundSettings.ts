@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from "react";
 
 interface SoundSettings {
   enabled: boolean;
@@ -7,7 +7,7 @@ interface SoundSettings {
   alertEnabled: boolean;
 }
 
-const STORAGE_KEY = 'polybet-sound-settings';
+const STORAGE_KEY = "polybet-sound-settings";
 
 const defaultSettings: SoundSettings = {
   enabled: true,
@@ -17,7 +17,7 @@ const defaultSettings: SoundSettings = {
 };
 
 function isBrowser(): boolean {
-  return typeof window !== 'undefined' && typeof localStorage !== 'undefined';
+  return typeof window !== "undefined" && typeof localStorage !== "undefined";
 }
 
 function loadSettings(): SoundSettings {
@@ -25,7 +25,9 @@ function loadSettings(): SoundSettings {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) return { ...defaultSettings, ...JSON.parse(stored) };
-  } catch {}
+  } catch {
+    /* noop */
+  }
   return defaultSettings;
 }
 
