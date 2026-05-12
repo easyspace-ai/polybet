@@ -3,12 +3,9 @@ import { join } from "path";
 import { stat } from "fs/promises";
 import { electronApp, optimizer, is } from "@electron-toolkit/utils";
 
-// fix-path is ESM-only; bundled main is CJS and `require("fix-path")` yields
-// `{ default: fn }`, so default import is not callable unless we unwrap.
-const fixPath: () => void =
-  typeof fixPathImport === "function"
-    ? fixPathImport
-    : (fixPathImport as { default: () => void }).default;
+import fixPathDefault from "fix-path";
+
+const fixPath: () => void = fixPathDefault;
 import { setupAutoUpdater } from "./updater";
 import {
   getLocalDashboardURL,
