@@ -78,6 +78,30 @@ function sh(cmd) {
   }
 }
 
+function releaseTagFromEnv(env = process.env) {
+  if (env.POLYBET_RELEASE_VERSION?.trim()) {
+    return env.POLYBET_RELEASE_VERSION.trim();
+  }
+  if (env.GITHUB_REF_TYPE === "tag" && env.GITHUB_REF_NAME?.trim()) {
+    return env.GITHUB_REF_NAME.trim();
+  }
+  const ref = env.GITHUB_REF?.trim();
+  if (ref?.startsWith("refs/tags/")) {
+    return ref.slice("refs/tags/".length);
+  }
+  return "";
+}
+
+function dirtyPathFromStatusLine(line) {
+  const path = line.slice(3).trim();
+  const renameTarget = path.split(" -> ").pop();
+  return renameTarget || path;
+}
+
+function isAllowedGeneratedDirtyPath(path) {
+  return path.startsWith("server/internal/webui/dashboard-dist/");
+}
+
 /**
  * Check if the git working tree is clean. If not and CI is detected,
  * fails the build. If local dev, warns but continues so developers
@@ -92,13 +116,14 @@ function requireCleanGit() {
 
   if (!isDirty) return true;
 
-  const dirtyPaths = lines
-    .map((l) => l.replace(/^[ AMD?!]{2}.*/, ""))
-    .filter((p) => !p.includes("apps/desktop/") && !p.includes("packages/"));
+  const dirtyPaths = lines.map(dirtyPathFromStatusLine);
 
-  const relevantDirty = dirtyPaths.filter(Boolean).length > 0;
+  const relevantDirty = dirtyPaths
+    .filter(Boolean)
+    .filter((p) => !p.includes("apps/desktop/") && !p.includes("packages/"))
+    .filter((p) => !isAllowedGeneratedDirtyPath(p));
 
-  if (relevantDirty || process.env.CI) {
+  if (relevantDirty.length > 0) {
     console.error("[package] ERROR: git working tree is dirty.");
     console.error("Dirty files:\n" + status);
     console.error(
@@ -108,6 +133,14 @@ function requireCleanGit() {
         "  git stash pop",
     );
     process.exit(1);
+  }
+
+  if (process.env.CI) {
+    console.warn(
+      "[package] git working tree contains generated dashboard embed files; " +
+        "continuing because they were produced by the release workflow.",
+    );
+    return true;
   }
 
   console.warn(
@@ -162,7 +195,9 @@ export function normalizeGitVersion(raw) {
 }
 
 function deriveVersion() {
-  return normalizeGitVersion(sh("git describe --tags --always --dirty"));
+  return normalizeGitVersion(
+    releaseTagFromEnv() || sh("git describe --tags --always --dirty"),
+  );
 }
 
 function uniqueOrdered(values) {

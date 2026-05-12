@@ -75,6 +75,20 @@ function sh(cmd) {
   }
 }
 
+function releaseTagFromEnv(env = process.env) {
+  if (env.POLYBET_RELEASE_VERSION?.trim()) {
+    return env.POLYBET_RELEASE_VERSION.trim();
+  }
+  if (env.GITHUB_REF_TYPE === "tag" && env.GITHUB_REF_NAME?.trim()) {
+    return env.GITHUB_REF_NAME.trim();
+  }
+  const ref = env.GITHUB_REF?.trim();
+  if (ref?.startsWith("refs/tags/")) {
+    return ref.slice("refs/tags/".length);
+  }
+  return "";
+}
+
 function hasGo() {
   try {
     execSync("go version", { stdio: "pipe" });
@@ -94,7 +108,7 @@ async function exists(p) {
 }
 
 if (hasGo()) {
-  const version = sh("git describe --tags --always --dirty") || "dev";
+  const version = releaseTagFromEnv() || sh("git describe --tags --always --dirty") || "dev";
   const commit = sh("git rev-parse --short HEAD") || "unknown";
   const date = new Date().toISOString().replace(/\.\d+Z$/, "Z");
   const ldflags = `-X main.version=${version} -X main.commit=${commit} -X main.date=${date}`;
