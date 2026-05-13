@@ -28,7 +28,11 @@ func NewPublicRouter(d Deps) *gin.Engine {
 	api := r.Group("/api")
 	{
 		api.GET("/markets", func(c *gin.Context) {
-			data, err := marketsvc.BuildMarketsPayload(c, d.Store, d.Cache)
+			var sportIcons map[string]string
+			if sports, err := d.SportsCache.Get(c); err == nil {
+				sportIcons = marketsvc.BuildSportIconMap(sports)
+			}
+			data, err := marketsvc.BuildMarketsPayload(c, d.Store, d.Cache, sportIcons)
 			if err != nil {
 				c.JSON(500, gin.H{"error": "markets_failed"})
 				return

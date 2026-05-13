@@ -2,12 +2,26 @@ package marketsvc
 
 import (
 	"context"
+	"strings"
 
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/store"
+	mktSync "github.com/easyspace-ai/polybet/internal/sync"
 )
 
-func BuildMarketsPayload(ctx context.Context, st *store.Store, cache *bookcache.Cache) ([]map[string]any, error) {
+// BuildSportIconMap converts GammaSport slice to sport->iconURL lookup.
+func BuildSportIconMap(sports []mktSync.GammaSport) map[string]string {
+	m := make(map[string]string, len(sports))
+	for _, s := range sports {
+		key := strings.ToLower(strings.TrimSpace(s.Sport))
+		if img := strings.TrimSpace(s.Image); img != "" {
+			m[key] = img
+		}
+	}
+	return m
+}
+
+func BuildMarketsPayload(ctx context.Context, st *store.Store, cache *bookcache.Cache, sportIcons map[string]string) ([]map[string]any, error) {
 	mrows, orows, err := st.ListActiveMarketsFlat(ctx)
 	if err != nil {
 		return nil, err
@@ -46,6 +60,12 @@ func BuildMarketsPayload(ctx context.Context, st *store.Store, cache *bookcache.
 		if m.Line.Valid {
 			line = m.Line.Float64
 		}
+		var polySlug string
+		if strings.TrimSpace(m.PolySlug) != "" {
+			polySlug = strings.TrimPrefix(strings.TrimSpace(m.PolySlug), "event/")
+		}
+		sportKey := strings.ToLower(strings.TrimSpace(m.Sport))
+		iconUrl := sportIcons[sportKey]
 		out = append(out, map[string]any{
 			"id": m.ID, "eventId": m.EventID, "platform": m.Platform, "externalId": m.ExternalID,
 			"sport": m.Sport, "league": m.League,
@@ -56,6 +76,8 @@ func BuildMarketsPayload(ctx context.Context, st *store.Store, cache *bookcache.
 			"betType":   m.BetType,
 			"line":      line,
 			"mainLine":  m.MainLine != 0,
+			"polySlug":  polySlug,
+			"iconUrl":   iconUrl,
 			"outcomes":  arr,
 		})
 	}

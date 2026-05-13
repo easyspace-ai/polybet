@@ -3,7 +3,7 @@
 // Data path (high level):
 //  1. Read bot_config.eventClassificationTags (JSON array of slugs, e.g. ["nba","nhl"]).
 //  2. Map each known slug to a Polymarket Gamma series_id (see leagues.go).
-//  3. GET https://gamma-api.polymarket.com/events?active=true&closed=false&series_id=… (paginated).
+//  3. GET https://gamma-api.polymarket.com/events?closed=false&series_id=… (paginated).
 //  4. Skip event titles that look like embedded "more markets" / spread / total rows.
 //  5. quoteFromMoneyline12: pick the combined moneyline market (NBA/NHL/MLB), map title teams to
 //     Gamma `outcomes` labels, attach CLOB token ids + prices (matches bot polymarket.ts).
@@ -28,18 +28,19 @@ import (
 
 // Engine runs periodic Polymarket Gamma sync.
 type Engine struct {
-	cfg    *config.Config
-	st     *store.Store
-	cache  *bookcache.Cache
-	logger *slog.Logger
-	mu     syncstd.Mutex // avoid overlapping Once (matches Node marketSync running guard)
+	cfg         *config.Config
+	st          *store.Store
+	cache       *bookcache.Cache
+	sportsCache *SportsCache
+	logger      *slog.Logger
+	mu          syncstd.Mutex // avoid overlapping Once (matches Node marketSync running guard)
 }
 
-func NewEngine(cfg *config.Config, st *store.Store, cache *bookcache.Cache, logger *slog.Logger) *Engine {
+func NewEngine(cfg *config.Config, st *store.Store, cache *bookcache.Cache, sportsCache *SportsCache, logger *slog.Logger) *Engine {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Engine{cfg: cfg, st: st, cache: cache, logger: logger}
+	return &Engine{cfg: cfg, st: st, cache: cache, sportsCache: sportsCache, logger: logger}
 }
 
 func parseTagListJSON(raw string) []string {
@@ -68,10 +69,22 @@ func (e *Engine) Once(ctx context.Context) error {
 		return err
 	}
 	tags := parseTagListJSON(raw)
-	leagues := leaguesFromTags(tags)
+	sports, err := e.sportsCache.Get(ctx)
+	if err != nil {
+		e.logger.Error("market_sync_sports_cache", "err", err)
+		return err
+	}
+	leagues := leaguesFromTags(tags, sports)
 	e.logger.Info("market_sync_start",
 		"tags_raw_len", len(strings.TrimSpace(raw)), "tags_parsed", tags, "leagues", len(leagues),
 		"gamma_api", gammaAPI, "http_proxy_set", strings.TrimSpace(e.cfg.HTTPPlatformProxy) != "")
+	if len(leagues) > 0 {
+		leagueNames := make([]string, len(leagues))
+		for i, lg := range leagues {
+			leagueNames[i] = lg.League
+		}
+		e.logger.Info("market_sync_leagues_resolved", "leagues", leagueNames)
+	}
 
 	totalEvents := 0
 	upserted := 0

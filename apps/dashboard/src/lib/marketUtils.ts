@@ -18,6 +18,8 @@ export interface MatchGroup {
   sport: string;
   league: string;
   startTime: string;
+  polySlug?: string;
+  iconUrl?: string;
   outcomes: OutcomeRow[];
 }
 
@@ -84,6 +86,8 @@ export function groupMarkets(markets: Market[]): MatchGroup[] {
         sport: m.sport,
         league: m.league,
         startTime: m.startTime,
+        polySlug: m.polySlug,
+        iconUrl: m.iconUrl,
         outcomes: [],
       });
     }

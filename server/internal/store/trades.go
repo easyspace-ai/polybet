@@ -45,7 +45,7 @@ func (s *Store) ListTrades(ctx context.Context, page, limit int, accountID strin
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT t.id, t.created_at, t.side, t.requested_size, t.executed_size, t.requested_odds, t.fill_odds, t.platform, t.status, t.tx_hash, t.failure_reason,
-		       o.label, e.home_team, e.away_team, e.poly_slug
+		       o.label, e.home_team, e.away_team, e.poly_slug, e.sport
 		FROM trades t
 		JOIN outcomes o ON t.outcome_id = o.id
 		JOIN markets m ON t.market_id = m.id
@@ -60,9 +60,10 @@ func (s *Store) ListTrades(ctx context.Context, page, limit int, accountID strin
 	for rows.Next() {
 		var id, created, side, platform, status, outcomeLabel, home, away string
 		var txh, fail, polySlug sql.NullString
+		var sport sql.NullString
 		var reqS, reqO float64
 		var execS, fillO sql.NullFloat64
-		if err := rows.Scan(&id, &created, &side, &reqS, &execS, &reqO, &fillO, &platform, &status, &txh, &fail, &outcomeLabel, &home, &away, &polySlug); err != nil {
+		if err := rows.Scan(&id, &created, &side, &reqS, &execS, &reqO, &fillO, &platform, &status, &txh, &fail, &outcomeLabel, &home, &away, &polySlug, &sport); err != nil {
 			return 0, nil, err
 		}
 		marketName := home + " vs " + away
@@ -76,7 +77,7 @@ func (s *Store) ListTrades(ctx context.Context, page, limit int, accountID strin
 			"requestedOdds": reqO, "fillOdds": nullFloat(fillO), "platform": platform, "status": status,
 			"txHash": nullStrOrNil(txh), "failureReason": nullStrPtr(fail),
 			"outcomeLabel": outcomeLabel, "marketName": marketName,
-			"officialUrl": officialUrl,
+			"officialUrl": officialUrl, "sport": nullStrPtr(sport),
 		})
 	}
 	return total, trades, rows.Err()

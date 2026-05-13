@@ -1,6 +1,9 @@
 package sync
 
-import "strings"
+import (
+	"log/slog"
+	"strings"
+)
 
 // League is the internal mapping needed to fetch Gamma events for a sport.
 type League struct {
@@ -33,13 +36,14 @@ func LeagueFromSport(tag string, sports []GammaSport) *League {
 }
 
 // leaguesFromTags converts user-configured tags into League entries.
-// Unknown tags are silently skipped.
+// Unknown tags are logged as warnings.
 func leaguesFromTags(tags []string, sports []GammaSport) []League {
 	var out []League
 	seen := map[int]struct{}{}
 	for _, t := range tags {
 		lg := LeagueFromSport(t, sports)
 		if lg == nil {
+			slog.Warn("league_tag_unmatched", "tag", t)
 			continue
 		}
 		if _, dup := seen[lg.SeriesID]; dup {
@@ -49,7 +53,7 @@ func leaguesFromTags(tags []string, sports []GammaSport) []League {
 		out = append(out, *lg)
 	}
 	if len(out) == 0 {
-		// Fallback to NBA if nothing matched
+		slog.Warn("league_no_tags_matched_fallback_nba", "tags", tags)
 		if fallback := LeagueFromSport("nba", sports); fallback != nil {
 			return []League{*fallback}
 		}

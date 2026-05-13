@@ -4,13 +4,15 @@ import { TopBar } from "@/components/TopBar";
 import { useTheme } from "@/lib/theme";
 import { useConfig } from "@/hooks/useConfig";
 import { useSoundSettings } from "@/hooks/useSoundSettings";
-import { putConfig, testTelegram } from "@/lib/api";
+import { putConfig, testTelegram, getSports, type GammaSport } from "@/lib/api";
 import {
   DEFAULT_EVENT_CLASSIFICATION_TAGS,
   parseEventClassificationTags,
 } from "@/lib/eventClassification";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 import {
   Monitor,
   Globe,
@@ -26,6 +28,7 @@ import {
   RefreshCw,
   Download,
   CheckCircle,
+  ChevronsUpDown,
 } from "lucide-react";
 
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
@@ -402,19 +405,61 @@ function TagsTab({
       rows.find((r) => r.key === "eventClassificationTags")?.value ?? "",
     ),
   );
-  const [tagInput, setTagInput] = useState("");
+  const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [sports, setSports] = useState<GammaSport[]>([]);
+  const [sportsLoading, setSportsLoading] = useState(false);
+  const [sportsError, setSportsError] = useState("");
 
-  const SUGGESTED = ["NBA", "NCAAB", "NHL", "EPL", "MLS", "UCL", "MLB"];
+  const SPORTS_CACHE_KEY = "polybet_sports_cache";
+  const SPORTS_CACHE_TTL = 60 * 60 * 1000;
 
-  function addTag(t: string) {
-    const lower = t.trim().toLowerCase();
-    if (!lower || tags.includes(lower)) return;
-    setTags((prev) => [...prev, lower]);
+  async function loadSports(force = false) {
+    setSportsLoading(true);
+    setSportsError("");
+    try {
+      if (!force) {
+        const cached = localStorage.getItem(SPORTS_CACHE_KEY);
+        if (cached) {
+          try {
+            const { data, ts } = JSON.parse(cached);
+            if (Date.now() - ts < SPORTS_CACHE_TTL) {
+              setSports(data);
+              setSportsLoading(false);
+              return;
+            }
+          } catch {}
+        }
+      }
+      const data = await getSports();
+      setSports(data);
+      localStorage.setItem(SPORTS_CACHE_KEY, JSON.stringify({ data, ts: Date.now() }));
+    } catch (err) {
+      setSportsError(err instanceof Error ? err.message : "获取赛事列表失败");
+      const cached = localStorage.getItem(SPORTS_CACHE_KEY);
+      if (cached) {
+        try {
+          const { data } = JSON.parse(cached);
+          setSports(data);
+        } catch {}
+      }
+    } finally {
+      setSportsLoading(false);
+    }
   }
+
+  useEffect(() => {
+    loadSports();
+  }, []);
 
   function removeTag(t: string) {
     setTags((prev) => prev.filter((x) => x !== t));
+  }
+
+  function toggleTag(slug: string) {
+    setTags((prev) =>
+      prev.includes(slug) ? prev.filter((x) => x !== slug) : [...prev, slug],
+    );
   }
 
   async function handleSave() {
@@ -429,13 +474,33 @@ function TagsTab({
     }
   }
 
+  const sortedSports = [...sports]
+    .filter((s) => s.sport)
+    .sort((a, b) => a.sport.localeCompare(b.sport));
+
   return (
     <div className="rounded-[var(--tm-rad)] border border-border bg-surface p-5 space-y-4">
-      <div className="text-[13px] font-semibold">赛事分类</div>
-      <p className="text-[11px] text-muted-foreground leading-[1.55]">
-        用于标记关注的联赛/标签（小写存储）。
-      </p>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-[13px] font-semibold">赛事分类</div>
+          <p className="text-[11px] text-muted-foreground leading-[1.55] mt-0.5">
+            从 Gamma API 选择关注的联赛，数据缓存 1 小时
+          </p>
+        </div>
+        <button
+          onClick={() => loadSports(true)}
+          disabled={sportsLoading}
+          className="inline-flex items-center gap-1.5 px-3 h-8 rounded-md border border-border text-[11px] text-muted-foreground hover:text-foreground hover:border-brand transition disabled:opacity-50"
+        >
+          <RefreshCw className={`size-3 ${sportsLoading ? "animate-spin" : ""}`} />
+          {sportsLoading ? "加载中..." : "刷新"}
+        </button>
+      </div>
+
+      <div className="flex flex-wrap gap-2 min-h-8">
+        {tags.length === 0 && (
+          <span className="text-[11px] text-muted-foreground">尚未选择联赛</span>
+        )}
         {tags.map((t) => (
           <span
             key={t}
@@ -448,46 +513,74 @@ function TagsTab({
           </span>
         ))}
       </div>
-      <div className="flex gap-2">
-        <input
-          value={tagInput}
-          onChange={(e) => setTagInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              addTag(tagInput);
-            }
-          }}
-          placeholder="输入标签"
-          className="flex-1 h-10 px-3 text-[12px] rounded-md border border-border bg-background focus:outline-none focus:border-brand"
-        />
-        <button
-          onClick={() => addTag(tagInput)}
-          className="px-4 h-10 rounded-md bg-sky-600 text-white text-[11px] font-semibold hover:bg-sky-500"
-        >
-          + 添加
-        </button>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {SUGGESTED.map((label) => {
-          const key = label.toLowerCase();
-          const selected = tags.includes(key);
-          return (
-            <button
-              key={label}
-              disabled={selected}
-              onClick={() => addTag(key)}
-              className={`rounded-full border px-3 py-1 text-[11px] transition ${
-                selected
-                  ? "border-border bg-muted text-muted-foreground opacity-50"
-                  : "border-border bg-background text-foreground hover:border-brand"
-              }`}
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
+
+      {sportsError && (
+        <p className="text-[11px] text-red-400">{sportsError}</p>
+      )}
+
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <button
+            role="combobox"
+            aria-expanded={open}
+            className="w-full flex items-center justify-between h-10 px-3 text-[12px] rounded-md border border-border bg-background hover:border-brand transition"
+          >
+            <span className={tags.length === 0 ? "text-muted-foreground" : ""}>
+              {tags.length === 0
+                ? "搜索并选择联赛..."
+                : `已选 ${tags.length} 个联赛`}
+            </span>
+            <ChevronsUpDown className="size-3.5 text-muted-foreground shrink-0" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
+          <Command>
+            <CommandInput placeholder="搜索联赛..." />
+            <CommandList>
+              <CommandEmpty>
+                {sportsLoading ? "加载中..." : "未找到匹配的联赛"}
+              </CommandEmpty>
+              <CommandGroup>
+                {sortedSports.map((s) => {
+                  const selected = tags.includes(s.sport);
+                  return (
+                    <CommandItem
+                      key={s.sport}
+                      value={s.sport}
+                      onSelect={() => {
+                        toggleTag(s.sport);
+                      }}
+                    >
+                      <div className="flex items-center justify-between w-full">
+                        <span className="flex items-center gap-2">
+                          <span
+                            className={`size-4 rounded-sm border flex items-center justify-center transition ${
+                              selected
+                                ? "bg-sky-500 border-sky-500"
+                                : "border-border"
+                            }`}
+                          >
+                            {selected && (
+                              <CheckCircle className="size-3 text-white" />
+                            )}
+                          </span>
+                          <span className="text-[12px] font-medium">
+                            {s.sport.toUpperCase()}
+                          </span>
+                        </span>
+                        <span className="text-[10px] text-muted-foreground truncate max-w-[140px] ml-2">
+                          series={s.series} tags={s.tags}
+                        </span>
+                      </div>
+                    </CommandItem>
+                  );
+                })}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+
       <button
         onClick={handleSave}
         disabled={

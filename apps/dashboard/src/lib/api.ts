@@ -21,6 +21,8 @@ export interface Market {
   betType?: string;
   line?: number | null;
   mainLine?: boolean;
+  polySlug?: string;
+  iconUrl?: string;
   outcomes: MarketOutcome[];
 }
 
@@ -71,6 +73,8 @@ export interface Trade {
   txHash: string | null;
   failureReason: string | null;
   officialUrl?: string | null;
+  sport?: string | null;
+  iconUrl?: string;
 }
 
 export interface TradesResponse {
@@ -308,3 +312,16 @@ export const postCacheRefresh = () =>
 
 export const postMarketsRefresh = () =>
   apiFetch<{ ok: boolean; message: string }>('/api/markets/refresh', { method: 'POST' });
+
+export interface GammaSport {
+  id: number;
+  sport: string;
+  image: string;
+  resolution: string;
+  ordering: string;
+  tags: string;
+  series: string;
+  createdAt: string;
+}
+
+export const getSports = () => apiFetch<GammaSport[]>('/api/sports');

@@ -32,12 +32,13 @@ type MarketRow struct {
 	BetType    string
 	Line       sql.NullFloat64
 	MainLine   int
+	PolySlug   string
 }
 
 func (s *Store) ListActiveMarketsFlat(ctx context.Context) ([]MarketRow, []OutcomeRow, error) {
 	mrows, err := s.db.QueryContext(ctx, `
 		SELECT m.id, m.event_id, m.platform, m.external_id, e.sport, e.league, e.home_team, e.away_team,
-		       m.start_time, m.status, m.bet_type, m.line, m.main_line
+		       m.start_time, m.status, m.bet_type, m.line, m.main_line, COALESCE(e.poly_slug,'')
 		FROM markets m JOIN events e ON m.event_id = e.id
 		WHERE m.status = 'active' AND e.status = 'active' ORDER BY m.start_time ASC`)
 	if err != nil {
@@ -49,7 +50,7 @@ func (s *Store) ListActiveMarketsFlat(ctx context.Context) ([]MarketRow, []Outco
 	for mrows.Next() {
 		var m MarketRow
 		if err := mrows.Scan(&m.ID, &m.EventID, &m.Platform, &m.ExternalID, &m.Sport, &m.League, &m.HomeTeam, &m.AwayTeam,
-			&m.StartTime, &m.Status, &m.BetType, &m.Line, &m.MainLine); err != nil {
+			&m.StartTime, &m.Status, &m.BetType, &m.Line, &m.MainLine, &m.PolySlug); err != nil {
 			return nil, nil, err
 		}
 		markets = append(markets, m)

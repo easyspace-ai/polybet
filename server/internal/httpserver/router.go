@@ -112,12 +112,25 @@ func NewRouter(d Deps) *gin.Engine {
 	api := r.Group("/api")
 	{
 		api.GET("/markets", func(c *gin.Context) {
-			data, err := marketsvc.BuildMarketsPayload(c, d.Store, d.Cache)
+			var sportIcons map[string]string
+			if sports, err := d.SportsCache.Get(c); err == nil {
+				sportIcons = marketsvc.BuildSportIconMap(sports)
+			}
+			data, err := marketsvc.BuildMarketsPayload(c, d.Store, d.Cache, sportIcons)
 			if err != nil {
 				c.JSON(500, gin.H{"error": "markets_failed"})
 				return
 			}
 			c.JSON(200, data)
+		})
+
+		api.GET("/sports", func(c *gin.Context) {
+			sports, err := d.SportsCache.Get(c)
+			if err != nil {
+				c.JSON(500, gin.H{"error": "sports_fetch_failed"})
+				return
+			}
+			c.JSON(200, sports)
 		})
 
 		api.POST("/markets/refresh", func(c *gin.Context) {
@@ -291,6 +304,17 @@ func NewRouter(d Deps) *gin.Engine {
 			if err != nil {
 				c.JSON(500, gin.H{"error": "list_failed"})
 				return
+			}
+			var sportIcons map[string]string
+			if sports, err := d.SportsCache.Get(c); err == nil {
+				sportIcons = marketsvc.BuildSportIconMap(sports)
+			}
+			for _, tr := range rows {
+				if sport, ok := tr["sport"].(string); ok && sport != "" {
+					if icon, ok2 := sportIcons[strings.ToLower(strings.TrimSpace(sport))]; ok2 {
+						tr["iconUrl"] = icon
+					}
+				}
 			}
 			c.JSON(200, gin.H{"total": total, "page": page, "limit": limit, "trades": rows})
 		})

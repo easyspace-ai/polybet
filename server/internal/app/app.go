@@ -34,6 +34,7 @@ type App struct {
 	Hub           *wsrelay.Hub
 	Risk          *risksvc.Service
 	SyncEngine    *marketsync.Engine
+	SportsCache   *marketsync.SportsCache
 	Debounce      *debounce.Debouncer
 	Log           *slog.Logger
 	Rediska       *rediska.Cache
@@ -55,7 +56,8 @@ func New(cfg *config.Config, db *sql.DB, log *slog.Logger) *App {
 	cache := bookcache.New(topN)
 	hub := wsrelay.NewHub()
 	risk := risksvc.New(cfg, st, cache, log)
-	syncEng := marketsync.NewEngine(cfg, st, cache, log)
+	sportsCache := marketsync.NewSportsCache(cfg.HTTPPlatformProxy, time.Hour)
+	syncEng := marketsync.NewEngine(cfg, st, cache, sportsCache, log)
 
 	rediskaDB, err := rediska.OpenMemory()
 	if err != nil {
@@ -70,7 +72,7 @@ func New(cfg *config.Config, db *sql.DB, log *slog.Logger) *App {
 
 	return &App{
 		Cfg: cfg, DB: db, Store: st, Cache: cache, Hub: hub, Risk: risk,
-		SyncEngine: syncEng, Debounce: debounce.New(120 * time.Millisecond), Log: log,
+		SyncEngine: syncEng, SportsCache: sportsCache, Debounce: debounce.New(120 * time.Millisecond), Log: log,
 		Rediska: rediskaDB, BalanceCache: balanceCache, RiskCache: riskCache, InitService: initSvc,
 		LogService: logSvc,
 	}
@@ -108,6 +110,7 @@ func (a *App) Run(ctx context.Context) error {
 	deps := httpserver.Deps{
 		Cfg: a.Cfg, DB: a.DB, Store: a.Store, Cache: a.Cache, Hub: a.Hub, Risk: a.Risk, Debounce: a.Debounce,
 		BalanceCache: a.BalanceCache, RiskCache: a.RiskCache, InitService: a.InitService, LogService: a.LogService,
+		SportsCache: a.SportsCache,
 		App: a,
 	}
 	engine := httpserver.NewRouter(deps)
@@ -157,7 +160,11 @@ func (a *App) Run(ctx context.Context) error {
 		} else {
 			a.Log.Info("boot_market_sync_ok")
 		}
-		if markets, err := marketsvc.BuildMarketsPayload(ctx, a.Store, a.Cache); err != nil {
+		var sportIcons map[string]string
+		if sports, err := a.SportsCache.Get(ctx); err == nil {
+			sportIcons = marketsvc.BuildSportIconMap(sports)
+		}
+		if markets, err := marketsvc.BuildMarketsPayload(ctx, a.Store, a.Cache, sportIcons); err != nil {
 			a.Log.Warn("boot_markets_payload", "err", err)
 		} else {
 			a.Log.Info("boot_markets_snapshot", "count", len(markets))
@@ -213,7 +220,11 @@ func (a *App) SyncAndBroadcastMarkets(ctx context.Context) error {
 		}
 		return err
 	}
-	if markets, err := marketsvc.BuildMarketsPayload(ctx, a.Store, a.Cache); err != nil {
+	var sportIcons map[string]string
+	if sports, err := a.SportsCache.Get(ctx); err == nil {
+		sportIcons = marketsvc.BuildSportIconMap(sports)
+	}
+	if markets, err := marketsvc.BuildMarketsPayload(ctx, a.Store, a.Cache, sportIcons); err != nil {
 		a.Log.Warn("market_snapshot_build_err", "err", err)
 		return err
 	} else {

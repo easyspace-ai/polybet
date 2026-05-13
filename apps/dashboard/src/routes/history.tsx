@@ -36,7 +36,12 @@ function tradeValue(t: { side: string; executedSize: number | null; requestedSiz
   return val;
 }
 
-function MarketIcon({ name }: { name: string }) {
+function MarketIcon({ name, iconUrl }: { name: string; iconUrl?: string }) {
+  if (iconUrl) {
+    return (
+      <img src={iconUrl} alt="" className="size-9 rounded-lg object-contain bg-gradient-to-br from-brand/20 to-brand/5 border border-brand/10 shrink-0" />
+    );
+  }
   const initial = name.charAt(0).toUpperCase();
   return (
     <div className="size-9 rounded-lg bg-gradient-to-br from-brand/20 to-brand/5 border border-brand/10 flex items-center justify-center text-brand font-bold text-[13px] shrink-0">
@@ -138,7 +143,7 @@ function HistoryPage() {
                     rel="noopener noreferrer"
                     className="flex items-center gap-2 group"
                   >
-                    <MarketIcon name={t.marketName} />
+                    <MarketIcon name={t.marketName} iconUrl={t.iconUrl ?? undefined} />
                     <span className="text-[13px] font-medium truncate group-hover:text-brand transition-colors">
                       {t.marketName}
                     </span>

@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import React, { useState, useMemo, useEffect } from "react";
-import { Search, Circle, Zap, RefreshCw } from "lucide-react";
+import { Search, Circle, Zap, RefreshCw, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { TopBar } from "@/components/TopBar";
 import { useMarketList } from "@/hooks/useMarketList";
@@ -71,7 +71,7 @@ function isTradableMatchGroup(group: MatchGroup): boolean {
   return !prices.some(isSettledLikePrice);
 }
 
-function OddsCell({ price, active, onClick }: { price: number | null; active: boolean; onClick?: () => void }) {
+function OddsCell({ price, label, active, onClick }: { price: number | null; label: string; active: boolean; onClick?: () => void }) {
   if (price == null) {
     return (
       <div className="w-[92px] h-[58px] rounded-md border border-border flex items-center justify-center text-muted-foreground">
@@ -88,8 +88,8 @@ function OddsCell({ price, active, onClick }: { price: number | null; active: bo
           : "border-border bg-surface hover:border-brand/40 hover:bg-brand/5"
       }`}
     >
-      <span className={`text-[10px] font-mono ${active ? "text-brand/80" : "text-muted-foreground"}`}>
-        YES
+      <span className={`text-[10px] font-mono truncate max-w-[80px] ${active ? "text-brand/80" : "text-muted-foreground"}`}>
+        {label}
       </span>
       <span className={`text-[15px] font-semibold num ${active ? "text-brand" : ""}`}>
         {(price * 100).toFixed(1)}¢
@@ -114,22 +114,44 @@ function MatchRow({ group, selectedOutcomeId, onSelect }: { group: MatchGroup; s
   const homeOutcome = american ? mlHome : home;
   const awayOutcome = american ? mlAway : away;
 
+  const eventUrl = group.polySlug ? `https://polymarket.com/event/${group.polySlug}` : null;
+
   return (
     <div className="grid grid-cols-[80px_1fr_auto_auto] items-center gap-4 px-5 py-4 hover:bg-accent/30 transition-colors">
       <div className="text-[12px] font-mono text-muted-foreground">{formatKickoff(group.startTime)}</div>
-      <div className="flex flex-col leading-tight">
-        <span className="text-[13.5px] font-semibold">{team1}</span>
-        <span className="text-[13.5px] font-semibold text-muted-foreground/80 mt-0.5">{team2}</span>
-      </div>
+      <a
+        href={eventUrl ?? '#'}
+        target={eventUrl ? '_blank' : undefined}
+        rel={eventUrl ? 'noopener noreferrer' : undefined}
+        className="flex items-center gap-3 min-w-0 group"
+        onClick={eventUrl ? undefined : (e) => e.preventDefault()}
+      >
+        {group.iconUrl ? (
+          <img src={group.iconUrl} alt="" className="size-7 rounded object-contain shrink-0" />
+        ) : (
+          <div className="size-7 rounded-md bg-brand/10 border border-brand/20 flex items-center justify-center shrink-0">
+            <span className="text-[10px] font-bold text-brand">{team1.charAt(0)}</span>
+          </div>
+        )}
+        <div className="flex flex-col leading-tight min-w-0">
+          <span className="text-[13.5px] font-semibold truncate group-hover:text-brand transition-colors">{team1}</span>
+          <span className="text-[13.5px] font-semibold text-muted-foreground/80 mt-0.5 truncate">{team2}</span>
+        </div>
+        {eventUrl && (
+          <ExternalLink className="size-3 text-muted-foreground shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+        )}
+      </a>
       <div className="text-[10.5px] font-mono text-muted-foreground tracking-wide">—</div>
       <div className="flex items-center gap-2">
         <OddsCell 
           price={homeOutcome?.polymarket?.impliedOdds ?? null} 
+          label={homeOutcome?.label ?? team1}
           active={selectedOutcomeId === homeOutcome?.outcomeId}
           onClick={() => homeOutcome && onSelect({ outcomeId: homeOutcome.outcomeId, label: homeOutcome.label, matchName: group.name })}
         />
         <OddsCell 
           price={awayOutcome?.polymarket?.impliedOdds ?? null} 
+          label={awayOutcome?.label ?? team2}
           active={selectedOutcomeId === awayOutcome?.outcomeId}
           onClick={() => awayOutcome && onSelect({ outcomeId: awayOutcome.outcomeId, label: awayOutcome.label, matchName: group.name })}
         />

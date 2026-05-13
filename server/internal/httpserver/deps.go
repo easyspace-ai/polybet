@@ -12,6 +12,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/service/logsvc"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
 	"github.com/easyspace-ai/polybet/internal/store"
+	mktSync "github.com/easyspace-ai/polybet/internal/sync"
 	"github.com/easyspace-ai/polybet/internal/wsrelay"
 )
 
@@ -28,6 +29,7 @@ type Deps struct {
 	RiskCache     *rediska.RiskCache
 	InitService   *initsvc.Service
 	LogService    *logsvc.Service
+	SportsCache   *mktSync.SportsCache
 	App           interface {
 		InvalidateAndRebuildCache()
 		SyncAndBroadcastMarkets(ctx context.Context) error

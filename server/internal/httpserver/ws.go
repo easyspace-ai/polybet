@@ -44,8 +44,12 @@ func registerWS(r *gin.Engine, d Deps) {
 			}
 		}()
 
+		var sportIcons map[string]string
+		if sports, err := d.SportsCache.Get(c); err == nil {
+			sportIcons = marketsvc.BuildSportIconMap(sports)
+		}
 		meta := risksvc.Meta{OutboundProxyConfigured: d.Cfg.HTTPPlatformProxy != ""}
-		if markets, err := marketsvc.BuildMarketsPayload(c, d.Store, d.Cache); err == nil {
+		if markets, err := marketsvc.BuildMarketsPayload(c, d.Store, d.Cache, sportIcons); err == nil {
 			_ = conn.WriteJSON(map[string]any{"type": "marketsSnapshot", "data": markets})
 			slog.Info("ws_dash_handshake_sent", "request_id", rid, "markets_snapshot", len(markets))
 		} else {

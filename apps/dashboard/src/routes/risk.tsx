@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { TopBar } from "@/components/TopBar";
-import { RefreshCw, AlertTriangle } from "lucide-react";
+import { RefreshCw, AlertTriangle, ExternalLink } from "lucide-react";
 import { useRiskControlCache } from "@/hooks/useRiskControlCache";
 import { postRiskClosePosition, postRiskCloseAll, patchRiskPosition, postRiskOfficialRefresh } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -218,11 +218,25 @@ function RiskPage() {
                       <tr key={p.id} className="hover:bg-accent/30 transition-colors">
                         <td className="px-4 py-4">
                           <div className="flex items-center gap-2.5">
-                            <div className="size-7 rounded-md bg-brand/10 border border-brand/20 flex items-center justify-center">
-                              <div className="size-2 rounded-sm bg-brand" />
-                            </div>
-                            <div className="flex flex-col">
-                              <span className="font-mono text-[11px] text-brand">{display}</span>
+                            {p.iconUrl ? (
+                              <img src={p.iconUrl} alt="" className="size-7 rounded object-contain shrink-0" />
+                            ) : (
+                              <div className="size-7 rounded-md bg-brand/10 border border-brand/20 flex items-center justify-center shrink-0">
+                                <div className="size-2 rounded-sm bg-brand" />
+                              </div>
+                            )}
+                            <div className="flex flex-col min-w-0">
+                              <a
+                                href={p.officialUrl ?? '#'}
+                                target={p.officialUrl ? '_blank' : undefined}
+                                rel={p.officialUrl ? 'noopener noreferrer' : undefined}
+                                className="font-mono text-[11px] text-brand truncate flex items-center gap-1 hover:underline group"
+                              >
+                                {display}
+                                {p.officialUrl && (
+                                  <ExternalLink className="size-2.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                )}
+                              </a>
                               <span className="mt-0.5 text-[10px] num text-muted-foreground bg-accent rounded px-1.5 py-0.5 w-fit">{fmtCents(p.avgEntryCents)}</span>
                             </div>
                           </div>
