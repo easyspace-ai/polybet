@@ -39,6 +39,12 @@ export interface PolyBookFrame {
   levels: BookLevel[];
 }
 
+export interface PolyStatusMessage {
+  type: "poly_status";
+  polyOrderbookConnected?: boolean;
+  polyUserConnected?: boolean;
+}
+
 export interface PolyOddsEntry {
   tokenId: string;
   takerOdds: number;
@@ -60,6 +66,7 @@ type IncomingMessage =
   | { type: "polyOddsUpdate"; tokenId: string; takerOdds: number; updatedAt: number }
   | { type: "balance_update"; data: BalanceUpdateData }
   | { type: "position_update"; data: unknown[] }
+  | { type: "poly_status"; polyOrderbookConnected?: boolean; polyUserConnected?: boolean }
   | MarketLifecycleMessage;
 
 type OddsListener = (
@@ -70,6 +77,7 @@ type PolyBookListener = (frame: PolyBookFrame) => void;
 type PolyOddsListener = (msg: PolyOddsMessage) => void;
 type MarketLifecycleListener = (msg: MarketLifecycleMessage) => void;
 type StatusListener = (connected: boolean) => void;
+type PolyStatusListener = (msg: PolyStatusMessage) => void;
 type BalanceUpdateListener = (msg: BalanceUpdateMessage) => void;
 type PositionUpdateListener = (msg: PositionUpdateMessage) => void;
 
@@ -94,6 +102,7 @@ class WsBus {
   private polyOddsListeners = new Set<PolyOddsListener>();
   private marketLifecycleListeners = new Set<MarketLifecycleListener>();
   private statusListeners = new Set<StatusListener>();
+  private polyStatusListeners = new Set<PolyStatusListener>();
   private balanceUpdateListeners = new Set<BalanceUpdateListener>();
   private positionUpdateListeners = new Set<PositionUpdateListener>();
   private marketsCache = new Map<string, Market>();
@@ -109,6 +118,11 @@ class WsBus {
 
   get isConnecting(): boolean {
     return this.connecting;
+  }
+
+  clearMarketsCache(): void {
+    this.marketsCache.clear();
+    this.marketsSnapshotReceived = false;
   }
 
   private connect(): void {
@@ -185,6 +199,8 @@ class WsBus {
           for (const l of this.balanceUpdateListeners) l(msg);
         } else if (msg.type === "position_update") {
           for (const l of this.positionUpdateListeners) l(msg);
+        } else if (msg.type === "poly_status") {
+          for (const l of this.polyStatusListeners) l(msg);
         }
       };
 
@@ -264,6 +280,13 @@ class WsBus {
     listener(isBrowser() && this.ws?.readyState === WebSocket.OPEN);
     return () => {
       this.statusListeners.delete(listener);
+    };
+  }
+
+  onPolyStatus(listener: PolyStatusListener): () => void {
+    this.polyStatusListeners.add(listener);
+    return () => {
+      this.polyStatusListeners.delete(listener);
     };
   }
 

@@ -70,6 +70,12 @@ func (c *simpleCache) Set(key string, value any) {
 	}
 }
 
+func (c *simpleCache) Delete(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.data, key)
+}
+
 var accountsCache = newSimpleCache(10 * time.Second)
 var tasksCache = newSimpleCache(10 * time.Second)
 
@@ -112,6 +118,24 @@ func NewRouter(d Deps) *gin.Engine {
 				return
 			}
 			c.JSON(200, data)
+		})
+
+		api.POST("/markets/refresh", func(c *gin.Context) {
+			rid := c.GetString("request_id")
+			if d.Cfg.ReadOnlyMode {
+				slog.Warn("markets_refresh_blocked_read_only", "request_id", rid)
+				c.JSON(403, gin.H{"error": "read_only"})
+				return
+			}
+			slog.Info("markets_refresh_request", "request_id", rid)
+			if d.LogService != nil {
+				d.LogService.Info("市场同步", "用户触发强制刷新")
+			}
+			if err := d.App.SyncAndBroadcastMarkets(c); err != nil {
+				c.JSON(500, gin.H{"error": "sync_failed", "message": err.Error()})
+				return
+			}
+			c.JSON(200, gin.H{"ok": true, "message": "markets_refreshed"})
 		})
 
 		api.GET("/trade/orderbook", func(c *gin.Context) {
@@ -258,7 +282,12 @@ func NewRouter(d Deps) *gin.Engine {
 			if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil && l > 0 {
 				limit = l
 			}
-			total, rows, err := d.Store.ListTrades(c, page, limit)
+			acct, _ := d.Store.GetActivePolymarketAccount(c)
+			accountID := ""
+			if acct != nil {
+				accountID = acct.ID
+			}
+			total, rows, err := d.Store.ListTrades(c, page, limit, accountID)
 			if err != nil {
 				c.JSON(500, gin.H{"error": "list_failed"})
 				return
@@ -433,7 +462,7 @@ func NewRouter(d Deps) *gin.Engine {
 				return
 			}
 			polysession.InvalidateEnvCache()
-			d.BalanceCache.Invalidate(c)
+			d.App.InvalidateAndRebuildCache()
 			c.JSON(201, gin.H{"id": ac.ID, "name": ac.Name, "funderAddress": ac.FunderAddress, "isActive": ac.IsActive})
 		})
 
@@ -446,8 +475,9 @@ func NewRouter(d Deps) *gin.Engine {
 				c.JSON(500, gin.H{"error": "activate_failed"})
 				return
 			}
+			accountsCache.Delete("list")
 			polysession.InvalidateEnvCache()
-			d.BalanceCache.Invalidate(c)
+			d.App.InvalidateAndRebuildCache()
 			c.JSON(200, gin.H{"ok": true, "id": c.Param("id")})
 		})
 
@@ -457,15 +487,21 @@ func NewRouter(d Deps) *gin.Engine {
 				return
 			}
 			_ = d.Store.DeletePolymarketAccount(c, c.Param("id"))
+			accountsCache.Delete("list")
 			polysession.InvalidateEnvCache()
-			d.BalanceCache.Invalidate(c)
+			d.App.InvalidateAndRebuildCache()
 			c.Status(204)
 		})
 
 		api.GET("/risk/positions", func(c *gin.Context) {
 			meta := risksvc.Meta{OutboundProxyConfigured: d.Cfg.HTTPPlatformProxy != ""}
+			acct, _ := d.Store.GetActivePolymarketAccount(c)
+			accountID := ""
+			if acct != nil {
+				accountID = acct.ID
+			}
 			fetch := func() (rediska.RiskFetchResult, error) {
-				rows, m, err := d.Risk.ListRiskPositionsEnriched(c, meta)
+				rows, m, err := d.Risk.ListRiskPositionsEnriched(c, meta, accountID)
 				if err != nil {
 					return rediska.RiskFetchResult{}, err
 				}
@@ -717,6 +753,21 @@ func NewRouter(d Deps) *gin.Engine {
 				"initStatus": initStatus,
 				"wsClients": hubSize,
 				"serverTime": time.Now().Format("2006-01-02 15:04:05"),
+			})
+		})
+
+		api.GET("/ws/status", func(c *gin.Context) {
+			hubSize := 0
+			if d.Hub != nil {
+				hubSize = d.Hub.ClientCount()
+			}
+			c.JSON(200, gin.H{
+				"dashConnected":        hubSize > 0,
+				"dashClients":          hubSize,
+				"polyOrderbookConnected": d.Risk.OrderbookWSConnected(),
+				"polyOrderbookConnecting": d.Risk.OrderbookWSConnecting(),
+				"polyUserConnected":      d.Risk.UserWSConnected(),
+				"polyUserConnecting":     d.Risk.UserWSConnecting(),
 			})
 		})
 

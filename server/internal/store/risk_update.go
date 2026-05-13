@@ -21,8 +21,8 @@ func (s *Store) CloseRiskPosition(ctx context.Context, id string) error {
 	return err
 }
 
-func (s *Store) ListRiskPositionsOpenClosing(ctx context.Context) ([]RiskPosition, error) {
-	return s.listRiskPositionsWhere(ctx, `status IN ('open','closing')`, nil)
+func (s *Store) ListRiskPositionsOpenClosing(ctx context.Context, accountID string) ([]RiskPosition, error) {
+	return s.listRiskPositionsWhere(ctx, `status IN ('open','closing') AND account_id = ?`, accountID)
 }
 
 func (s *Store) ListRiskTasksRecent(ctx context.Context, limit int) ([]RiskTask, error) {

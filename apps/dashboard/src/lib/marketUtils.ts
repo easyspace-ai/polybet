@@ -1,5 +1,18 @@
 import { type Market } from '@/lib/api';
 
+function etDate(iso: string): Date {
+  const d = new Date(iso);
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: 'numeric', day: 'numeric',
+    hour: 'numeric', minute: 'numeric', second: 'numeric',
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(d);
+  const get = (type: string) => parseInt(parts.find((p) => p.type === type)?.value || '0', 10);
+  return new Date(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+}
+
 export interface MatchGroup {
   name: string;
   sport: string;
@@ -239,7 +252,7 @@ export function categorizeOutcomes(group: MatchGroup): {
 }
 
 export function localDateKey(iso: string): string {
-  const d = new Date(iso);
+  const d = etDate(iso);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
@@ -250,7 +263,7 @@ export function formatDateHeader(dateKey: string): string {
 }
 
 export function formatDate(iso: string): string {
-  const d = new Date(iso);
+  const d = etDate(iso);
   return (
     d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) +
     ' · ' +

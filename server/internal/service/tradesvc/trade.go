@@ -38,6 +38,11 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 	if err != nil {
 		return nil, 0, err
 	}
+	acct, _ := st.GetActivePolymarketAccount(ctx)
+	accountID := ""
+	if acct != nil {
+		accountID = acct.ID
+	}
 	buyExtra := st.GetBotConfigInt(ctx, "polymarketFokBuyExtraTicks", 5)
 	results := make([]TradeResult, 0, len(plan.Allocations))
 	for _, a := range plan.Allocations {
@@ -47,7 +52,7 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 			results = append(results, TradeResult{TradeID: "unknown", Status: "failed", Platform: a.Platform, FailureReason: "outcome_lookup: " + err.Error()})
 			continue
 		}
-		tid, err := st.CreatePendingTrade(ctx, mid, a.OutcomeID, a.Platform, side, a.Size, a.ExpectedOdds)
+		tid, err := st.CreatePendingTrade(ctx, mid, a.OutcomeID, a.Platform, side, a.Size, a.ExpectedOdds, accountID)
 		if err != nil {
 			slog.Warn("trade_leg_create_pending_failed", "outcome_id", a.OutcomeID, "market_id", mid, "err", err.Error())
 			results = append(results, TradeResult{TradeID: "unknown", Status: "failed", Platform: a.Platform, FailureReason: "create_trade: " + err.Error()})
@@ -89,7 +94,7 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 		}()
 		if side == "buy" && tok != "" {
 			title := home + " vs " + away
-			_ = risk.RecordPolymarketBuyFill(context.Background(), a.OutcomeID, tok, title, label, fillOdds, a.Size)
+			_ = risk.RecordPolymarketBuyFill(context.Background(), a.OutcomeID, tok, title, label, fillOdds, a.Size, accountID)
 		}
 	}
 	allFilled := true

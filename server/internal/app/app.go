@@ -205,6 +205,27 @@ func (a *App) riskTicker(ctx context.Context) {
 	}
 }
 
+func (a *App) SyncAndBroadcastMarkets(ctx context.Context) error {
+	if err := a.SyncEngine.Once(ctx); err != nil {
+		a.Log.Warn("market_sync_err", "err", err)
+		if a.LogService != nil {
+			a.LogService.Error("市场同步", "同步失败: "+err.Error())
+		}
+		return err
+	}
+	if markets, err := marketsvc.BuildMarketsPayload(ctx, a.Store, a.Cache); err != nil {
+		a.Log.Warn("market_snapshot_build_err", "err", err)
+		return err
+	} else {
+		a.Log.Info("market_snapshot_broadcast", "markets", len(markets))
+		a.Hub.BroadcastJSON(map[string]any{"type": "marketsSnapshot", "data": markets})
+		if a.LogService != nil {
+			a.LogService.Info("市场同步", fmt.Sprintf("同步完成, 共 %d 个市场", len(markets)))
+		}
+	}
+	return nil
+}
+
 func (a *App) syncTicker(ctx context.Context) {
 	defer a.wg.Done()
 	for {
@@ -220,21 +241,7 @@ func (a *App) syncTicker(ctx context.Context) {
 			return
 		case <-t.C:
 			a.Log.Info("market_sync_ticker_fire", "interval_sec", iv)
-			if err := a.SyncEngine.Once(context.Background()); err != nil {
-				a.Log.Warn("market_sync_ticker_err", "err", err)
-				if a.LogService != nil {
-					a.LogService.Error("市场同步", "同步失败: "+err.Error())
-				}
-			}
-			if markets, err := marketsvc.BuildMarketsPayload(context.Background(), a.Store, a.Cache); err != nil {
-				a.Log.Warn("market_snapshot_build_err", "err", err)
-			} else {
-				a.Log.Info("market_snapshot_broadcast", "markets", len(markets))
-				a.Hub.BroadcastJSON(map[string]any{"type": "marketsSnapshot", "data": markets})
-				if a.LogService != nil {
-					a.LogService.Info("市场同步", fmt.Sprintf("同步完成, 共 %d 个市场", len(markets)))
-				}
-			}
+			_ = a.SyncAndBroadcastMarkets(context.Background())
 		}
 	}
 }

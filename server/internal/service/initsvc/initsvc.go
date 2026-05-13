@@ -216,7 +216,12 @@ func (s *Service) cachePositions(ctx context.Context) error {
 	s.updateStatus("position", StepStatus{Status: "loading"})
 
 	meta := risksvc.Meta{OutboundProxyConfigured: s.cfg.HTTPPlatformProxy != ""}
-	rows, _, err := s.risk.ListRiskPositionsEnriched(ctx, meta)
+	acct, _ := s.st.GetActivePolymarketAccount(ctx)
+	accountID := ""
+	if acct != nil {
+		accountID = acct.ID
+	}
+	rows, _, err := s.risk.ListRiskPositionsEnriched(ctx, meta, accountID)
 	if err != nil {
 		s.updateStatus("position", StepStatus{Status: "error", Error: err.Error()})
 		return err

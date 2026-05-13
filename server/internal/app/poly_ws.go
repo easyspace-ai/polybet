@@ -44,11 +44,15 @@ func (a *App) polyWSLoop(ctx context.Context) {
 		ch, err := root.CLOBWS.SubscribeOrderbook(subCtx, ids)
 		if err != nil {
 			a.Log.Warn("poly_ws_subscribe", "token_count", len(ids), "err", err)
+			a.Risk.SetOrderbookWSState(false, false)
+			a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyOrderbookConnected": false})
 			cancel()
 			time.Sleep(3 * time.Second)
 			continue
 		}
 		a.Log.Info("poly_ws_subscribed", "token_count", len(ids))
+		a.Risk.SetOrderbookWSState(false, true)
+		a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyOrderbookConnected": true})
 		if a.LogService != nil {
 			a.LogService.Info("WebSocket", "Polymarket 盘口连接成功")
 		}
@@ -73,6 +77,8 @@ func (a *App) polyWSLoop(ctx context.Context) {
 			}
 		}
 	reconnect:
+		a.Risk.SetOrderbookWSState(true, false)
+		a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyOrderbookConnected": false})
 		if a.LogService != nil {
 			a.LogService.Warn("WebSocket", "Polymarket 盘口断开, 正在重连...")
 		}

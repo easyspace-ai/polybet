@@ -130,6 +130,11 @@ if (typeof window !== 'undefined') {
   wsBus.onStatus(handleWsStatus);
 }
 
+/** Module-level refresh for external triggers (e.g. account switch). */
+export function refreshRiskData() {
+  fetchRiskData(false);
+}
+
 export function useRiskControlCache() {
   const [state, setState] = useState<RiskState>({ ...cache });
 

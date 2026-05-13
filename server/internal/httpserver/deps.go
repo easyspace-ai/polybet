@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"database/sql"
 
 	"github.com/easyspace-ai/polybet/internal/bookcache"
@@ -27,5 +28,8 @@ type Deps struct {
 	RiskCache     *rediska.RiskCache
 	InitService   *initsvc.Service
 	LogService    *logsvc.Service
-	App           interface{ InvalidateAndRebuildCache() }
+	App           interface {
+		InvalidateAndRebuildCache()
+		SyncAndBroadcastMarkets(ctx context.Context) error
+	}
 }

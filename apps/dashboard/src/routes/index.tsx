@@ -1,13 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 import React, { useState, useMemo, useEffect } from "react";
-import { Search, Circle, Zap } from "lucide-react";
+import { Search, Circle, Zap, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { TopBar } from "@/components/TopBar";
 import { useMarketList } from "@/hooks/useMarketList";
 import { useBalanceCache } from "@/hooks/useBalanceCache";
 import { usePolyOrderBook } from "@/hooks/useOrderBook";
+import { useConfig } from "@/hooks/useConfig";
 import { groupMarkets, formatDateHeader, localDateKey, isAmericanSport, get1X2, getSpreadMLTotal, type MatchGroup, type OutcomeRow } from "@/lib/marketUtils";
-import { DEFAULT_EVENT_CLASSIFICATION_TAGS } from "@/lib/eventClassification";
+import { DEFAULT_EVENT_CLASSIFICATION_TAGS, parseEventClassificationTags } from "@/lib/eventClassification";
 import { getOrderBook, postTrade, type Market, type OrderBookLevel } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -15,7 +16,7 @@ export const Route = createFileRoute("/")({ component: MarketsPage });
 
 function formatKickoff(iso: string): string {
   const d = new Date(iso);
-  return d.toLocaleTimeString('zh-CN', { hour: 'numeric', minute: '2-digit' });
+  return d.toLocaleTimeString('zh-CN', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' });
 }
 
 function useFetchAge(lastFetch: Date | null): string {
@@ -147,7 +148,7 @@ function formatCents(price: number | null | undefined): string {
 }
 
 function getActiveBalance(balance: ReturnType<typeof useBalanceCache>["balance"]): number | null {
-  const active = balance?.polymarketAccounts.find((a) => a.isActive);
+  const active = balance?.polymarketAccounts?.find((a) => a.isActive);
   return active?.polymarket ?? balance?.polymarket ?? null;
 }
 
@@ -407,9 +408,24 @@ function TradeSidebar({
 }
 
 function MarketsPage() {
-  const { markets, loading, error, lastUpdate, wsConnected } = useMarketList();
-  const [activeLeague, setActiveLeague] = useState(DEFAULT_EVENT_CLASSIFICATION_TAGS[0] || 'nba');
+  const { markets, loading, error, lastUpdate, wsConnected, refresh } = useMarketList();
+  const { rows: configRows } = useConfig();
+  const configuredTags = useMemo(() => {
+    const raw = configRows.find(r => r.key === 'eventClassificationTags')?.value ?? '';
+    const tags = parseEventClassificationTags(raw);
+    return tags.length > 0 ? tags : DEFAULT_EVENT_CLASSIFICATION_TAGS;
+  }, [configRows]);
+
+  const [activeLeague, setActiveLeague] = useState(configuredTags[0] || 'nba');
+
+  useEffect(() => {
+    if (configuredTags.length > 0 && !configuredTags.includes(activeLeague)) {
+      setActiveLeague(configuredTags[0]);
+    }
+  }, [configuredTags, activeLeague]);
+
   const [selection, setSelection] = useState<SelectedBet | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const allGroups = useMemo(() => {
     return groupMarkets(markets.filter(isOpenMarket)).filter(isTradableMatchGroup);
@@ -438,8 +454,11 @@ function MarketsPage() {
       const league = g.league.toLowerCase();
       counts.set(league, (counts.get(league) || 0) + 1);
     }
-    return Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
-  }, [allGroups]);
+    return configuredTags.map(tag => ({
+      name: tag,
+      count: counts.get(tag.toLowerCase()) || 0,
+    }));
+  }, [allGroups, configuredTags]);
 
   const selectedOutcome = useMemo(
     () => allGroups.flatMap(g => g.outcomes).find(o => o.outcomeId === selection?.outcomeId) ?? null,
@@ -447,6 +466,18 @@ function MarketsPage() {
   );
 
   const fetchAge = useFetchAge(lastUpdate);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+      toast.success('市场已刷新', { description: '已从官方获取最新数据' });
+    } catch (err) {
+      toast.error('刷新失败', { description: err instanceof Error ? err.message : '请稍后重试' });
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   return (
     <React.Fragment>
@@ -466,8 +497,13 @@ function MarketsPage() {
         }
         actions={
           <>
-            <button className="h-8 px-3 text-[12px] rounded-md border border-border bg-surface hover:bg-accent transition flex items-center gap-1.5">
-              报价
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="h-8 px-3 text-[12px] rounded-md border border-border bg-surface hover:bg-accent transition flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
+              {refreshing ? '刷新中' : '刷新'}
             </button>
             <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-success/30 bg-success/10 text-success text-[10.5px] font-mono">
               <Circle className="size-1.5 fill-success text-success animate-breathe" />

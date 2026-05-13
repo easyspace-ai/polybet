@@ -2,6 +2,7 @@ package sync
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 const sportsFeeRate = 0.03
 
 var shortTZOffsetRe = regexp.MustCompile(`([+-]\d{2})$`)
+var hasTimezoneRe = regexp.MustCompile(`[Zz]|[+-]\d{2}(:\d{2})?$`)
 
 func applyFee(p, fee float64) float64 {
 	if fee == 0 {
@@ -40,6 +42,16 @@ func parseGammaTime(raw string) (time.Time, bool) {
 			return t, true
 		}
 	}
+	// Gamma sometimes sends gameStartTime without timezone (e.g. "2026-05-12 19:00:00").
+	// Treat bare datetime as UTC.
+	if !hasTimezoneRe.MatchString(iso) {
+		iso += "Z"
+		for _, layout := range layouts {
+			if t, err := time.Parse(layout, iso); err == nil {
+				return t, true
+			}
+		}
+	}
 	return time.Time{}, false
 }
 
@@ -49,18 +61,22 @@ func startTimeFromEvent(ev gammaEvent) time.Time {
 			if t, ok := parseGammaTime(*m.GameStartTime); ok {
 				return t
 			}
+			slog.Debug("startTimeFromEvent_GameStartTime_parse_failed", "event_id", ev.ID, "raw", *m.GameStartTime)
 		}
 	}
 	if ev.EndDate != "" {
-		if t, err := time.Parse(time.RFC3339, ev.EndDate); err == nil {
+		if t, ok := parseGammaTime(ev.EndDate); ok {
 			return t
 		}
+		slog.Debug("startTimeFromEvent_EndDate_parse_failed", "event_id", ev.ID, "raw", ev.EndDate)
 	}
 	if ev.StartDate != "" {
-		if t, err := time.Parse(time.RFC3339, ev.StartDate); err == nil {
+		if t, ok := parseGammaTime(ev.StartDate); ok {
 			return t
 		}
+		slog.Debug("startTimeFromEvent_StartDate_parse_failed", "event_id", ev.ID, "raw", ev.StartDate)
 	}
+	slog.Warn("startTimeFromEvent_fallback_now", "event_id", ev.ID)
 	return time.Now().UTC()
 }
 

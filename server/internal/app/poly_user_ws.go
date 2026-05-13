@@ -22,6 +22,7 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 		if err != nil {
 			a.Log.Warn("poly_user_ws_session", "err", err.Error())
 			a.Risk.SetUserWSState(false, false, err.Error())
+			a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyUserConnected": false})
 			if a.LogService != nil {
 				a.LogService.Warn("风控", fmt.Sprintf("WS会话解析失败: %s", err.Error()))
 			}
@@ -31,6 +32,7 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 		if cl.APIKey == nil {
 			a.Log.Warn("poly_user_ws_missing_api_key")
 			a.Risk.SetUserWSState(false, false, "missing_api_key")
+			a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyUserConnected": false})
 			if a.LogService != nil {
 				a.LogService.Warn("风控", "WS会话缺少API Key")
 			}
@@ -50,6 +52,7 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 		if err != nil {
 			a.Log.Warn("poly_user_ws_client", "err", err.Error())
 			a.Risk.SetUserWSState(false, false, err.Error())
+			a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyUserConnected": false})
 			time.Sleep(3 * time.Second)
 			continue
 		}
@@ -86,10 +89,12 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 				"ws_url", pc.BaseURLs.CLOBWS,
 				"proxy", a.Cfg.HTTPPlatformProxy)
 			a.Risk.SetUserWSState(false, false, err.Error())
+			a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyUserConnected": false})
 			time.Sleep(3 * time.Second)
 			continue
 		}
 		a.Risk.SetUserWSState(false, true, "")
+		a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyUserConnected": true})
 		a.Log.Info("poly_user_ws_connected")
 		if a.LogService != nil {
 			a.LogService.Info("WebSocket", "用户 CLOB 连接成功")
@@ -100,6 +105,7 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 				cancel()
 				a.Log.Info("poly_user_ws_ctx_done", "reason", "disconnected")
 				a.Risk.SetUserWSState(false, false, "disconnected")
+				a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyUserConnected": false})
 				if a.LogService != nil {
 					a.LogService.Warn("WebSocket", "用户 CLOB 断开")
 				}
@@ -109,19 +115,25 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 					cancel()
 					a.Log.Warn("poly_user_ws_channel_closed")
 					a.Risk.SetUserWSState(false, false, "channel_closed")
+					a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyUserConnected": false})
 					if a.LogService != nil {
 						a.LogService.Warn("WebSocket", "用户 CLOB 通道关闭, 正在重连...")
 					}
 					goto reconnect
 				}
 				a.Risk.TouchUserWSMessage()
+				acct, _ := a.Store.GetActivePolymarketAccount(context.Background())
+				accountID := ""
+				if acct != nil {
+					accountID = acct.ID
+				}
 				applied, err := a.Risk.ApplyClobTradeIfNew(context.Background(), struct {
 					ID, AssetID, Side, Size, Price, Status string
 					Market, Outcome                        string
 				}{
 					ID: ev.ID, AssetID: ev.AssetID, Side: ev.Side, Size: ev.Size, Price: ev.Price,
 					Status: ev.Status, Market: ev.Market, Outcome: "",
-				})
+				}, accountID)
 				if err != nil {
 					a.Log.Warn("poly_user_ws_trade_apply_err", "trade_id", ev.ID, "asset_id", ev.AssetID, "status", ev.Status, "err", err.Error())
 					if a.LogService != nil {
@@ -146,8 +158,13 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 
 func (a *App) rebuildAndBroadcastCache() {
 	meta := risksvc.Meta{OutboundProxyConfigured: a.Cfg.HTTPPlatformProxy != ""}
+	acct, _ := a.Store.GetActivePolymarketAccount(context.Background())
+	accountID := ""
+	if acct != nil {
+		accountID = acct.ID
+	}
 
-	rows, enrichedMeta, err := a.Risk.ListRiskPositionsEnriched(context.Background(), meta)
+	rows, enrichedMeta, err := a.Risk.ListRiskPositionsEnriched(context.Background(), meta, accountID)
 	if err == nil {
 		_ = a.RiskCache.Set(context.Background(), rediska.RiskFetchResult{Positions: rows, Meta: rediska.RiskMeta{
 			UserWsConnected:         enrichedMeta.UserWsConnected,
@@ -166,11 +183,16 @@ func (a *App) rebuildAndBroadcastCache() {
 
 func (a *App) InvalidateAndRebuildCache() {
 	meta := risksvc.Meta{OutboundProxyConfigured: a.Cfg.HTTPPlatformProxy != ""}
+	acct, _ := a.Store.GetActivePolymarketAccount(context.Background())
+	accountID := ""
+	if acct != nil {
+		accountID = acct.ID
+	}
 
 	a.BalanceCache.Invalidate(context.Background())
 	a.RiskCache.Invalidate(context.Background())
 
-	rows, enrichedMeta, err := a.Risk.ListRiskPositionsEnriched(context.Background(), meta)
+	rows, enrichedMeta, err := a.Risk.ListRiskPositionsEnriched(context.Background(), meta, accountID)
 	if err == nil {
 		_ = a.RiskCache.Set(context.Background(), rediska.RiskFetchResult{Positions: rows, Meta: rediska.RiskMeta{
 			UserWsConnected:         enrichedMeta.UserWsConnected,

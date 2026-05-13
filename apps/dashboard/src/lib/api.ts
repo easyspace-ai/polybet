@@ -70,6 +70,7 @@ export interface Trade {
   status: string;
   txHash: string | null;
   failureReason: string | null;
+  officialUrl?: string | null;
 }
 
 export interface TradesResponse {
@@ -304,3 +305,6 @@ export const postSetupComplete = () =>
 
 export const postCacheRefresh = () =>
   apiFetch<{ ok: boolean; message: string }>('/api/cache/refresh', { method: 'POST' });
+
+export const postMarketsRefresh = () =>
+  apiFetch<{ ok: boolean; message: string }>('/api/markets/refresh', { method: 'POST' });

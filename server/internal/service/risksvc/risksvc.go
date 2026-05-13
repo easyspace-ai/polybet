@@ -38,6 +38,9 @@ type Service struct {
 	userWSLastIssueMu sync.Mutex
 	userWSLastIssue   string
 
+	orderbookWSConnected  atomic.Bool
+	orderbookWSConnecting atomic.Bool
+
 	// Gamma /markets cache for risk UI (token id → last fetch).
 	gammaMetaMu sync.Mutex
 	gammaMeta   map[string]gammaMetaCache
@@ -59,6 +62,17 @@ func (s *Service) SetUserWSState(connecting, connected bool, lastIssue string) {
 	s.userWSLastIssueMu.Unlock()
 }
 
+// SetOrderbookWSState updates dashboard-facing Orderbook WS meta (best-effort).
+func (s *Service) SetOrderbookWSState(connecting, connected bool) {
+	s.orderbookWSConnecting.Store(connecting)
+	s.orderbookWSConnected.Store(connected)
+}
+
+func (s *Service) OrderbookWSConnected() bool  { return s.orderbookWSConnected.Load() }
+func (s *Service) OrderbookWSConnecting() bool { return s.orderbookWSConnecting.Load() }
+func (s *Service) UserWSConnected() bool       { return s.userWSConnected.Load() }
+func (s *Service) UserWSConnecting() bool      { return s.userWSConnecting.Load() }
+
 // TouchUserWSMessage marks receipt of a user-channel message (for dashboard meta).
 func (s *Service) TouchUserWSMessage() {
 	s.userWSLastMsgMs.Store(time.Now().UnixMilli())
@@ -71,6 +85,8 @@ func (s *Service) touchRESTTradesSync() {
 func (s *Service) fillMeta(meta Meta) Meta {
 	meta.UserWsConnected = s.userWSConnected.Load()
 	meta.UserWsConnecting = s.userWSConnecting.Load()
+	meta.OrderbookWsConnected = s.orderbookWSConnected.Load()
+	meta.OrderbookWsConnecting = s.orderbookWSConnecting.Load()
 	if ms := s.userWSLastMsgMs.Load(); ms > 0 {
 		t := time.UnixMilli(ms).UTC().Format(time.RFC3339Nano)
 		meta.UserWsLastMessageAt = &t
@@ -218,7 +234,7 @@ func formatCloseQueuedTelegram(reason string, pos *store.RiskPosition, positionI
 	}
 }
 
-func (s *Service) RecordPolymarketBuyFill(ctx context.Context, outcomeID, tokenID, title, sideLabel string, fillOdds, costUsd float64) error {
+func (s *Service) RecordPolymarketBuyFill(ctx context.Context, outcomeID, tokenID, title, sideLabel string, fillOdds, costUsd float64, accountID string) error {
 	entry := fillOdds * 100
 	if costUsd <= 0 || fillOdds <= 0 {
 		return nil
@@ -229,7 +245,7 @@ func (s *Service) RecordPolymarketBuyFill(ctx context.Context, outcomeID, tokenI
 	}
 	_ = s.st.NormalizeDustRisk(ctx, 1e-9)
 	stop := resolveStopLossPct(ctx, s.st, entry)
-	return s.st.MergeOpenRiskBuy(ctx, tokenID, outcomeID, title, sideLabel, entry, newShares, costUsd, stop, "bot")
+	return s.st.MergeOpenRiskBuy(ctx, tokenID, outcomeID, title, sideLabel, entry, newShares, costUsd, stop, "bot", accountID)
 }
 
 func (s *Service) ProcessRiskTasksOnce(ctx context.Context) error {
@@ -378,8 +394,13 @@ func (s *Service) runClosePosition(ctx context.Context, cl *polywiring.AuthedCLO
 }
 
 func (s *Service) runCloseAll(ctx context.Context, taskID string) error {
+	acct, err := s.st.GetActivePolymarketAccount(ctx)
+	if err != nil || acct == nil {
+		s.log.Warn("risk_close_all_skip_no_account", "task_id", taskID, "err", err)
+		return s.st.SetRiskTaskSucceeded(ctx, taskID)
+	}
 	min := s.minShares(ctx)
-	rows, err := s.st.ListOpenRiskPositionsMinShares(ctx, min)
+	rows, err := s.st.ListOpenRiskPositionsMinShares(ctx, min, acct.ID)
 	if err != nil {
 		return err
 	}
@@ -425,8 +446,12 @@ func (s *Service) runCloseAll(ctx context.Context, taskID string) error {
 }
 
 func (s *Service) RiskEvaluateTokenAfterBookUpdate(ctx context.Context, tokenID string) error {
+	acct, err := s.st.GetActivePolymarketAccount(ctx)
+	if err != nil || acct == nil {
+		return nil
+	}
 	min := s.minShares(ctx)
-	rows, err := s.st.ListOpenRiskPositionsByToken(ctx, tokenID)
+	rows, err := s.st.ListOpenRiskPositionsByToken(ctx, tokenID, acct.ID)
 	if err != nil {
 		return err
 	}
@@ -449,13 +474,13 @@ func (s *Service) RiskEvaluateTokenAfterBookUpdate(ctx context.Context, tokenID 
 func (s *Service) ApplyClobTradeIfNew(ctx context.Context, trade struct {
 	ID, AssetID, Side, Size, Price, Status string
 	Market, Outcome                        string
-}) (bool, error) {
+}, accountID string) (bool, error) {
 	st := strings.ToUpper(strings.TrimSpace(trade.Status))
 	if st != "MATCHED" && st != "MINED" && st != "CONFIRMED" {
 		return false, nil
 	}
 	_ = s.st.NormalizeDustRisk(ctx, 1e-9)
-	ok, err := s.st.InsertRiskAppliedTrade(ctx, trade.ID)
+	ok, err := s.st.InsertRiskAppliedTrade(ctx, trade.ID, accountID)
 	if err != nil || !ok {
 		return false, err
 	}
@@ -489,7 +514,7 @@ func (s *Service) ApplyClobTradeIfNew(ctx context.Context, trade struct {
 		if sideLabel == "" {
 			sideLabel = "YES"
 		}
-		if err := s.st.MergeOpenRiskBuy(ctx, trade.AssetID, outcomeID, title, sideLabel, entry, size, cost, stop, "polymarket_clob"); err != nil {
+		if err := s.st.MergeOpenRiskBuy(ctx, trade.AssetID, outcomeID, title, sideLabel, entry, size, cost, stop, "polymarket_clob", accountID); err != nil {
 			return true, err
 		}
 		tg.Notify(ctx, s.cfg, s.st, s.log, fmt.Sprintf(
@@ -500,7 +525,7 @@ func (s *Service) ApplyClobTradeIfNew(ctx context.Context, trade struct {
 		return true, nil
 	}
 	if side == "SELL" {
-		if err := s.st.ReduceOpenRiskSell(ctx, trade.AssetID, size, price, min); err != nil {
+		if err := s.st.ReduceOpenRiskSell(ctx, trade.AssetID, size, price, min, accountID); err != nil {
 			return true, err
 		}
 		tg.Notify(ctx, s.cfg, s.st, s.log, fmt.Sprintf(

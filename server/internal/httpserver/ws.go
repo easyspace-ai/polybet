@@ -52,7 +52,12 @@ func registerWS(r *gin.Engine, d Deps) {
 			slog.Warn("ws_dash_markets_snapshot_build_failed", "request_id", rid, "err", err.Error())
 		}
 		_ = conn.WriteJSON(map[string]any{"type": "snapshot", "data": []any{}})
-		_, _, _ = d.Risk.ListRiskPositionsEnriched(c, meta)
+		acct, _ := d.Store.GetActivePolymarketAccount(c)
+		accountID := ""
+		if acct != nil {
+			accountID = acct.ID
+		}
+		_, _, _ = d.Risk.ListRiskPositionsEnriched(c, meta, accountID)
 
 		conn.SetReadDeadline(time.Now().Add(120 * time.Second))
 		for {

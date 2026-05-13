@@ -6,8 +6,8 @@ import (
 )
 
 // ReduceOpenRiskSell applies a matched CLOB SELL to the open position (same rules as Node).
-func (s *Store) ReduceOpenRiskSell(ctx context.Context, tokenID string, size, price float64, minOpen float64) error {
-	row := s.db.QueryRowContext(ctx, `SELECT id, size_shares, cost_usd FROM risk_positions WHERE token_id = ? AND status = 'open'`, tokenID)
+func (s *Store) ReduceOpenRiskSell(ctx context.Context, tokenID string, size, price float64, minOpen float64, accountID string) error {
+	row := s.db.QueryRowContext(ctx, `SELECT id, size_shares, cost_usd FROM risk_positions WHERE token_id = ? AND account_id = ? AND status = 'open'`, tokenID, accountID)
 	var id string
 	var shares, cost float64
 	if err := row.Scan(&id, &shares, &cost); err == sql.ErrNoRows {

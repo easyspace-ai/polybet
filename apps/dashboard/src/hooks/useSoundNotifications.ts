@@ -90,6 +90,7 @@ export function useSoundNotifications() {
   const hasEverConnectedRef = useRef(false);
   const { settings } = useSoundSettings();
   const [, setWebAudioReady] = useState(false);
+  const polyWarnedRef = useRef<{ orderbook?: boolean; user?: boolean; hasWarned?: boolean }>({});
 
   const playSound = useCallback(
     async (soundName: "buy" | "sell" | "alert") => {
@@ -167,6 +168,31 @@ export function useSoundNotifications() {
       }
     });
 
+    const unsubPolyStatus = wsBus.onPolyStatus((msg) => {
+      const lostOrderbook = msg.polyOrderbookConnected === false && !polyWarnedRef.current.orderbook;
+      const lostUser = msg.polyUserConnected === false && !polyWarnedRef.current.user;
+      if (lostOrderbook) {
+        polyWarnedRef.current.orderbook = true;
+        polyWarnedRef.current.hasWarned = true;
+        playSound("alert");
+        toast.error("Polymarket 盘口连接断开", { duration: 5000 });
+      }
+      if (lostUser) {
+        polyWarnedRef.current.user = true;
+        polyWarnedRef.current.hasWarned = true;
+        playSound("alert");
+        toast.error("Polymarket 用户连接断开", { duration: 5000 });
+      }
+      const orderbookOk = msg.polyOrderbookConnected !== false;
+      const userOk = msg.polyUserConnected !== false;
+      if (orderbookOk) polyWarnedRef.current.orderbook = false;
+      if (userOk) polyWarnedRef.current.user = false;
+      if (polyWarnedRef.current.hasWarned && orderbookOk && userOk) {
+        polyWarnedRef.current.hasWarned = false;
+        toast.success("Polymarket 连接已恢复", { duration: 3000 });
+      }
+    });
+
     const unsubPosition = wsBus.onPositionUpdate((msg: PositionUpdateMessage) => {
       const newPositions = msg.data as RiskPositionRow[];
       const oldPositions = previousPositionsRef.current;
@@ -182,6 +208,7 @@ export function useSoundNotifications() {
 
     return () => {
       unsubStatus();
+      unsubPolyStatus();
       unsubPosition();
     };
   }, [playSound]);

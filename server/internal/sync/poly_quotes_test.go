@@ -91,4 +91,45 @@ func TestParseGammaTimeAcceptsCommonGammaFormats(t *testing.T) {
 	}
 }
 
+func TestParseGammaTimeNoTimezoneAssumesUTC(t *testing.T) {
+	cases := []string{
+		"2026-05-12 19:00:00",
+		"2026-05-12T19:00:00",
+		"2026-05-12 19:00:00.000",
+	}
+	for _, raw := range cases {
+		got, ok := parseGammaTime(raw)
+		if !ok {
+			t.Fatalf("parseGammaTime(%q) failed — should treat bare time as UTC", raw)
+		}
+		want := "2026-05-12T19:00:00Z"
+		if got.UTC().Format(time.RFC3339) != want {
+			t.Fatalf("parseGammaTime(%q) = %s, want %s", raw, got.UTC().Format(time.RFC3339), want)
+		}
+	}
+}
+
+func TestStartTimeFromEventFallsBackToEndDateViaParseGammaTime(t *testing.T) {
+	// EndDate with short offset — parseGammaTime handles it, bare time.Parse(RFC3339) would fail.
+	gameStart := ""
+	ev := gammaEvent{
+		ID:        "test1",
+		Title:     "Team A vs. Team B",
+		StartDate: "2026-05-11T00:00:00Z",
+		EndDate:   "2026-05-12 00:00:00+00",
+		Markets: []gammaMarket{
+			{
+				GameStartTime: &gameStart,
+				Active:        true,
+				Closed:        false,
+			},
+		},
+	}
+	got := startTimeFromEvent(ev)
+	want := time.Date(2026, time.May, 12, 0, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("startTimeFromEvent() = %s, want %s", got.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+}
+
 func ptrStr(s string) *string { return &s }

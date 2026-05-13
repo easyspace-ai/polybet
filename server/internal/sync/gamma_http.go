@@ -90,7 +90,6 @@ func doFetchGammaEvents(ctx context.Context, httpProxy string, seriesID int) ([]
 	for {
 		q := url.Values{}
 		q.Set("active", "true")
-		q.Set("closed", "false")
 		q.Set("limit", strconv.Itoa(limit))
 		q.Set("offset", strconv.Itoa(offset))
 		q.Set("series_id", strconv.Itoa(seriesID))

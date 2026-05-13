@@ -37,8 +37,8 @@ type RiskTask struct {
 	UpdatedAt  time.Time
 }
 
-func (s *Store) InsertRiskAppliedTrade(ctx context.Context, id string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO risk_applied_clob_trades(id) VALUES(?)`, id)
+func (s *Store) InsertRiskAppliedTrade(ctx context.Context, id string, accountID string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO risk_applied_clob_trades(id, account_id) VALUES(?,?)`, id, accountID)
 	if err != nil {
 		return false, err
 	}
@@ -46,28 +46,22 @@ func (s *Store) InsertRiskAppliedTrade(ctx context.Context, id string) (bool, er
 	return n > 0, nil
 }
 
-func (s *Store) ListOpenRiskPositionsByToken(ctx context.Context, tokenID string) ([]RiskPosition, error) {
-	return s.listRiskPositionsWhere(ctx, `token_id = ? AND status = 'open'`, tokenID)
+func (s *Store) ListOpenRiskPositionsByToken(ctx context.Context, tokenID string, accountID string) ([]RiskPosition, error) {
+	return s.listRiskPositionsWhere(ctx, `token_id = ? AND account_id = ? AND status = 'open'`, tokenID, accountID)
 }
 
-func (s *Store) ListOpenRiskPositionsMinShares(ctx context.Context, minShares float64) ([]RiskPosition, error) {
-	return s.listRiskPositionsWhere(ctx, `status = 'open' AND size_shares >= ?`, minShares)
+func (s *Store) ListOpenRiskPositionsMinShares(ctx context.Context, minShares float64, accountID string) ([]RiskPosition, error) {
+	return s.listRiskPositionsWhere(ctx, `status = 'open' AND account_id = ? AND size_shares >= ?`, accountID, minShares)
 }
 
-func (s *Store) ListOpenOrClosingRiskPositions(ctx context.Context) ([]RiskPosition, error) {
-	return s.listRiskPositionsWhere(ctx, `status IN ('open','closing')`, nil)
+func (s *Store) ListOpenOrClosingRiskPositions(ctx context.Context, accountID string) ([]RiskPosition, error) {
+	return s.listRiskPositionsWhere(ctx, `status IN ('open','closing') AND account_id = ?`, accountID)
 }
 
-func (s *Store) listRiskPositionsWhere(ctx context.Context, clause string, arg any) ([]RiskPosition, error) {
+func (s *Store) listRiskPositionsWhere(ctx context.Context, clause string, args ...any) ([]RiskPosition, error) {
 	q := `SELECT id, platform, outcome_id, token_id, title, side_label, avg_entry_cents, size_shares, cost_usd,
 		high_water_cents, stop_loss_pct, source, status, created_at, updated_at FROM risk_positions WHERE ` + clause
-	var rows *sql.Rows
-	var err error
-	if arg != nil {
-		rows, err = s.db.QueryContext(ctx, q, arg)
-	} else {
-		rows, err = s.db.QueryContext(ctx, q)
-	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

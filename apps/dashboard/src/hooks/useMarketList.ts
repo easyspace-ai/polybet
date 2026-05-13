@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { getMarkets, type Market } from '@/lib/api';
+import { getMarkets, postMarketsRefresh, type Market } from '@/lib/api';
 import { wsBus, type MarketLifecycleMessage } from '@/lib/wsBus';
 
 const WS_SNAPSHOT_FALLBACK_MS = 3_000;
@@ -12,7 +12,7 @@ interface MarketListState {
   wsConnected: boolean;
 }
 
-export function useMarketList(): MarketListState {
+export function useMarketList(): MarketListState & { refresh: () => Promise<void> } {
   const [state, setState] = useState<MarketListState>({
     markets: [],
     loading: true,
@@ -20,7 +20,7 @@ export function useMarketList(): MarketListState {
     lastUpdate: null,
     wsConnected: false,
   });
-  
+
   const cacheRef = useRef(new Map<string, Market>());
   const snapshotReceived = useRef(false);
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -61,10 +61,29 @@ export function useMarketList(): MarketListState {
     setState(prev => ({ ...prev, wsConnected: connected }));
   }, []);
 
+  const doFetchFromREST = useCallback((afterErrorStillStopLoading: boolean) => {
+    getMarkets()
+      .then((data) => {
+        if (data.length > 0) {
+          snapshotReceived.current = true;
+          applyFullSnapshot(data);
+        }
+        setState(prev => ({ ...prev, loading: false }));
+      })
+      .catch((err) => {
+        if (afterErrorStillStopLoading) {
+          setState(prev => ({
+            ...prev,
+            loading: false,
+            error: err instanceof Error ? err.message : '加载市场失败',
+          }));
+        }
+      });
+  }, [applyFullSnapshot]);
+
   useEffect(() => {
     let cancelled = false;
 
-    // Initial REST fallback
     const tryHydrateFromREST = (afterErrorStillStopLoading: boolean) => {
       getMarkets()
         .then((data) => {
@@ -86,14 +105,11 @@ export function useMarketList(): MarketListState {
         });
     };
 
-    // Start with eager REST in case WS is slow
     tryHydrateFromREST(false);
 
-    // Set up WebSocket listeners
     const offMarket = wsBus.onMarketLifecycle(handleMarketMessage);
     const offStatus = wsBus.onStatus(handleWsStatus);
 
-    // Fallback REST if WS doesn't send snapshot in time
     fallbackTimerRef.current = setTimeout(() => {
       if (!snapshotReceived.current) {
         console.log('[useMarketList] WS snapshot timeout, falling back to REST');
@@ -109,5 +125,18 @@ export function useMarketList(): MarketListState {
     };
   }, [handleMarketMessage, handleWsStatus, applyFullSnapshot]);
 
-  return state;
+  const refresh = useCallback(async () => {
+    setState(prev => ({ ...prev, loading: true, error: null }));
+    wsBus.clearMarketsCache();
+    cacheRef.current.clear();
+    snapshotReceived.current = false;
+    try {
+      await postMarketsRefresh();
+    } catch (err) {
+      console.warn('[useMarketList] backend refresh failed, falling back to REST', err);
+    }
+    doFetchFromREST(true);
+  }, [doFetchFromREST]);
+
+  return { ...state, refresh };
 }

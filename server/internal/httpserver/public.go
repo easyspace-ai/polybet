@@ -104,7 +104,12 @@ func NewPublicRouter(d Deps) *gin.Engine {
 		})
 		api.GET("/risk/positions", func(c *gin.Context) {
 			meta := risksvc.Meta{OutboundProxyConfigured: d.Cfg.HTTPPlatformProxy != ""}
-			rows, meta2, err := d.Risk.ListRiskPositionsEnriched(c, meta)
+			acct, _ := d.Store.GetActivePolymarketAccount(c)
+			accountID := ""
+			if acct != nil {
+				accountID = acct.ID
+			}
+			rows, meta2, err := d.Risk.ListRiskPositionsEnriched(c, meta, accountID)
 			if err != nil {
 				c.JSON(500, gin.H{"error": "risk"})
 				return

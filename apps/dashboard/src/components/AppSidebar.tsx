@@ -1,6 +1,8 @@
 import React from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Activity, LineChart, Shield, History, Wallet, FileText, Settings, Zap } from "lucide-react";
+import { Activity, LineChart, Shield, History, Wallet, FileText, Settings, Loader2 } from "lucide-react";
+import { useBalanceCache } from "@/hooks/useBalanceCache";
+import { useAccounts } from "@/hooks/useAccounts";
 
 const items = [
   { title: "市场", url: "/", icon: LineChart },
@@ -11,8 +13,19 @@ const items = [
   { title: "设置", url: "/settings", icon: Settings },
 ];
 
+function formatUsd(n: number): string {
+  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 export function AppSidebar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const { balance, loading: balanceLoading } = useBalanceCache();
+  const { accounts } = useAccounts();
+
+  const activeAccount = accounts.find((a) => a.isActive);
+  const accountName = activeAccount?.name ?? accounts[0]?.name ?? "—";
+  const totalBalance = balance?.polymarket;
+
   return (
     <aside className="w-[160px] shrink-0 h-screen sticky top-0 flex flex-col bg-sidebar border-r border-sidebar-border">
       <div
@@ -49,15 +62,19 @@ export function AppSidebar() {
         })}
       </nav>
 
-      <div className="px-3 py-3 mx-3 mb-4 rounded-md border border-sidebar-border bg-sidebar-accent/40">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="size-1.5 rounded-full bg-success animate-breathe" />
-            <span className="text-[11px] font-medium">WebSocket</span>
+      <div className="px-3 py-3 border-t border-sidebar-border">
+        <div className="px-3 py-2 rounded-md bg-sidebar-accent/40 border border-sidebar-border/50">
+          <p className="text-[11px] text-sidebar-foreground truncate">{accountName}</p>
+          <div className="mt-1 h-5 flex items-center">
+            {balanceLoading && totalBalance == null ? (
+              <Loader2 className="size-4 text-brand animate-spin" />
+            ) : (
+              <span className="text-[13px] font-semibold text-sidebar-foreground tabular-nums">
+                {totalBalance != null ? `$${formatUsd(totalBalance)}` : "—"}
+              </span>
+            )}
           </div>
-          <Zap className="size-3.5 text-warning" />
         </div>
-        <div className="mt-1 text-[10px] text-muted-foreground font-mono">已连接 · 14ms</div>
       </div>
     </aside>
   );

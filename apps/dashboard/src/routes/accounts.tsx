@@ -1,9 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { TopBar } from "@/components/TopBar";
-import { Trash2, Plus } from "lucide-react";
+import { Trash2, Plus, Loader2 } from "lucide-react";
 import { useAccounts } from "@/hooks/useAccounts";
 import { useBalanceCache } from "@/hooks/useBalanceCache";
+import { refreshRiskData } from "@/hooks/useRiskControlCache";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/accounts")({ component: AccountsPage });
@@ -14,7 +15,7 @@ function formatUsd(n: number): string {
 
 function AccountsPage() {
   const { accounts, loading, error, create, activate, remove } = useAccounts();
-  const { balance, refresh: refreshBalance } = useBalanceCache();
+  const { balance, loading: balanceLoading, refresh: refreshBalance } = useBalanceCache();
   const [name, setName] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -46,8 +47,9 @@ function AccountsPage() {
   async function handleActivate(id: string) {
     try {
       await activate(id);
-      toast.success('已切换', { description: '后续下单将使用该账号' });
+      toast.success('已设为默认账号', { description: '后续下单将使用该账号' });
       refreshBalance();
+      refreshRiskData();
     } catch (err) {
       toast.error('切换失败', { description: err instanceof Error ? err.message : '请求错误' });
     }
@@ -109,7 +111,7 @@ function AccountsPage() {
                       <div className="flex items-center gap-2">
                         <span className="font-mono text-[13px] font-medium">{a.name}</span>
                         {a.isActive && (
-                          <span className="px-1.5 py-0.5 text-[10px] rounded bg-brand/15 text-brand font-medium">当前</span>
+                          <span className="px-1.5 py-0.5 text-[10px] rounded bg-brand/15 text-brand font-medium">默认</span>
                         )}
                       </div>
                       <span className="font-mono text-[10.5px] text-muted-foreground mt-0.5 truncate max-w-[300px]">{a.funderAddress}</span>
@@ -117,7 +119,13 @@ function AccountsPage() {
                   </div>
                   <div className="flex items-center gap-4">
                     <span className={`num text-[14px] font-medium ${a.isActive ? 'text-brand' : ''}`}>
-                      {bal == null ? '—' : `$${formatUsd(bal)}`}
+                      {bal == null && balanceLoading ? (
+                        <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                      ) : bal == null ? (
+                        '—'
+                      ) : (
+                        `$${formatUsd(bal)}`
+                      )}
                     </span>
                     <div className="flex gap-2">
                       {!a.isActive && (
@@ -125,7 +133,7 @@ function AccountsPage() {
                           onClick={() => handleActivate(a.id)}
                           className="h-8 px-3 text-[11px] rounded-md border border-border bg-surface hover:bg-accent transition"
                         >
-                          设为当前
+                          设为默认
                         </button>
                       )}
                       <button 

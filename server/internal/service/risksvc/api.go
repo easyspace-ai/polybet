@@ -25,6 +25,8 @@ type Meta struct {
 	UserWsLastIssue         *string `json:"userWsLastIssue"`
 	OutboundProxyConfigured bool    `json:"outboundProxyConfigured"`
 	MinOpenRiskShares       float64 `json:"minOpenRiskShares"`
+	OrderbookWsConnected    bool    `json:"orderbookWsConnected"`
+	OrderbookWsConnecting   bool    `json:"orderbookWsConnecting"`
 }
 
 func firstNonEmpty(vals ...string) string {
@@ -57,14 +59,14 @@ func polymarketLinks(dm store.RiskDisplayMeta, gm gammaclient.TokenMarketDisplay
 	return "", "https://polymarket.com/"
 }
 
-func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta) ([]map[string]any, Meta, error) {
+func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, accountID string) ([]map[string]any, Meta, error) {
 	meta = s.fillMeta(meta)
 	_ = s.st.NormalizeDustRisk(ctx, 1e-9)
-	if err := s.maybeReconcileBalances(ctx); err != nil {
+	if err := s.maybeReconcileBalances(ctx, accountID); err != nil {
 		s.log.Warn("reconcile", "err", err)
 	}
 	min := s.minShares(ctx)
-	rows, err := s.st.ListOpenOrClosingRiskPositions(ctx)
+	rows, err := s.st.ListOpenOrClosingRiskPositions(ctx, accountID)
 	if err != nil {
 		return nil, meta, err
 	}
@@ -151,21 +153,21 @@ func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta) ([]m
 
 var lastReconcile time.Time
 
-func (s *Service) maybeReconcileBalances(ctx context.Context) error {
+func (s *Service) maybeReconcileBalances(ctx context.Context, accountID string) error {
 	if time.Since(lastReconcile) < reconcileMinInterval {
 		return nil
 	}
 	lastReconcile = time.Now()
-	return s.ReconcileOpenRiskPositionsWithClobBalances(ctx)
+	return s.ReconcileOpenRiskPositionsWithClobBalances(ctx, accountID)
 }
 
-func (s *Service) ReconcileOpenRiskPositionsWithClobBalances(ctx context.Context) error {
+func (s *Service) ReconcileOpenRiskPositionsWithClobBalances(ctx context.Context, accountID string) error {
 	cl, err := polysession.ResolveAuthedCLOB(ctx, s.cfg, s.st)
 	if err != nil {
 		return err
 	}
 	min := s.minShares(ctx)
-	rows, err := s.st.ListRiskPositionsOpenClosing(ctx)
+	rows, err := s.st.ListRiskPositionsOpenClosing(ctx, accountID)
 	if err != nil {
 		return err
 	}
@@ -200,6 +202,11 @@ func (s *Service) SyncRiskFromRESTTrades(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	acct, _ := s.st.GetActivePolymarketAccount(ctx)
+	var accountID string
+	if acct != nil {
+		accountID = acct.ID
+	}
 	n := len(trades.Data)
 	if n > 100 {
 		n = 100
@@ -209,10 +216,10 @@ func (s *Service) SyncRiskFromRESTTrades(ctx context.Context) error {
 		_, _ = s.ApplyClobTradeIfNew(ctx, struct {
 			ID, AssetID, Side, Size, Price, Status string
 			Market, Outcome                        string
-		}{ID: t.ID, AssetID: t.AssetID, Side: t.Side, Size: t.Size, Price: t.Price, Status: t.Status, Market: t.Market, Outcome: ""})
+		}{ID: t.ID, AssetID: t.AssetID, Side: t.Side, Size: t.Size, Price: t.Price, Status: t.Status, Market: t.Market, Outcome: ""}, accountID)
 	}
 	s.touchRESTTradesSync()
-	return s.ReconcileOpenRiskPositionsWithClobBalances(ctx)
+	return s.ReconcileOpenRiskPositionsWithClobBalances(ctx, accountID)
 }
 
 // ParseUserWsTradePayload mirrors Node parseUserWsTradePayload (minimal).
