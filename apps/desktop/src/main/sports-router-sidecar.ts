@@ -12,9 +12,29 @@ import {
   isPathUnderUserProfile,
 } from "./user-profile-paths";
 
+export type SidecarStatus =
+  | { state: "starting" }
+  | { state: "ready"; origin: string }
+  | { state: "crashed"; error: string; willRestart: boolean; retryCount: number }
+  | { state: "stopped" };
+
 let child: ChildProcess | null = null;
 let dashboardOrigin: string | null = null;
 let beforeQuitHooked = false;
+let statusCallback: ((status: SidecarStatus) => void) | null = null;
+
+const MAX_RETRIES = 5;
+const BASE_RETRY_MS = 1_000;
+let retryCount = 0;
+let restartTimeout: ReturnType<typeof setTimeout> | null = null;
+
+export function setSidecarStatusCallback(cb: (status: SidecarStatus) => void): void {
+  statusCallback = cb;
+}
+
+function emitStatus(s: SidecarStatus): void {
+  statusCallback?.(s);
+}
 
 export function getLocalDashboardURL(): string | null {
   return dashboardOrigin;
@@ -36,6 +56,62 @@ async function waitHealth(base: string, timeoutMs: number): Promise<boolean> {
   return false;
 }
 
+function spawnSidecar(bin: string, cwd: string, env: Record<string, string | undefined>, project: PolybetProjectConfig, _origin?: string): void {
+  child = spawn(bin, [], { cwd, env, stdio: "inherit" });
+  emitStatus({ state: "starting" });
+
+  child.on("error", (err) => {
+    console.error("[polybet] spawn error:", err);
+    child = null;
+    handleCrash(err.message, project);
+  });
+
+  child.on("exit", (code, signal) => {
+    if (code === 0 || signal === "SIGTERM" || signal === "SIGKILL") {
+      // Intentional stop — not a crash
+      return;
+    }
+    console.error(`[polybet] process exited unexpectedly (code=${code}, signal=${signal})`);
+    child = null;
+    handleCrash(`exit code ${code ?? signal}`, project);
+  });
+}
+
+function handleCrash(reason: string, project: PolybetProjectConfig): void {
+  if (retryCount >= MAX_RETRIES) {
+    emitStatus({ state: "crashed", error: reason, willRestart: false, retryCount });
+    return;
+  }
+  retryCount++;
+  const delay = BASE_RETRY_MS * Math.pow(2, retryCount - 1);
+  emitStatus({ state: "crashed", error: reason, willRestart: true, retryCount });
+  restartTimeout = setTimeout(() => {
+    startWithRetry(project);
+  }, delay);
+}
+
+async function startWithRetry(project: PolybetProjectConfig): Promise<void> {
+  const bin = getBundledPolybetBinaryPath();
+  if (!existsSync(bin)) {
+    emitStatus({ state: "crashed", error: "binary disappeared", willRestart: false, retryCount });
+    return;
+  }
+  const env = applyPolybetProjectConfigToEnv({ ...process.env }, project);
+  const probeHost = env.HOST === "0.0.0.0" ? "127.0.0.1" : env.HOST ?? "127.0.0.1";
+  const origin = `http://${probeHost}:${env.PORT}`;
+  const userData = getAppUserDataDir();
+  const cwd = is.dev ? getPolybetEmbeddedServerDataDir() : userData;
+
+  spawnSidecar(bin, cwd, env, project);
+  const ok = await waitHealth(origin, 45_000);
+  if (!ok) {
+    handleCrash("health check timed out after restart", project);
+    return;
+  }
+  dashboardOrigin = origin;
+  emitStatus({ state: "ready", origin });
+}
+
 /**
  * If `resources/bin/polybet` exists and `project` is valid, spawn it and
  * expose the dashboard origin. When the binary exists but `project` is null
@@ -46,6 +122,12 @@ export async function maybeStartSportsRouterSidecar(
   project: PolybetProjectConfig | null,
 ): Promise<boolean> {
   const bin = getBundledPolybetBinaryPath();
+  retryCount = 0;
+  if (restartTimeout) {
+    clearTimeout(restartTimeout);
+    restartTimeout = null;
+  }
+
   if (!existsSync(bin)) {
     return false;
   }
@@ -74,25 +156,16 @@ export async function maybeStartSportsRouterSidecar(
   const probeHost = env.HOST === "0.0.0.0" ? "127.0.0.1" : env.HOST ?? "127.0.0.1";
   const origin = `http://${probeHost}:${env.PORT}`;
 
-  child = spawn(bin, [], {
-    cwd,
-    env,
-    stdio: "inherit",
-  });
-
-  child.on("error", (err) => {
-    console.error("[polybet] spawn error:", err);
-  });
+  spawnSidecar(bin, cwd, env, project);
 
   const ok = await waitHealth(origin, 45_000);
   if (!ok) {
-    console.error("[polybet] /api/health did not become ready in time");
-    child.kill("SIGTERM");
-    child = null;
+    handleCrash("health check timed out", project);
     return false;
   }
 
   dashboardOrigin = origin;
+  emitStatus({ state: "ready", origin });
 
   if (!beforeQuitHooked) {
     beforeQuitHooked = true;
@@ -106,9 +179,15 @@ export async function maybeStartSportsRouterSidecar(
 
 /** Stop the embedded Go server and clear the dashboard origin (e.g. after a failed outbound probe). */
 export function stopEmbeddedPolybetSidecar(): void {
+  if (restartTimeout) {
+    clearTimeout(restartTimeout);
+    restartTimeout = null;
+  }
+  retryCount = MAX_RETRIES; // prevent auto-restart
   if (child && !child.killed) {
     child.kill("SIGTERM");
   }
   child = null;
   dashboardOrigin = null;
+  emitStatus({ state: "stopped" });
 }

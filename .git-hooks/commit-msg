@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Commit message linting
+# Install: git config core.hooksPath .git-hooks
+
+npx --yes commitlint --edit "$1" 2>/dev/null

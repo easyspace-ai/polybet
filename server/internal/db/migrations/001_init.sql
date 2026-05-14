@@ -109,8 +109,6 @@ CREATE TABLE IF NOT EXISTS risk_positions (
     avg_entry_cents REAL NOT NULL,
     size_shares REAL NOT NULL,
     cost_usd REAL NOT NULL,
-    high_water_cents REAL NOT NULL,
-    stop_loss_pct REAL NOT NULL,
     source TEXT NOT NULL DEFAULT 'bot',
     status TEXT NOT NULL DEFAULT 'open',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),

@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/easyspace-ai/polysdk/pkg/data"
+	"github.com/easyspace-ai/polysdk/pkg/transport"
 
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/config"
@@ -45,6 +49,14 @@ type App struct {
 	httpSrv       *http.Server
 	publicSrv     *http.Server
 	wg            sync.WaitGroup
+	restartCh     chan struct{}
+}
+
+func (a *App) RequestRestart() {
+	select {
+	case a.restartCh <- struct{}{}:
+	default:
+	}
 }
 
 func New(cfg *config.Config, db *sql.DB, log *slog.Logger) *App {
@@ -55,7 +67,14 @@ func New(cfg *config.Config, db *sql.DB, log *slog.Logger) *App {
 	topN := st.GetBotConfigInt(context.Background(), "orderBookLevels", 10)
 	cache := bookcache.New(topN)
 	hub := wsrelay.NewHub()
-	risk := risksvc.New(cfg, st, cache, log)
+	var httpDoer *http.Client
+	if cfg.HTTPPlatformProxy != "" {
+		if proxyURL, err := url.Parse(cfg.HTTPPlatformProxy); err == nil {
+			httpDoer = &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+		}
+	}
+	dataClient := data.NewClient(transport.NewClient(httpDoer, data.BaseURL))
+	risk := risksvc.New(cfg, st, cache, dataClient, log)
 	sportsCache := marketsync.NewSportsCache(cfg.HTTPPlatformProxy, time.Hour)
 	syncEng := marketsync.NewEngine(cfg, st, cache, sportsCache, log)
 
@@ -75,6 +94,7 @@ func New(cfg *config.Config, db *sql.DB, log *slog.Logger) *App {
 		SyncEngine: syncEng, SportsCache: sportsCache, Debounce: debounce.New(120 * time.Millisecond), Log: log,
 		Rediska: rediskaDB, BalanceCache: balanceCache, RiskCache: riskCache, InitService: initSvc,
 		LogService: logSvc,
+		restartCh: make(chan struct{}, 1),
 	}
 }
 
@@ -187,7 +207,11 @@ func (a *App) Run(ctx context.Context) error {
 		defer a.wg.Done()
 		tg.Run(ctx, a.Cfg, a.Store, a.Log)
 	}()
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case <-a.restartCh:
+		a.Log.Info("restart_requested_via_api")
+	}
 	shCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = a.httpSrv.Shutdown(shCtx)

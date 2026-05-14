@@ -13,8 +13,7 @@ export function useWsStatus() {
   const [polyStatus, setPolyStatus] = useState<PolyStatusMessage | null>(null);
 
   useEffect(() => {
-    const unsub = wsBus.onStatus(setDashConnected);
-    return unsub;
+    return wsBus.onStatusChange(setDashConnected);
   }, []);
 
   useEffect(() => {

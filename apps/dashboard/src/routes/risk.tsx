@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
 import { RefreshCw, AlertTriangle, ExternalLink } from "lucide-react";
 import { useRiskControlCache } from "@/hooks/useRiskControlCache";
@@ -36,12 +36,27 @@ function relAgeShort(iso: string | null): string {
 }
 
 function RiskPage() {
-  const { positions, meta, tasks, loading, error, refresh, wsConnected, lastRefresh } = useRiskControlCache();
+  const { positions, meta, tasks, loading, error, refresh, polyOrderbookConnected, polyUserConnected, lastRefresh } = useRiskControlCache();
   const [closingId, setClosingId] = useState<string | null>(null);
   const [closingAll, setClosingAll] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, { sl: string; hw: string }>>({});
   const [patchingKey, setPatchingKey] = useState<string | null>(null);
   const [officialSyncing, setOfficialSyncing] = useState(false);
+
+  // 初始化 drafts，当 positions 变化时同步
+  useEffect(() => {
+    setDrafts(prev => {
+      const next = { ...prev };
+      let changed = false;
+      for (const p of positions) {
+        if (!next[p.id]) {
+          next[p.id] = { sl: String(p.stopLossPct), hw: String(p.highWaterCents) };
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [positions]);
 
   const handleCloseOne = async (id: string) => {
     setClosingId(id);
@@ -132,9 +147,14 @@ function RiskPage() {
         title="风控"
         subtitle={
           <>
-            <span className="flex items-center gap-1.5">
-              <span className={`size-1.5 rounded-full ${wsConnected ? 'bg-success animate-breathe' : 'bg-warning'}`} />
-              WS {wsConnected ? '已连接' : '未连接'}
+            <span className="flex items-center gap-1.5" title="Polymarket 盘口推送状态">
+              <span className={`size-1.5 rounded-full ${polyOrderbookConnected ? 'bg-success animate-breathe' : 'bg-warning'}`} />
+              OB {polyOrderbookConnected ? '已连接' : '未连接'}
+            </span>
+            <span className="text-border">·</span>
+            <span className="flex items-center gap-1.5" title="Polymarket 用户订单/成交状态推送">
+              <span className={`size-1.5 rounded-full ${polyUserConnected ? 'bg-success animate-breathe' : 'bg-warning'}`} />
+              USER {polyUserConnected ? '已连接' : '未连接'}
             </span>
             <span className="text-border">·</span>
             {lastRefresh && (
@@ -153,20 +173,20 @@ function RiskPage() {
         }
         actions={
           <>
-            <button 
+            <button
               onClick={handleOfficialRefresh}
               disabled={officialSyncing}
               className="h-8 px-3 text-[12px] rounded-md border border-border bg-surface hover:bg-accent transition flex items-center gap-1.5 disabled:opacity-50"
             >
-              <RefreshCw className={cn("size-3.5", officialSyncing && "animate-spin")} /> 
+              <RefreshCw className={cn("size-3.5", officialSyncing && "animate-spin")} />
               {officialSyncing ? '同步中...' : '刷新'}
             </button>
-            <button 
+            <button
               onClick={handleCloseAll}
               disabled={closingAll || positions.length === 0}
               className="h-8 px-3 text-[12px] rounded-md bg-destructive text-destructive-foreground hover:opacity-90 transition flex items-center gap-1.5 font-medium disabled:opacity-50"
             >
-              <AlertTriangle className="size-3.5" /> 
+              <AlertTriangle className="size-3.5" />
               {closingAll ? '处理中...' : '一键全部平仓'}
             </button>
           </>
@@ -200,7 +220,7 @@ function RiskPage() {
               <table className="w-full text-[12px]">
                 <thead className="text-[10px] uppercase tracking-widest text-muted-foreground bg-background/40">
                   <tr>
-                    {["市场", "均价 → 当前", "份额", "成本", "可赢利", "市值", "最高水位", "止损 %", "移动止损价", ""].map((h) => (
+                    {["市场", "均价 → 当前", "Bids (买盘)", "Asks (卖盘)", "份额", "成本", "可赢利", "市值", "最高水位", "止损 %", "移动止损价", ""].map((h) => (
                       <th key={h} className="px-4 py-2.5 font-medium text-left">{h}</th>
                     ))}
                   </tr>
@@ -209,11 +229,7 @@ function RiskPage() {
                   {positions.map((p) => {
                     const pnlPct = p.pnlUsd != null && p.costUsd > 0 ? (p.pnlUsd / p.costUsd) * 100 : null;
                     const display = (p.displayTitle?.trim() || p.title).trim();
-                    
-                    if (!drafts[p.id]) {
-                      setDrafts(prev => ({ ...prev, [p.id]: { sl: String(p.stopLossPct), hw: String(p.highWaterCents) } }));
-                    }
-                    
+
                     return (
                       <tr key={p.id} className="hover:bg-accent/30 transition-colors">
                         <td className="px-4 py-4">
@@ -242,6 +258,26 @@ function RiskPage() {
                           </div>
                         </td>
                         <td className="px-4 py-4 num">{fmtCents(p.avgEntryCents)} <span className="text-muted-foreground">→ {fmtCents(p.currentCents)}</span></td>
+                        <td className="px-4 py-4">
+                          <div className="flex flex-col gap-0.5 min-w-[80px]">
+                            {p.bids && p.bids.length > 0 ? p.bids.map((b, i) => (
+                              <div key={i} className="flex justify-between gap-2 text-[10px] num">
+                                <span className="text-success font-medium">{fmtCents(b.odds * 100)}</span>
+                                <span className="text-muted-foreground opacity-60">${b.size.toFixed(0)}</span>
+                              </div>
+                            )) : <span className="text-muted-foreground opacity-40 italic">空</span>}
+                          </div>
+                        </td>
+                        <td className="px-4 py-4">
+                          <div className="flex flex-col gap-0.5 min-w-[80px]">
+                            {p.asks && p.asks.length > 0 ? p.asks.map((a, i) => (
+                              <div key={i} className="flex justify-between gap-2 text-[10px] num">
+                                <span className="text-danger font-medium">{fmtCents(a.odds * 100)}</span>
+                                <span className="text-muted-foreground opacity-60">${a.size.toFixed(0)}</span>
+                              </div>
+                            )) : <span className="text-muted-foreground opacity-40 italic">空</span>}
+                          </div>
+                        </td>
                         <td className="px-4 py-4 num">{p.sizeShares.toFixed(2)}</td>
                         <td className="px-4 py-4 num">{fmtUsd(p.costUsd)}</td>
                         <td className="px-4 py-4 num text-success">{fmtUsd(p.potentialProfitUsd)}</td>
@@ -306,7 +342,7 @@ function RiskPage() {
                         </td>
                         <td className="px-4 py-4 num text-warning">{fmtCents(p.trailingStopCents)}</td>
                         <td className="px-4 py-4">
-                          <button 
+                          <button
                             onClick={() => handleCloseOne(p.id)}
                             disabled={p.status !== 'open' || closingId === p.id}
                             className="px-3 py-1.5 rounded-md bg-brand text-brand-foreground text-[11.5px] font-medium hover:opacity-90 transition active:scale-95 disabled:opacity-50"

@@ -19,6 +19,7 @@ function AccountsPage() {
   const [name, setName] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [activatingId, setActivatingId] = useState<string | null>(null);
 
   const balanceById = new Map(
     (balance?.polymarketAccounts ?? []).map((b) => [b.id, b.polymarket]),
@@ -44,14 +45,17 @@ function AccountsPage() {
     }
   }
 
-  async function handleActivate(id: string) {
+async function handleActivate(id: string) {
+    setActivatingId(id);
     try {
       await activate(id);
       toast.success('已设为默认账号', { description: '后续下单将使用该账号' });
-      refreshBalance();
+      await refreshBalance();
       refreshRiskData();
     } catch (err) {
       toast.error('切换失败', { description: err instanceof Error ? err.message : '请求错误' });
+    } finally {
+      setActivatingId(null);
     }
   }
 
@@ -128,14 +132,18 @@ function AccountsPage() {
                       )}
                     </span>
                     <div className="flex gap-2">
-                      {!a.isActive && (
-                        <button 
-                          onClick={() => handleActivate(a.id)}
-                          className="h-8 px-3 text-[11px] rounded-md border border-border bg-surface hover:bg-accent transition"
-                        >
-                          设为默认
-                        </button>
-                      )}
+{!a.isActive && (
+                         <button
+                           onClick={() => handleActivate(a.id)}
+                           disabled={activatingId === a.id}
+                           className="h-8 px-3 text-[11px] rounded-md border border-border bg-surface hover:bg-accent transition flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                         >
+                           {activatingId === a.id ? (
+                             <Loader2 className="size-3.5 animate-spin" />
+                           ) : null}
+                           {activatingId === a.id ? '切换中...' : '设为默认'}
+                         </button>
+                       )}
                       <button 
                         onClick={() => handleDelete(a.id)}
                         className="h-8 px-3 text-[11px] text-danger hover:underline flex items-center gap-1"

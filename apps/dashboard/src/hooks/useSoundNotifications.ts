@@ -158,7 +158,7 @@ export function useSoundNotifications() {
   }, []);
 
   useEffect(() => {
-    const unsubStatus = wsBus.onStatus((connected) => {
+    const offStatus = wsBus.onStatusChange((connected) => {
       if (hasEverConnectedRef.current && !connected) {
         console.warn("[sound] WebSocket disconnected, playing alert sound");
         playSound("alert");
@@ -207,7 +207,7 @@ export function useSoundNotifications() {
     });
 
     return () => {
-      unsubStatus();
+      offStatus();
       unsubPolyStatus();
       unsubPosition();
     };

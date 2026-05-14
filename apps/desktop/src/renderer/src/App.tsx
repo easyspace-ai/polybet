@@ -170,22 +170,6 @@ function PolybetProjectSetup() {
       </label>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 8 }}>
-        {/* <button
-          type="button"
-          disabled={verifying || saving}
-          onClick={() => void onVerify()}
-          style={{
-            padding: "12px 20px",
-            background: verifying ? "#999" : "#0a7",
-            color: "white",
-            border: "none",
-            borderRadius: "8px",
-            cursor: verifying ? "default" : "pointer",
-            fontSize: "1rem",
-          }}
-        >
-          {verifying ? "验证中…" : "验证 Polymarket 连接"}
-        </button> */}
         <button
           type="button"
           disabled={saving || verifying}
@@ -300,21 +284,32 @@ const inputStyle: CSSProperties = {
   fontSize: "0.95rem",
 };
 
+function useApiOrigin(): string {
+  const bootstrap = window.desktopAPI.polybetBootstrap;
+  if (bootstrap.project.ok) {
+    const { host, port } = bootstrap.project.config;
+    return `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
+  }
+  return "";
+}
+
 function AppContent() {
   const [serverStatus, setServerStatus] = useState<string>("Checking...");
   const [version, setVersion] = useState<string>("dev");
+  const apiOrigin = useApiOrigin();
 
   useEffect(() => {
     const info = window.desktopAPI.appInfo as { version: string };
     setVersion(info?.version || "dev");
 
-    void fetch("http://localhost:8080/health")
+    const url = apiOrigin ? `${apiOrigin}/api/health` : "/api/health";
+    void fetch(url)
       .then((res) => res.json())
       .then((data: { status?: string }) =>
         setServerStatus(data.status ?? "unknown"),
       )
       .catch(() => setServerStatus("offline"));
-  }, []);
+  }, [apiOrigin]);
 
   return (
     <div

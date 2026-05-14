@@ -33,5 +33,6 @@ type Deps struct {
 	App           interface {
 		InvalidateAndRebuildCache()
 		SyncAndBroadcastMarkets(ctx context.Context) error
+		RequestRestart()
 	}
 }

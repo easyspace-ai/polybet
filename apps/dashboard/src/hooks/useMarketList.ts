@@ -108,7 +108,7 @@ export function useMarketList(): MarketListState & { refresh: () => Promise<void
     tryHydrateFromREST(false);
 
     const offMarket = wsBus.onMarketLifecycle(handleMarketMessage);
-    const offStatus = wsBus.onStatus(handleWsStatus);
+    const offStatus = wsBus.onStatusChange(handleWsStatus);
 
     fallbackTimerRef.current = setTimeout(() => {
       if (!snapshotReceived.current) {

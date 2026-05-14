@@ -10,6 +10,7 @@ import (
 type RiskPosition struct {
 	ID             string
 	Platform       string
+	AccountID      string
 	OutcomeID      sql.NullString
 	TokenID        string
 	Title          string
@@ -17,10 +18,18 @@ type RiskPosition struct {
 	AvgEntryCents  float64
 	SizeShares     float64
 	CostUSD        float64
-	HighWaterCents float64
-	StopLossPct    float64
+	HighWaterCents float64 // from LEFT JOIN risk_position_configs (COALESCE)
+	StopLossPct    float64 // from LEFT JOIN risk_position_configs (COALESCE)
 	Source         string
 	Status         string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type RiskPositionConfig struct {
+	PositionID     string
+	HighWaterCents float64
+	StopLossPct    float64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
@@ -32,6 +41,7 @@ type RiskTask struct {
 	Status     string
 	Attempts   int
 	LastError  sql.NullString
+	Reason     sql.NullString
 	NextRunAt  time.Time
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
@@ -50,6 +60,24 @@ func (s *Store) ListOpenRiskPositionsByToken(ctx context.Context, tokenID string
 	return s.listRiskPositionsWhere(ctx, `token_id = ? AND account_id = ? AND status = 'open'`, tokenID, accountID)
 }
 
+// ListOpenRiskPositionTokenIDs returns distinct token_ids for open risk positions.
+func (s *Store) ListOpenRiskPositionTokenIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT token_id FROM risk_positions WHERE status = 'open' AND token_id IS NOT NULL AND token_id != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *Store) ListOpenRiskPositionsMinShares(ctx context.Context, minShares float64, accountID string) ([]RiskPosition, error) {
 	return s.listRiskPositionsWhere(ctx, `status = 'open' AND account_id = ? AND size_shares >= ?`, accountID, minShares)
 }
@@ -59,8 +87,13 @@ func (s *Store) ListOpenOrClosingRiskPositions(ctx context.Context, accountID st
 }
 
 func (s *Store) listRiskPositionsWhere(ctx context.Context, clause string, args ...any) ([]RiskPosition, error) {
-	q := `SELECT id, platform, outcome_id, token_id, title, side_label, avg_entry_cents, size_shares, cost_usd,
-		high_water_cents, stop_loss_pct, source, status, created_at, updated_at FROM risk_positions WHERE ` + clause
+	q := `SELECT rp.id, rp.platform, rp.outcome_id, rp.token_id, rp.title, rp.side_label, rp.avg_entry_cents, rp.size_shares, rp.cost_usd,
+		COALESCE(rpc.high_water_cents, rp.avg_entry_cents) as high_water_cents,
+		COALESCE(rpc.stop_loss_pct, 10) as stop_loss_pct,
+		rp.source, rp.status, rp.created_at, rp.updated_at
+	FROM risk_positions rp
+	LEFT JOIN risk_position_configs rpc ON rp.id = rpc.position_id
+	WHERE ` + clause
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -87,8 +120,13 @@ func scanRiskPositions(rows *sql.Rows) ([]RiskPosition, error) {
 }
 
 func (s *Store) GetRiskPosition(ctx context.Context, id string) (*RiskPosition, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, platform, outcome_id, token_id, title, side_label, avg_entry_cents, size_shares, cost_usd,
-		high_water_cents, stop_loss_pct, source, status, created_at, updated_at FROM risk_positions WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT rp.id, rp.platform, rp.outcome_id, rp.token_id, rp.title, rp.side_label, rp.avg_entry_cents, rp.size_shares, rp.cost_usd,
+		COALESCE(rpc.high_water_cents, rp.avg_entry_cents) as high_water_cents,
+		COALESCE(rpc.stop_loss_pct, 10) as stop_loss_pct,
+		rp.source, rp.status, rp.created_at, rp.updated_at
+	FROM risk_positions rp
+	LEFT JOIN risk_position_configs rpc ON rp.id = rpc.position_id
+	WHERE rp.id = ?`, id)
 	var p RiskPosition
 	var oc sql.NullString
 	var ca, ua string
@@ -105,7 +143,11 @@ func (s *Store) GetRiskPosition(ctx context.Context, id string) (*RiskPosition, 
 }
 
 func (s *Store) UpdateRiskPositionHighWater(ctx context.Context, id string, hw float64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE risk_positions SET high_water_cents = ?, updated_at = datetime('now') WHERE id = ?`, hw, id)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO risk_position_configs(position_id, high_water_cents, stop_loss_pct, created_at, updated_at)
+		VALUES(?, ?, COALESCE((SELECT stop_loss_pct FROM risk_position_configs WHERE position_id = ?), 10), datetime('now'), datetime('now'))
+		ON CONFLICT(position_id) DO UPDATE SET high_water_cents = excluded.high_water_cents, updated_at = datetime('now')`,
+		id, hw, id)
 	return err
 }
 
@@ -117,16 +159,52 @@ func (s *Store) UpdateRiskPositionStop(ctx context.Context, id string, stopLossP
 		return ErrRiskPatchNoFields
 	}
 	if stopLossPct != nil && highWaterCents != nil {
-		_, err := s.db.ExecContext(ctx, `UPDATE risk_positions SET stop_loss_pct = ?, high_water_cents = ?, updated_at = datetime('now') WHERE id = ?`,
-			*stopLossPct, *highWaterCents, id)
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO risk_position_configs(position_id, high_water_cents, stop_loss_pct, created_at, updated_at)
+			VALUES(?, ?, ?, datetime('now'), datetime('now'))
+			ON CONFLICT(position_id) DO UPDATE SET high_water_cents = excluded.high_water_cents, stop_loss_pct = excluded.stop_loss_pct, updated_at = datetime('now')`,
+			id, *highWaterCents, *stopLossPct)
 		return err
 	}
 	if stopLossPct != nil {
-		_, err := s.db.ExecContext(ctx, `UPDATE risk_positions SET stop_loss_pct = ?, updated_at = datetime('now') WHERE id = ?`, *stopLossPct, id)
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO risk_position_configs(position_id, high_water_cents, stop_loss_pct, created_at, updated_at)
+			VALUES(?, COALESCE((SELECT high_water_cents FROM risk_position_configs WHERE position_id = ?), ?), ?, datetime('now'), datetime('now'))
+			ON CONFLICT(position_id) DO UPDATE SET stop_loss_pct = excluded.stop_loss_pct, updated_at = datetime('now')`,
+			id, id, 0, *stopLossPct)
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE risk_positions SET high_water_cents = ?, updated_at = datetime('now') WHERE id = ?`, *highWaterCents, id)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO risk_position_configs(position_id, high_water_cents, stop_loss_pct, created_at, updated_at)
+		VALUES(?, ?, COALESCE((SELECT stop_loss_pct FROM risk_position_configs WHERE position_id = ?), 10), datetime('now'), datetime('now'))
+		ON CONFLICT(position_id) DO UPDATE SET high_water_cents = excluded.high_water_cents, updated_at = datetime('now')`,
+		id, *highWaterCents, id)
 	return err
+}
+
+func (s *Store) UpsertRiskPositionConfig(ctx context.Context, cfg *RiskPositionConfig) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO risk_position_configs(position_id, high_water_cents, stop_loss_pct, created_at, updated_at)
+		VALUES(?,?,?,?,?)
+		ON CONFLICT(position_id) DO UPDATE SET high_water_cents = excluded.high_water_cents, stop_loss_pct = excluded.stop_loss_pct, updated_at = excluded.updated_at`,
+		cfg.PositionID, cfg.HighWaterCents, cfg.StopLossPct, now, now)
+	return err
+}
+
+func (s *Store) GetRiskPositionConfig(ctx context.Context, positionID string) (*RiskPositionConfig, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT position_id, high_water_cents, stop_loss_pct, created_at, updated_at FROM risk_position_configs WHERE position_id = ?`, positionID)
+	var c RiskPositionConfig
+	var ca, ua string
+	if err := row.Scan(&c.PositionID, &c.HighWaterCents, &c.StopLossPct, &ca, &ua); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	c.CreatedAt = parseSQLiteTime(ca)
+	c.UpdatedAt = parseSQLiteTime(ua)
+	return &c, nil
 }
 
 func (s *Store) UpdateRiskPositionStatusShares(ctx context.Context, id, status string, shares, cost float64) error {
@@ -137,13 +215,63 @@ func (s *Store) UpdateRiskPositionStatusShares(ctx context.Context, id, status s
 
 func (s *Store) CreateRiskPosition(ctx context.Context, p *RiskPosition) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO risk_positions(id, platform, outcome_id, token_id, title, side_label, avg_entry_cents, size_shares, cost_usd, high_water_cents, stop_loss_pct, source, status, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		p.ID, p.Platform, sqlNullable(p.OutcomeID), p.TokenID, p.Title, p.SideLabel, p.AvgEntryCents, p.SizeShares, p.CostUSD, p.HighWaterCents, p.StopLossPct, p.Source, p.Status, now, now)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO risk_positions(id, platform, account_id, outcome_id, token_id, title, side_label, avg_entry_cents, size_shares, cost_usd, source, status, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		p.ID, p.Platform, p.AccountID, sqlNullable(p.OutcomeID), p.TokenID, p.Title, p.SideLabel, p.AvgEntryCents, p.SizeShares, p.CostUSD, p.Source, p.Status, now, now)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO risk_position_configs(position_id, high_water_cents, stop_loss_pct, created_at, updated_at)
+		VALUES(?,?,?,?,?)`,
+		p.ID, p.HighWaterCents, p.StopLossPct, now, now)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (s *Store) GetOpenRiskPositionByToken(ctx context.Context, tokenID, accountID string) (*RiskPosition, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT rp.id, rp.platform, rp.outcome_id, rp.token_id, rp.title, rp.side_label, rp.avg_entry_cents, rp.size_shares, rp.cost_usd,
+		COALESCE(rpc.high_water_cents, rp.avg_entry_cents) as high_water_cents,
+		COALESCE(rpc.stop_loss_pct, 10) as stop_loss_pct,
+		rp.source, rp.status, rp.created_at, rp.updated_at
+	FROM risk_positions rp
+	LEFT JOIN risk_position_configs rpc ON rp.id = rpc.position_id
+	WHERE rp.token_id = ? AND rp.account_id = ? AND rp.status = 'open'`, tokenID, accountID)
+	var p RiskPosition
+	var oc sql.NullString
+	var ca, ua string
+	if err := row.Scan(&p.ID, &p.Platform, &oc, &p.TokenID, &p.Title, &p.SideLabel, &p.AvgEntryCents, &p.SizeShares, &p.CostUSD, &p.HighWaterCents, &p.StopLossPct, &p.Source, &p.Status, &ca, &ua); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	p.OutcomeID = oc
+	p.CreatedAt = parseSQLiteTime(ca)
+	p.UpdatedAt = parseSQLiteTime(ua)
+	return &p, nil
+}
+
+func (s *Store) UpdateRiskPositionAvgEntry(ctx context.Context, id string, avgEntryCents float64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE risk_positions SET avg_entry_cents = ?, updated_at = datetime('now') WHERE id = ?`, avgEntryCents, id)
 	return err
 }
 
+func (s *Store) UpdateRiskPositionTitle(ctx context.Context, id, title, sideLabel string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE risk_positions SET title = ?, side_label = ?, updated_at = datetime('now') WHERE id = ?`, title, sideLabel, id)
+	return err
+}
 
 func (s *Store) NormalizeDustRisk(ctx context.Context, dust float64) error {
 	_, err := s.db.ExecContext(ctx, `
@@ -164,9 +292,9 @@ func (s *Store) InsertRiskTask(ctx context.Context, t *RiskTask) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	nr := t.NextRunAt.UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO risk_tasks(id, type, position_id, status, attempts, last_error, next_run_at, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?)`,
-		t.ID, t.Type, sqlNullable(t.PositionID), t.Status, t.Attempts, sqlNullable(t.LastError), nr, now, now)
+		INSERT INTO risk_tasks(id, type, position_id, status, attempts, last_error, reason, next_run_at, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		t.ID, t.Type, sqlNullable(t.PositionID), t.Status, t.Attempts, sqlNullable(t.LastError), sqlNullable(t.Reason), nr, now, now)
 	return err
 }
 
@@ -180,7 +308,7 @@ func sqlNullable(ns sql.NullString) any {
 func (s *Store) ListDueRiskTasks(ctx context.Context, limit int) ([]RiskTask, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, type, position_id, status, attempts, last_error, next_run_at, created_at, updated_at
+		SELECT id, type, position_id, status, attempts, last_error, reason, next_run_at, created_at, updated_at
 		FROM risk_tasks WHERE status IN ('pending','failed') AND next_run_at <= ? ORDER BY next_run_at ASC LIMIT ?`,
 		now, limit)
 	if err != nil {
@@ -192,12 +320,14 @@ func (s *Store) ListDueRiskTasks(ctx context.Context, limit int) ([]RiskTask, er
 		var t RiskTask
 		var pid sql.NullString
 		var le sql.NullString
+		var reason sql.NullString
 		var nr, ca, ua string
-		if err := rows.Scan(&t.ID, &t.Type, &pid, &t.Status, &t.Attempts, &le, &nr, &ca, &ua); err != nil {
+		if err := rows.Scan(&t.ID, &t.Type, &pid, &t.Status, &t.Attempts, &le, &reason, &nr, &ca, &ua); err != nil {
 			return nil, err
 		}
 		t.PositionID = pid
 		t.LastError = le
+		t.Reason = reason
 		t.NextRunAt = parseSQLiteTime(nr)
 		t.CreatedAt = parseSQLiteTime(ca)
 		t.UpdatedAt = parseSQLiteTime(ua)

@@ -93,8 +93,9 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 			_ = polywarm.RefreshFromREST(context.Background(), cfg.PolymarketAPIURL, cfg.HTTPPlatformProxy, tok, cache)
 		}()
 		if side == "buy" && tok != "" {
-			title := home + " vs " + away
-			_ = risk.RecordPolymarketBuyFill(context.Background(), a.OutcomeID, tok, title, label, fillOdds, a.Size, accountID)
+			go func() {
+				_ = risk.SyncPositionsFromDataAPI(context.Background(), accountID)
+			}()
 		}
 	}
 	allFilled := true

@@ -230,6 +230,8 @@ export interface RiskPositionRow {
   potentialProfitUsd: number;
   status: string;
   source?: string;
+  bids?: OrderBookLevel[];
+  asks?: OrderBookLevel[];
 }
 
 export interface RiskPositionsMeta {
@@ -281,6 +283,37 @@ export const postRiskClosePosition = (id: string) =>
     { method: 'POST' },
   );
 
+export interface StopLossHistoryTask {
+  id: string;
+  type: string;
+  positionId: string | null;
+  status: string;
+  attempts: number;
+  lastError: string | null;
+  reason: string | null;
+  createdAt: string;
+  nextRunAt: string;
+  updatedAt: string;
+}
+
+export interface OfficialTrade {
+  id: string;
+  side: string;
+  title: string;
+  outcome: string;
+  size: number;
+  price: number;
+  priceCents: number;
+  timestamp: string;
+  icon: string;
+}
+
+export const getStopLossHistory = (limit = 50) =>
+  apiFetch<{ tasks: StopLossHistoryTask[] }>(`/api/risk/stop-loss-history?limit=${limit}`);
+
+export const getTradeHistory = (limit = 50) =>
+  apiFetch<{ trades: OfficialTrade[] }>(`/api/risk/trade-history?limit=${limit}`);
+
 export const postRiskCloseAll = () =>
   apiFetch<{ ok: boolean }>('/api/risk/close-all', { method: 'POST' });
 
@@ -325,3 +358,16 @@ export interface GammaSport {
 }
 
 export const getSports = () => apiFetch<GammaSport[]>('/api/sports');
+
+export interface LogEntry {
+  time: string;
+  level: string;
+  category: string;
+  message: string;
+}
+
+export const getLogs = () => apiFetch<{ logs: LogEntry[] }>('/api/logs');
+
+export const getLogErrors = () => apiFetch<{ logs: LogEntry[] }>('/api/logs/errors');
+
+export const postLogClear = () => apiFetch<{ ok: boolean }>('/api/logs/clear', { method: 'POST' });

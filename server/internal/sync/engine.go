@@ -129,9 +129,8 @@ func (e *Engine) Once(ctx context.Context) error {
 	}
 
 	// DB row counts for operators (best-effort)
-	var nMkt, nOut int
-	_ = e.st.DB().QueryRowContext(ctx, `SELECT COUNT(1) FROM markets WHERE status='active'`).Scan(&nMkt)
-	_ = e.st.DB().QueryRowContext(ctx, `SELECT COUNT(1) FROM outcomes o JOIN markets m ON o.market_id=m.id WHERE m.status='active'`).Scan(&nOut)
+	nMkt, _ := e.st.CountActiveMarkets(ctx)
+	nOut, _ := e.st.CountActiveOutcomes(ctx)
 
 	e.logger.Info("market_sync_done",
 		"leagues", len(leagues), "gamma_events_total", totalEvents,

@@ -30,7 +30,7 @@ func (s *Store) ListRiskTasksRecent(ctx context.Context, limit int) ([]RiskTask,
 		limit = 40
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, type, position_id, status, attempts, last_error, next_run_at, created_at, updated_at
+		SELECT id, type, position_id, status, attempts, last_error, reason, next_run_at, created_at, updated_at
 		FROM risk_tasks ORDER BY updated_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -39,13 +39,45 @@ func (s *Store) ListRiskTasksRecent(ctx context.Context, limit int) ([]RiskTask,
 	out := make([]RiskTask, 0)
 	for rows.Next() {
 		var t RiskTask
-		var pid, le sql.NullString
+		var pid, le, reason sql.NullString
 		var nr, ca, ua string
-		if err := rows.Scan(&t.ID, &t.Type, &pid, &t.Status, &t.Attempts, &le, &nr, &ca, &ua); err != nil {
+		if err := rows.Scan(&t.ID, &t.Type, &pid, &t.Status, &t.Attempts, &le, &reason, &nr, &ca, &ua); err != nil {
 			return nil, err
 		}
 		t.PositionID = pid
 		t.LastError = le
+		t.Reason = reason
+		t.NextRunAt = parseSQLiteTime(nr)
+		t.CreatedAt = parseSQLiteTime(ca)
+		t.UpdatedAt = parseSQLiteTime(ua)
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListRiskTasksByReason(ctx context.Context, taskType, reason string, limit int) ([]RiskTask, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, type, position_id, status, attempts, last_error, reason, next_run_at, created_at, updated_at
+		FROM risk_tasks WHERE type = ? AND reason = ? AND status = 'succeeded'
+		ORDER BY created_at DESC LIMIT ?`, taskType, reason, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]RiskTask, 0)
+	for rows.Next() {
+		var t RiskTask
+		var pid, le, r sql.NullString
+		var nr, ca, ua string
+		if err := rows.Scan(&t.ID, &t.Type, &pid, &t.Status, &t.Attempts, &le, &r, &nr, &ca, &ua); err != nil {
+			return nil, err
+		}
+		t.PositionID = pid
+		t.LastError = le
+		t.Reason = r
 		t.NextRunAt = parseSQLiteTime(nr)
 		t.CreatedAt = parseSQLiteTime(ca)
 		t.UpdatedAt = parseSQLiteTime(ua)

@@ -3,8 +3,11 @@ package app
 import (
 	"context"
 	"fmt"
-	polymarket "github.com/easyspace-ai/polysdk"
+	"sort"
+	"strings"
 	"time"
+
+	polymarket "github.com/easyspace-ai/polysdk"
 
 	"github.com/easyspace-ai/polybet/internal/rediska"
 	"github.com/easyspace-ai/polybet/internal/service/balancesvc"
@@ -127,22 +130,32 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 				if acct != nil {
 					accountID = acct.ID
 				}
+				assetID := strings.ToLower(ev.AssetID)
+				if !strings.HasPrefix(assetID, "0x") {
+					assetID = "0x" + assetID
+				}
+				if len(assetID) < 66 {
+					assetID = "0x" + strings.Repeat("0", 66-len(assetID)) + assetID[2:]
+				}
 				applied, err := a.Risk.ApplyClobTradeIfNew(context.Background(), struct {
 					ID, AssetID, Side, Size, Price, Status string
 					Market, Outcome                        string
 				}{
-					ID: ev.ID, AssetID: ev.AssetID, Side: ev.Side, Size: ev.Size, Price: ev.Price,
+					ID: ev.ID, AssetID: assetID, Side: ev.Side, Size: ev.Size, Price: ev.Price,
 					Status: ev.Status, Market: ev.Market, Outcome: "",
 				}, accountID)
 				if err != nil {
-					a.Log.Warn("poly_user_ws_trade_apply_err", "trade_id", ev.ID, "asset_id", ev.AssetID, "status", ev.Status, "err", err.Error())
+					a.Log.Warn("poly_user_ws_trade_apply_err", "trade_id", ev.ID, "asset_id", assetID, "status", ev.Status, "err", err.Error())
 					if a.LogService != nil {
 						a.LogService.Error("风控", fmt.Sprintf("应用 CLOB 交易失败: %s", err.Error()))
 					}
 				} else if applied {
-					a.Log.Info("poly_user_ws_trade_applied", "trade_id", ev.ID, "asset_id", ev.AssetID, "side", ev.Side, "size", ev.Size, "price", ev.Price, "status", ev.Status)
+					a.Log.Info("poly_user_ws_trade_applied", "trade_id", ev.ID, "asset_id", assetID, "side", ev.Side, "size", ev.Size, "price", ev.Price, "status", ev.Status)
 					if a.LogService != nil {
-						a.LogService.Info("交易", fmt.Sprintf("CLOB 成交: %s %s $%s @ $%s", ev.Side, ev.AssetID, ev.Size, ev.Price))
+						a.LogService.Info("交易", fmt.Sprintf("CLOB 成交: %s %s $%s @ $%s", ev.Side, assetID, ev.Size, ev.Price))
+					}
+					if syncErr := a.Risk.SyncPositionsFromDataAPI(context.Background(), accountID); syncErr != nil {
+						a.Log.Warn("sync_positions_after_trade", "err", syncErr.Error())
 					}
 					a.rebuildAndBroadcastCache()
 				} else {
@@ -166,19 +179,42 @@ func (a *App) rebuildAndBroadcastCache() {
 
 	rows, enrichedMeta, err := a.Risk.ListRiskPositionsEnriched(context.Background(), meta, accountID)
 	if err == nil {
+		oldRows, _, found, _ := a.RiskCache.Get(context.Background())
+		shouldBroadcast := !found || !positionsStructurallyEqual(oldRows, rows)
 		_ = a.RiskCache.Set(context.Background(), rediska.RiskFetchResult{Positions: rows, Meta: rediska.RiskMeta{
 			UserWsConnected:         enrichedMeta.UserWsConnected,
 			UserWsConnecting:        enrichedMeta.UserWsConnecting,
 			OutboundProxyConfigured: enrichedMeta.OutboundProxyConfigured,
 			MinOpenRiskShares:       enrichedMeta.MinOpenRiskShares,
 		}})
-		a.Hub.BroadcastJSON(map[string]any{"type": "position_update", "data": rows})
+		if shouldBroadcast {
+			a.Hub.BroadcastJSON(map[string]any{"type": "position_update", "data": rows})
+		}
 	}
 
 	if summary, err := balancesvc.Fetch(context.Background(), a.Cfg, a.Store); err == nil {
 		_ = a.BalanceCache.Set(context.Background(), summary)
 		a.Hub.BroadcastJSON(map[string]any{"type": "balance_update", "data": summary})
 	}
+}
+
+// positionsStructurallyEqual compares two position lists ignoring volatile fields
+// like currentCents / trailingStopCents / pnlUsd which are computed from live orderbook.
+func positionsStructurallyEqual(a, b []map[string]any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	buildKey := func(rows []map[string]any) string {
+		parts := make([]string, 0, len(rows))
+		for _, r := range rows {
+			tid, _ := r["tokenId"].(string)
+			// Include sizeShares and status as the structural identity
+			parts = append(parts, fmt.Sprintf("%s:%v:%v", tid, r["sizeShares"], r["status"]))
+		}
+		sort.Strings(parts)
+		return strings.Join(parts, "|")
+	}
+	return buildKey(a) == buildKey(b)
 }
 
 func (a *App) InvalidateAndRebuildCache() {
@@ -206,5 +242,7 @@ func (a *App) InvalidateAndRebuildCache() {
 	if summary, err := balancesvc.Fetch(context.Background(), a.Cfg, a.Store); err == nil {
 		_ = a.BalanceCache.Set(context.Background(), summary)
 		a.Hub.BroadcastJSON(map[string]any{"type": "balance_update", "data": summary})
+	} else {
+		a.Log.Warn("invalidate_rebuild_balance_fetch_failed", "err", err.Error())
 	}
 }

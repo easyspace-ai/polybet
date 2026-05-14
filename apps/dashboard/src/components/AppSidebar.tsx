@@ -24,7 +24,8 @@ export function AppSidebar() {
 
   const activeAccount = accounts.find((a) => a.isActive);
   const accountName = activeAccount?.name ?? accounts[0]?.name ?? "—";
-  const totalBalance = balance?.polymarket;
+  const activeAccountBal = balance?.polymarketAccounts?.find((a) => a.isActive)?.polymarket;
+  const totalBalance = balance?.polymarket ?? activeAccountBal ?? null;
 
   return (
     <aside className="w-[160px] shrink-0 h-screen sticky top-0 flex flex-col bg-sidebar border-r border-sidebar-border">

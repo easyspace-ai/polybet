@@ -10,6 +10,7 @@ import { setupAutoUpdater } from "./updater";
 import {
   getLocalDashboardURL,
   maybeStartSportsRouterSidecar,
+  setSidecarStatusCallback,
   stopEmbeddedPolybetSidecar,
 } from "./sports-router-sidecar";
 import { probeGammaApiReachable } from "./gamma-outbound-probe";
@@ -419,6 +420,9 @@ if (!gotTheLock) {
       },
     );
 
+    setSidecarStatusCallback((status) => {
+      sendToMainRenderer("sidecar:status-changed", status);
+    });
     const started = await maybeStartSportsRouterSidecar(
       projectResult.ok ? projectResult.config : null,
     );

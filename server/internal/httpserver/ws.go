@@ -85,7 +85,16 @@ func registerWS(r *gin.Engine, d Deps) {
 				if tid != "" {
 					slog.Info("ws_dash_subscribe_poly_book", "request_id", rid, "token_id", tid)
 					levels := d.Cache.SnapshotLevels(tid)
-					_ = conn.WriteJSON(map[string]any{"type": "polyBookSnapshot", "tokenId": tid, "levels": levels})
+					bestBid, bestAsk, _ := d.Cache.TopOfBook(tid)
+					bidCents := 0.0
+					askCents := 0.0
+					if bestBid > 0 {
+						bidCents = bestBid * 100
+					}
+					if bestAsk > 0 {
+						askCents = bestAsk * 100
+					}
+					_ = conn.WriteJSON(map[string]any{"type": "polyBookSnapshot", "tokenId": tid, "levels": levels, "bestBid": bidCents, "bestAsk": askCents})
 				}
 			case "subscribePolyOdds":
 				if raw, ok := m["tokenIds"].([]any); ok {

@@ -26,6 +26,7 @@ export interface BestOddsEntry {
 export interface BookLevel {
   odds: number;
   size: number;
+  platform: "polymarket";
 }
 
 export interface BookFrame {
@@ -36,7 +37,10 @@ export interface BookFrame {
 
 export interface PolyBookFrame {
   tokenId: string;
-  levels: BookLevel[];
+  bids?: BookLevel[];
+  asks?: BookLevel[];
+  bestBid?: number;
+  bestAsk?: number;
 }
 
 export interface PolyStatusMessage {
@@ -60,8 +64,8 @@ type IncomingMessage =
   | { type: "update"; data: BestOddsEntry }
   | { type: "bookSnapshot"; marketHash: string; outcomeOne: BookLevel[]; outcomeTwo: BookLevel[] }
   | { type: "bookUpdate"; marketHash: string; outcomeOne: BookLevel[]; outcomeTwo: BookLevel[] }
-  | { type: "polyBookSnapshot"; tokenId: string; levels: BookLevel[] }
-  | { type: "polyBookUpdate"; tokenId: string; levels: BookLevel[] }
+  | { type: "polyBookSnapshot"; tokenId: string; bids?: BookLevel[]; asks?: BookLevel[]; bestBid?: number; bestAsk?: number }
+  | { type: "polyBookUpdate"; tokenId: string; bids?: BookLevel[]; asks?: BookLevel[]; bestBid?: number; bestAsk?: number }
   | { type: "polyOddsSnapshot"; data: PolyOddsEntry[] }
   | { type: "polyOddsUpdate"; tokenId: string; takerOdds: number; updatedAt: number }
   | { type: "balance_update"; data: BalanceUpdateData }
@@ -90,84 +94,178 @@ const WS_URL = (() => {
   return `${proto}//${window.location.host}/ws`;
 })();
 
+const RISK_WS_URL = WS_URL + "/risk";
+const POLY_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
+
 const isBrowser = () => typeof window !== "undefined" && typeof WebSocket !== "undefined";
+
+function hexToDec(hex: string): string {
+  if (!hex.startsWith("0x")) hex = "0x" + hex;
+  return BigInt(hex).toString();
+}
+
+function decToHex(dec: string): string {
+  return "0x" + BigInt(dec).toString(16).padStart(64, "0");
+}
+
+/** Direct connection to Polymarket Market Channel for dual-insurance and low latency. */
+class PolyDirectBus {
+  private ws: WebSocket | null = null;
+  private listeners: PolyBookListener[] = [];
+  private subTokens = new Set<string>();
+  private reconnectTimer: any = null;
+
+  constructor() {
+    if (isBrowser()) this.connect();
+  }
+
+  private connect() {
+    if (this.ws) return;
+    this.ws = new WebSocket(POLY_WS_URL);
+    this.ws.onopen = () => {
+      console.log("[PolyDirect] Connected to Polymarket Market Channel");
+      this.resubscribe();
+    };
+    this.ws.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        const events = Array.isArray(data) ? data : [data];
+        for (const ev of events) {
+          const tid = ev.asset_id ? decToHex(ev.asset_id) : null;
+          if (!tid) continue;
+
+          if (ev.event_type === "book") {
+            const bids: BookLevel[] = (ev.bids || []).map((b: any) => ({
+              odds: parseFloat(b.price),
+              size: parseFloat(b.size) * parseFloat(b.price),
+              platform: "polymarket" as const
+            })).sort((a, b) => b.odds - a.odds); // 买盘 (Bids): 高价在前 (Descending)
+            
+            const asks: BookLevel[] = (ev.asks || []).map((a: any) => ({
+              odds: parseFloat(a.price),
+              size: parseFloat(a.size) * parseFloat(a.price),
+              platform: "polymarket" as const
+            })).sort((a, b) => a.odds - b.odds); // 卖盘 (Asks): 低价在前 (Ascending)
+
+            const bestBid = bids.length > 0 ? bids[0].odds * 100 : (ev.best_bid ? parseFloat(ev.best_bid) * 100 : 0);
+            const bestAsk = asks.length > 0 ? asks[0].odds * 100 : (ev.best_ask ? parseFloat(ev.best_ask) * 100 : 0);
+
+            const frame: PolyBookFrame = { tokenId: tid, bids, asks, bestBid, bestAsk };
+            for (const l of this.listeners) l(frame);
+          } else if (ev.event_type === "best_bid_ask") {
+            const frame: PolyBookFrame = {
+              tokenId: tid,
+              bestBid: parseFloat(ev.best_bid) * 100,
+              bestAsk: parseFloat(ev.best_ask) * 100
+            };
+            for (const l of this.listeners) l(frame);
+          } else if (ev.event_type === "price_change") {
+            // price_change can have multiple changes for different tokens, but usually it's per-token in this channel
+            // or it's an array in some versions. Docs show ev.price_changes array.
+            const changes = ev.price_changes || [];
+            for (const change of changes) {
+              const ctid = decToHex(change.asset_id);
+              const frame: PolyBookFrame = {
+                tokenId: ctid,
+                bestBid: parseFloat(change.best_bid) * 100,
+                bestAsk: parseFloat(change.best_ask) * 100
+              };
+              for (const l of this.listeners) l(frame);
+            }
+          }
+        }
+      } catch (e) {}
+    };
+    this.ws.onclose = () => {
+      this.ws = null;
+      this.reconnectTimer = setTimeout(() => this.connect(), 5000);
+    };
+  }
+
+  private resubscribe() {
+    if (this.subTokens.size === 0) return;
+    const assetIds = Array.from(this.subTokens).map(id => hexToDec(id));
+    this.send({
+      type: "market",
+      assets_ids: assetIds,
+      // custom_feature_enabled: true // 暂时移除，排查 INVALID_OPERATION 错误
+    });
+  }
+
+  private send(obj: any) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(obj));
+    }
+  }
+
+  subscribe(tokenId: string, l: PolyBookListener) {
+    this.listeners.push(l);
+    const normalized = "0x" + tokenId.replace(/^0x/, "").toLowerCase().padStart(64, "0");
+    if (!this.subTokens.has(normalized)) {
+      this.subTokens.add(normalized);
+      this.send({
+        type: "market",
+        assets_ids: [hexToDec(normalized)],
+        // custom_feature_enabled: true // 暂时移除，排查 INVALID_OPERATION 错误
+      });
+    }
+    return () => {
+      this.listeners = this.listeners.filter((x) => x !== l);
+    };
+  }
+}
 
 class WsBus {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private pingTimer: ReturnType<typeof setInterval> | null = null;
-  private oddsListeners = new Set<OddsListener>();
-  private bookListeners = new Set<BookListener>();
-  private polyBookListeners = new Set<PolyBookListener>();
-  private polyOddsListeners = new Set<PolyOddsListener>();
-  private marketLifecycleListeners = new Set<MarketLifecycleListener>();
-  private statusListeners = new Set<StatusListener>();
-  private polyStatusListeners = new Set<PolyStatusListener>();
-  private balanceUpdateListeners = new Set<BalanceUpdateListener>();
-  private positionUpdateListeners = new Set<PositionUpdateListener>();
-  private marketsCache = new Map<string, Market>();
-  private marketsSnapshotReceived = false;
-  private polyBookSubRefs = new Map<string, number>();
-  private polyOddsSubRefs = new Map<string, number>();
-  private connected = false;
-  private connecting = false;
+  private url: string;
+  private oddsListeners: OddsListener[] = [];
+  private bookListeners: BookListener[] = [];
+  private polyBookListeners: PolyBookListener[] = [];
+  private polyOddsListeners: PolyOddsListener[] = [];
+  private marketLifecycleListeners: MarketLifecycleListener[] = [];
+  private statusListeners: StatusListener[] = [];
+  private polyStatusListeners: PolyStatusListener[] = [];
+  private balanceUpdateListeners: BalanceUpdateListener[] = [];
+  private positionUpdateListeners: PositionUpdateListener[] = [];
 
-  get isConnected(): boolean {
-    return this.connected;
+  private oddsSubRefs = new Set<string>();
+  private bookSubRefs = new Set<string>();
+  private polyBookSubRefs = new Map<string, number>(); // tokenId -> refCount
+  private polyOddsSubRefs = new Map<string, number>(); // tokenId -> refCount
+
+  constructor(url: string) {
+    this.url = url;
+    if (isBrowser()) this.connect();
   }
 
-  get isConnecting(): boolean {
-    return this.connecting;
-  }
-
-  clearMarketsCache(): void {
-    this.marketsCache.clear();
-    this.marketsSnapshotReceived = false;
-  }
-
-  private connect(): void {
-    if (!isBrowser()) return;
-    if (
-      this.ws &&
-      (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)
-    )
-      return;
-    if (this.connecting) return;
-
-    this.connecting = true;
-    console.log("[ws] Connecting to", WS_URL);
-
-    try {
-      const ws = new WebSocket(WS_URL);
-      this.ws = ws;
-
-      ws.onopen = () => {
-        console.log("[ws] WebSocket connected");
-        this.connected = true;
-        this.connecting = false;
-        if (this.pingTimer) clearInterval(this.pingTimer);
-        this.pingTimer = setInterval(() => {
-          if (this.ws?.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ type: "ping" }));
-          }
-        }, 30_000);
-        for (const l of this.statusListeners) l(true);
-        for (const tokenId of this.polyBookSubRefs.keys()) {
-          this.send({ type: "subscribePolyBook", tokenId });
-        }
-        const polyOddsTokens = Array.from(this.polyOddsSubRefs.keys());
-        if (polyOddsTokens.length > 0) {
-          this.send({ type: "subscribePolyOdds", tokenIds: polyOddsTokens });
-        }
-      };
-
-      ws.onmessage = (event) => {
-        let msg: IncomingMessage;
-        try {
-          msg = JSON.parse(event.data as string) as IncomingMessage;
-        } catch {
-          return;
-        }
+  private connect() {
+    if (this.ws) return;
+    this.ws = new WebSocket(this.url);
+    this.ws.onopen = () => {
+      for (const l of this.statusListeners) l(true);
+      // Re-subscribe
+      if (this.oddsSubRefs.size > 0) {
+        this.send({ type: "subscribeOdds", marketHashes: Array.from(this.oddsSubRefs) });
+      }
+      for (const marketHash of this.bookSubRefs) {
+        this.send({ type: "subscribeBook", marketHash });
+      }
+      for (const tokenId of this.polyBookSubRefs.keys()) {
+        this.send({ type: "subscribePolyBook", tokenId });
+      }
+      if (this.polyOddsSubRefs.size > 0) {
+        this.send({ type: "subscribePolyOdds", tokenIds: Array.from(this.polyOddsSubRefs.keys()) });
+      }
+    };
+    this.ws.onclose = () => {
+      this.ws = null;
+      for (const l of this.statusListeners) l(false);
+      this.reconnectTimer = setTimeout(() => this.connect(), 3000);
+    };
+    this.ws.onmessage = (ev) => {
+      try {
+        const msg: IncomingMessage = JSON.parse(ev.data);
         if (msg.type === "snapshot" || msg.type === "update") {
           for (const l of this.oddsListeners) l(msg);
         } else if (msg.type === "bookSnapshot" || msg.type === "bookUpdate") {
@@ -178,191 +276,137 @@ class WsBus {
           };
           for (const l of this.bookListeners) l(frame);
         } else if (msg.type === "polyBookSnapshot" || msg.type === "polyBookUpdate") {
-          const frame: PolyBookFrame = { tokenId: msg.tokenId, levels: msg.levels };
+          const frame: PolyBookFrame = {
+            tokenId: msg.tokenId,
+            bids: msg.bids,
+            asks: msg.asks,
+            bestBid: msg.bestBid,
+            bestAsk: msg.bestAsk,
+          };
           for (const l of this.polyBookListeners) l(frame);
         } else if (msg.type === "polyOddsSnapshot" || msg.type === "polyOddsUpdate") {
           for (const l of this.polyOddsListeners) l(msg);
-        } else if (msg.type === "marketsSnapshot") {
-          if (msg.data.length > 0) {
-            this.marketsCache.clear();
-            for (const m of msg.data) this.marketsCache.set(m.id, m);
-            this.marketsSnapshotReceived = true;
-          }
+        } else if (msg.type === "marketsSnapshot" || msg.type === "marketUpsert" || msg.type === "marketRemoved") {
           for (const l of this.marketLifecycleListeners) l(msg);
-        } else if (msg.type === "marketUpsert") {
-          this.marketsCache.set(msg.data.id, msg.data);
-          for (const l of this.marketLifecycleListeners) l(msg);
-        } else if (msg.type === "marketRemoved") {
-          this.marketsCache.delete(msg.id);
-          for (const l of this.marketLifecycleListeners) l(msg);
+        } else if (msg.type === "poly_status") {
+          for (const l of this.polyStatusListeners) l(msg);
         } else if (msg.type === "balance_update") {
           for (const l of this.balanceUpdateListeners) l(msg);
         } else if (msg.type === "position_update") {
           for (const l of this.positionUpdateListeners) l(msg);
-        } else if (msg.type === "poly_status") {
-          for (const l of this.polyStatusListeners) l(msg);
         }
-      };
-
-      ws.onerror = () => {
-        console.warn("[ws] WebSocket error");
-        for (const l of this.statusListeners) l(false);
-      };
-
-      ws.onclose = () => {
-        console.warn("[ws] WebSocket closed, reconnecting in 3s...");
-        this.connected = false;
-        this.connecting = false;
-        this.ws = null;
-        if (this.pingTimer) {
-          clearInterval(this.pingTimer);
-          this.pingTimer = null;
-        }
-        for (const l of this.statusListeners) l(false);
-        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-        this.reconnectTimer = setTimeout(() => this.connect(), 3_000);
-      };
-    } catch (e) {
-      console.error("[ws] Failed to connect:", e);
-      this.connecting = false;
-      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = setTimeout(() => this.connect(), 3_000);
-    }
-  }
-
-  private send(payload: unknown): void {
-    if (!isBrowser()) return;
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try {
-        this.ws.send(JSON.stringify(payload));
-      } catch {
-        // ignore; reconnect handler replays
+      } catch (err) {
+        // ignore
       }
+    };
+  }
+
+  private send(obj: any) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(obj));
     }
   }
 
-  private ensureConnected(): void {
-    if (!isBrowser()) return;
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      this.connect();
+  onStatusChange(l: StatusListener) {
+    this.statusListeners.push(l);
+    l(this.ws?.readyState === WebSocket.OPEN);
+    return () => {
+      this.statusListeners = this.statusListeners.filter((x) => x !== l);
+    };
+  }
+
+  onPolyStatus(l: PolyStatusListener) {
+    this.polyStatusListeners.push(l);
+    return () => {
+      this.polyStatusListeners = this.polyStatusListeners.filter((x) => x !== l);
+    };
+  }
+
+  onBalanceUpdate(l: BalanceUpdateListener) {
+    this.balanceUpdateListeners.push(l);
+    return () => {
+      this.balanceUpdateListeners = this.balanceUpdateListeners.filter((x) => x !== l);
+    };
+  }
+
+  onPositionUpdate(l: PositionUpdateListener) {
+    this.positionUpdateListeners.push(l);
+    return () => {
+      this.positionUpdateListeners = this.positionUpdateListeners.filter((x) => x !== l);
+    };
+  }
+
+  onMarketLifecycle(l: MarketLifecycleListener) {
+    this.marketLifecycleListeners.push(l);
+    return () => {
+      this.marketLifecycleListeners = this.marketLifecycleListeners.filter((x) => x !== l);
+    };
+  }
+
+  subscribeOdds(marketHash: string, l: OddsListener) {
+    this.oddsListeners.push(l);
+    if (!this.oddsSubRefs.has(marketHash)) {
+      this.oddsSubRefs.add(marketHash);
+      this.send({ type: "subscribeOdds", marketHashes: [marketHash] });
     }
-  }
-
-  onOdds(listener: OddsListener): () => void {
-    this.ensureConnected();
-    this.oddsListeners.add(listener);
     return () => {
-      this.oddsListeners.delete(listener);
+      this.oddsListeners = this.oddsListeners.filter((x) => x !== l);
+      // We don't unsubscribe from odds for now to keep it simple
     };
   }
 
-  onBook(listener: BookListener): () => void {
-    this.ensureConnected();
-    this.bookListeners.add(listener);
-    return () => {
-      this.bookListeners.delete(listener);
-    };
-  }
-
-  onMarketLifecycle(listener: MarketLifecycleListener): () => void {
-    this.ensureConnected();
-    this.marketLifecycleListeners.add(listener);
-    if (this.marketsSnapshotReceived) {
-      listener({ type: "marketsSnapshot", data: Array.from(this.marketsCache.values()) });
+  subscribeBook(marketHash: string, l: BookListener) {
+    this.bookListeners.push(l);
+    if (!this.bookSubRefs.has(marketHash)) {
+      this.bookSubRefs.add(marketHash);
+      this.send({ type: "subscribeBook", marketHash });
     }
     return () => {
-      this.marketLifecycleListeners.delete(listener);
+      this.bookListeners = this.bookListeners.filter((x) => x !== l);
+      if (this.bookListeners.length === 0) {
+        // can unsubscribe if needed
+      }
     };
   }
 
-  onStatus(listener: StatusListener): () => void {
-    this.statusListeners.add(listener);
-    listener(isBrowser() && this.ws?.readyState === WebSocket.OPEN);
-    return () => {
-      this.statusListeners.delete(listener);
-    };
-  }
-
-  onPolyStatus(listener: PolyStatusListener): () => void {
-    this.polyStatusListeners.add(listener);
-    return () => {
-      this.polyStatusListeners.delete(listener);
-    };
-  }
-
-  onBalanceUpdate(listener: BalanceUpdateListener): () => void {
-    this.balanceUpdateListeners.add(listener);
-    return () => {
-      this.balanceUpdateListeners.delete(listener);
-    };
-  }
-
-  onPositionUpdate(listener: PositionUpdateListener): () => void {
-    this.positionUpdateListeners.add(listener);
-    return () => {
-      this.positionUpdateListeners.delete(listener);
-    };
-  }
-
-  onPolyBook(listener: PolyBookListener): () => void {
-    this.ensureConnected();
-    this.polyBookListeners.add(listener);
-    return () => {
-      this.polyBookListeners.delete(listener);
-    };
-  }
-
-  subscribePolyBook(tokenId: string): void {
-    this.ensureConnected();
-    const current = this.polyBookSubRefs.get(tokenId) ?? 0;
-    this.polyBookSubRefs.set(tokenId, current + 1);
-    if (current === 0) this.send({ type: "subscribePolyBook", tokenId });
-  }
-
-  unsubscribePolyBook(tokenId: string): void {
-    const current = this.polyBookSubRefs.get(tokenId) ?? 0;
-    if (current <= 1) {
-      this.polyBookSubRefs.delete(tokenId);
-      this.send({ type: "unsubscribePolyBook", tokenId });
-    } else {
-      this.polyBookSubRefs.set(tokenId, current - 1);
+  subscribePolyBook(tokenId: string, l: PolyBookListener) {
+    this.polyBookListeners.push(l);
+    const count = this.polyBookSubRefs.get(tokenId) || 0;
+    this.polyBookSubRefs.set(tokenId, count + 1);
+    if (count === 0) {
+      this.send({ type: "subscribePolyBook", tokenId });
     }
-  }
-
-  onPolyOdds(listener: PolyOddsListener): () => void {
-    this.ensureConnected();
-    this.polyOddsListeners.add(listener);
     return () => {
-      this.polyOddsListeners.delete(listener);
-    };
-  }
-
-  subscribePolyOdds(tokenIds: string[]): void {
-    if (tokenIds.length === 0) return;
-    this.ensureConnected();
-    const fresh: string[] = [];
-    for (const id of tokenIds) {
-      const current = this.polyOddsSubRefs.get(id) ?? 0;
-      this.polyOddsSubRefs.set(id, current + 1);
-      if (current === 0) fresh.push(id);
-    }
-    if (fresh.length > 0) this.send({ type: "subscribePolyOdds", tokenIds: fresh });
-  }
-
-  unsubscribePolyOdds(tokenIds: string[]): void {
-    if (tokenIds.length === 0) return;
-    const drop: string[] = [];
-    for (const id of tokenIds) {
-      const current = this.polyOddsSubRefs.get(id) ?? 0;
-      if (current <= 1) {
-        this.polyOddsSubRefs.delete(id);
-        drop.push(id);
+      this.polyBookListeners = this.polyBookListeners.filter((x) => x !== l);
+      const newCount = (this.polyBookSubRefs.get(tokenId) || 1) - 1;
+      if (newCount <= 0) {
+        this.polyBookSubRefs.delete(tokenId);
+        // this.send({ type: "unsubscribePolyBook", tokenId });
       } else {
-        this.polyOddsSubRefs.set(id, current - 1);
+        this.polyBookSubRefs.set(tokenId, newCount);
       }
+    };
+  }
+
+  subscribePolyOdds(tokenId: string, l: PolyOddsListener) {
+    this.polyOddsListeners.push(l);
+    const count = this.polyOddsSubRefs.get(tokenId) || 0;
+    this.polyOddsSubRefs.set(tokenId, count + 1);
+    if (count === 0) {
+      this.send({ type: "subscribePolyOdds", tokenIds: [tokenId] });
     }
-    if (drop.length > 0) this.send({ type: "unsubscribePolyOdds", tokenIds: drop });
+    return () => {
+      this.polyOddsListeners = this.polyOddsListeners.filter((x) => x !== l);
+      const newCount = (this.polyOddsSubRefs.get(tokenId) || 1) - 1;
+      if (newCount <= 0) {
+        this.polyOddsSubRefs.delete(tokenId);
+      } else {
+        this.polyOddsSubRefs.set(tokenId, newCount);
+      }
+    };
   }
 }
 
-export const wsBus = new WsBus();
+export const wsBus = new WsBus(WS_URL);
+export const riskWsBus = new WsBus(RISK_WS_URL);
+export const polyDirectBus = new PolyDirectBus();

@@ -65,16 +65,16 @@ dashboard-embed: dashboard-build
 
 go-build-server: dashboard-embed
 	@test -f "$(SERVER)/go.mod" || (echo "error: missing $(SERVER)/go.mod"; exit 1)
-	@mkdir -p "$(SERVER)/bin" && (cd "$(SERVER)" && CGO_ENABLED=1 go build -o bin/polybet ./cmd/server) && \
+	@mkdir -p "$(SERVER)/bin" && (cd "$(SERVER)" && CGO_ENABLED=0 go build -o bin/polybet ./cmd/server) && \
 	echo "built $(SERVER)/bin/polybet"
 
 run-server: dashboard-embed
 	@test -f "$(SERVER)/go.mod" || (echo "error: missing $(SERVER)/go.mod"; exit 1)
-	@env SPORTS_ROUTER_ENV_FILE="$(CURDIR)/.env" CGO_ENABLED=1 sh -c "cd \"$(SERVER)\" && exec go run ./cmd/server"
+	@env SPORTS_ROUTER_ENV_FILE="$(CURDIR)/.env" CGO_ENABLED=0 sh -c "cd \"$(SERVER)\" && exec go run ./cmd/server"
 
 test-go:
 	@test -f "$(SERVER)/go.mod" || (echo "error: missing $(SERVER)/go.mod"; exit 1)
-	@(cd "$(SERVER)" && CGO_ENABLED=1 go test ./...)
+	@(cd "$(SERVER)" && CGO_ENABLED=0 go test ./...)
 
 lint-dashboard:
 	pnpm --filter dashboard lint

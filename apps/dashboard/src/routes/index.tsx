@@ -261,8 +261,8 @@ function TradeSidebar({
 
   const book = useMemo<OrderBookLevel[] | null>(() => {
     if (restBook === null) return null;
-    if (liveBook) {
-      return liveBook.map((level) => ({ ...level, platform: 'polymarket' as const })).sort((a, b) => a.odds - b.odds);
+    if (liveBook && liveBook.asks) {
+      return liveBook.asks.map((level) => ({ ...level, platform: 'polymarket' as const })).sort((a, b) => a.odds - b.odds);
     }
     return restBook;
   }, [liveBook, restBook]);

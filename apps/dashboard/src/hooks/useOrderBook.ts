@@ -1,27 +1,23 @@
 import { useEffect, useState } from "react";
 import { wsBus, type BookLevel } from "@/lib/wsBus";
 
-export function usePolyOrderBook(tokenId: string | null): BookLevel[] | null {
-  const [levels, setLevels] = useState<BookLevel[] | null>(null);
+export function usePolyOrderBook(tokenId: string | null): { bids: BookLevel[]; asks: BookLevel[] } | null {
+  const [data, setData] = useState<{ bids: BookLevel[]; asks: BookLevel[] } | null>(null);
 
   useEffect(() => {
     if (!tokenId) {
-      setLevels(null);
+      setData(null);
       return;
     }
 
-    setLevels(null);
-    const off = wsBus.onPolyBook((frame) => {
+    setData(null);
+    const unsub = wsBus.subscribePolyBook(tokenId, (frame) => {
       if (frame.tokenId !== tokenId) return;
-      setLevels(frame.levels);
+      setData({ bids: frame.bids || [], asks: frame.asks || [] });
     });
-    wsBus.subscribePolyBook(tokenId);
 
-    return () => {
-      off();
-      wsBus.unsubscribePolyBook(tokenId);
-    };
+    return unsub;
   }, [tokenId]);
 
-  return levels;
+  return data;
 }

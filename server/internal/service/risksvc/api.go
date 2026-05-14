@@ -3,19 +3,18 @@ package risksvc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/easyspace-ai/polysdk/pkg/clob/clobtypes"
+	"github.com/easyspace-ai/polysdk/pkg/data"
 
 	"github.com/easyspace-ai/polybet/internal/gammaclient"
-	"github.com/easyspace-ai/polybet/internal/polyexec"
-	"github.com/easyspace-ai/polybet/internal/service/polysession"
 	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/google/uuid"
 )
-
-const reconcileMinInterval = 60 * time.Second
 
 type Meta struct {
 	UserWsConnected         bool    `json:"userWsConnected"`
@@ -62,9 +61,6 @@ func polymarketLinks(dm store.RiskDisplayMeta, gm gammaclient.TokenMarketDisplay
 func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, accountID string) ([]map[string]any, Meta, error) {
 	meta = s.fillMeta(meta)
 	_ = s.st.NormalizeDustRisk(ctx, 1e-9)
-	if err := s.maybeReconcileBalances(ctx, accountID); err != nil {
-		s.log.Warn("reconcile", "err", err)
-	}
 	min := s.minShares(ctx)
 	rows, err := s.st.ListOpenOrClosingRiskPositions(ctx, accountID)
 	if err != nil {
@@ -151,75 +147,145 @@ func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 	return out, meta, nil
 }
 
-var lastReconcile time.Time
-
-func (s *Service) maybeReconcileBalances(ctx context.Context, accountID string) error {
-	if time.Since(lastReconcile) < reconcileMinInterval {
-		return nil
-	}
-	lastReconcile = time.Now()
-	return s.ReconcileOpenRiskPositionsWithClobBalances(ctx, accountID)
-}
-
-func (s *Service) ReconcileOpenRiskPositionsWithClobBalances(ctx context.Context, accountID string) error {
-	cl, err := polysession.ResolveAuthedCLOB(ctx, s.cfg, s.st)
-	if err != nil {
-		return err
-	}
-	min := s.minShares(ctx)
-	rows, err := s.st.ListRiskPositionsOpenClosing(ctx, accountID)
-	if err != nil {
-		return err
-	}
-	for _, p := range rows {
-		bal, err := cl.Client.BalanceAllowance(ctx, &clobtypes.BalanceAllowanceRequest{
-			AssetType: clobtypes.AssetTypeConditional,
-			TokenID:   p.TokenID,
-		})
+func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string) error {
+	acct, err := s.st.GetActivePolymarketAccount(ctx)
+	if err != nil || acct == nil || strings.TrimSpace(acct.FunderAddress) == "" {
 		if err != nil {
-			continue
+			return fmt.Errorf("no active account: %w", err)
 		}
-		onChain := polyexec.ConditionalBalanceShares(bal.Balance)
-		if onChain < min {
-			_ = s.st.CloseRiskPosition(ctx, p.ID)
-			continue
+		return fmt.Errorf("no active account")
+	}
+	addr := common.HexToAddress(strings.TrimSpace(acct.FunderAddress))
+	limit := 500
+	positions, err := s.dataClient.Positions(ctx, &data.PositionsRequest{
+		User:  addr,
+		Limit: &limit,
+	})
+	if err != nil {
+		return fmt.Errorf("positions api: %w", err)
+	}
+
+	// Build map of official positions by token_id
+	officialByToken := make(map[string]data.Position, len(positions))
+	for _, pos := range positions {
+		hexStr := strings.ToLower(pos.Asset.Text(16))
+		if len(hexStr) < 64 {
+			hexStr = strings.Repeat("0", 64-len(hexStr)) + hexStr
 		}
-		if onChain+1e-9 < p.SizeShares {
-			ratio := onChain / p.SizeShares
-			newCost := max(0, p.CostUSD*ratio)
-			_ = s.st.UpdateRiskPositionSharesCost(ctx, p.ID, onChain, newCost)
+		tokenID := "0x" + hexStr
+		if tokenID != "0x" {
+			officialByToken[tokenID] = pos
 		}
 	}
+
+	// Upsert or update existing positions
+	for tokenID, pos := range officialByToken {
+		size, _ := pos.Size.Float64()
+		avgPrice, _ := pos.AvgPrice.Float64()
+		initialVal, _ := pos.InitialValue.Float64()
+		if size <= 0 {
+			continue
+		}
+		entryCents := avgPrice * 100
+		costUsd := initialVal
+		if costUsd <= 0 {
+			costUsd = size * avgPrice
+		}
+
+		existing, err := s.st.GetOpenRiskPositionByToken(ctx, tokenID, acct.ID)
+		if err != nil {
+			s.log.Warn("sync_positions_lookup", "token", tokenID, "err", err)
+			continue
+		}
+		if existing == nil {
+			// New position: high_water = avg_entry
+			stop := resolveStopLossPct(ctx, s.st, entryCents)
+			err = s.st.CreateRiskPosition(ctx, &store.RiskPosition{
+				ID:             uuid.NewString(),
+				Platform:       "polymarket",
+				AccountID:      acct.ID,
+				TokenID:        tokenID,
+				Title:          strings.TrimSpace(pos.Title),
+				SideLabel:      strings.TrimSpace(pos.Outcome),
+				AvgEntryCents:  entryCents,
+				SizeShares:     size,
+				CostUSD:        costUsd,
+				HighWaterCents: entryCents,
+				StopLossPct:    stop,
+				Source:         "polymarket_api",
+				Status:         "open",
+			})
+			if err != nil {
+				s.log.Warn("sync_positions_create", "token", tokenID, "err", err)
+			}
+		} else {
+			// Existing position: keep high_water, update shares/avg/cost
+			err = s.st.UpdateRiskPositionSharesCost(ctx, existing.ID, size, costUsd)
+			if err != nil {
+				s.log.Warn("sync_positions_update_shares", "token", tokenID, "err", err)
+			}
+			if existing.AvgEntryCents != entryCents {
+				_ = s.st.UpdateRiskPositionAvgEntry(ctx, existing.ID, entryCents)
+			}
+			if existing.Title != pos.Title {
+				_ = s.st.UpdateRiskPositionTitle(ctx, existing.ID, strings.TrimSpace(pos.Title), strings.TrimSpace(pos.Outcome))
+			}
+		}
+	}
+
+	// Close positions that are open in DB but not in official response
+	min := s.minShares(ctx)
+	openRows, err := s.st.ListOpenRiskPositionsMinShares(ctx, min, acct.ID)
+	if err != nil {
+		return err
+	}
+	for _, p := range openRows {
+		if _, ok := officialByToken[strings.ToLower(p.TokenID)]; !ok {
+			_ = s.st.CloseRiskPosition(ctx, p.ID)
+			s.log.Info("sync_positions_close_missing", "token", p.TokenID)
+		}
+	}
+
 	return nil
 }
 
 func (s *Service) SyncRiskFromRESTTrades(ctx context.Context) error {
-	cl, err := polysession.ResolveAuthedCLOB(ctx, s.cfg, s.st)
+	return s.SyncPositionsFromDataAPI(ctx, "")
+}
+
+func (s *Service) ListOfficialTrades(ctx context.Context, limit int) ([]map[string]any, error) {
+	acct, err := s.st.GetActivePolymarketAccount(ctx)
+	if err != nil || acct == nil || strings.TrimSpace(acct.FunderAddress) == "" {
+		return nil, fmt.Errorf("no active account")
+	}
+	addr := common.HexToAddress(strings.TrimSpace(acct.FunderAddress))
+	if limit <= 0 {
+		limit = 50
+	}
+	trades, err := s.dataClient.Trades(ctx, &data.TradesRequest{
+		User:  &addr,
+		Limit: &limit,
+	})
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("trades api: %w", err)
 	}
-	trades, err := cl.Client.Trades(ctx, &clobtypes.TradesRequest{})
-	if err != nil {
-		return err
+	out := make([]map[string]any, 0, len(trades))
+	for _, t := range trades {
+		size, _ := t.Size.Float64()
+		price, _ := t.Price.Float64()
+		out = append(out, map[string]any{
+			"id":         t.TransactionHash.Hex(),
+			"side":       strings.ToLower(string(t.Side)),
+			"title":      t.Title,
+			"outcome":    t.Outcome,
+			"size":       size,
+			"price":      price,
+			"priceCents": price * 100,
+			"timestamp":  time.Unix(t.Timestamp, 0).UTC().Format(time.RFC3339),
+			"icon":       t.Icon,
+		})
 	}
-	acct, _ := s.st.GetActivePolymarketAccount(ctx)
-	var accountID string
-	if acct != nil {
-		accountID = acct.ID
-	}
-	n := len(trades.Data)
-	if n > 100 {
-		n = 100
-	}
-	for i := n - 1; i >= 0; i-- {
-		t := trades.Data[i]
-		_, _ = s.ApplyClobTradeIfNew(ctx, struct {
-			ID, AssetID, Side, Size, Price, Status string
-			Market, Outcome                        string
-		}{ID: t.ID, AssetID: t.AssetID, Side: t.Side, Size: t.Size, Price: t.Price, Status: t.Status, Market: t.Market, Outcome: ""}, accountID)
-	}
-	s.touchRESTTradesSync()
-	return s.ReconcileOpenRiskPositionsWithClobBalances(ctx, accountID)
+	return out, nil
 }
 
 // ParseUserWsTradePayload mirrors Node parseUserWsTradePayload (minimal).

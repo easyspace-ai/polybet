@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/easyspace-ai/polysdk/pkg/data"
 
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/config"
@@ -24,12 +25,13 @@ import (
 )
 
 type Service struct {
-	cfg     *config.Config
-	st      *store.Store
-	cache   *bookcache.Cache
-	log     *slog.Logger
-	closeMu sync.Mutex
-	closeLocks   sync.Map // map[string]*sync.Mutex per-position locks for ensureCloseTask
+	cfg        *config.Config
+	st         *store.Store
+	cache      *bookcache.Cache
+	dataClient data.Client
+	log        *slog.Logger
+	closeMu    sync.Mutex
+	closeLocks sync.Map // map[string]*sync.Mutex per-position locks for ensureCloseTask
 
 	userWSConnected   atomic.Bool
 	userWSConnecting  atomic.Bool
@@ -46,11 +48,11 @@ type Service struct {
 	gammaMeta   map[string]gammaMetaCache
 }
 
-func New(cfg *config.Config, st *store.Store, cache *bookcache.Cache, log *slog.Logger) *Service {
+func New(cfg *config.Config, st *store.Store, cache *bookcache.Cache, dataClient data.Client, log *slog.Logger) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Service{cfg: cfg, st: st, cache: cache, log: log}
+	return &Service{cfg: cfg, st: st, cache: cache, dataClient: dataClient, log: log}
 }
 
 // SetUserWSState updates dashboard-facing User WS meta (best-effort).
@@ -76,10 +78,6 @@ func (s *Service) UserWSConnecting() bool      { return s.userWSConnecting.Load(
 // TouchUserWSMessage marks receipt of a user-channel message (for dashboard meta).
 func (s *Service) TouchUserWSMessage() {
 	s.userWSLastMsgMs.Store(time.Now().UnixMilli())
-}
-
-func (s *Service) touchRESTTradesSync() {
-	s.restTradesLastMs.Store(time.Now().UnixMilli())
 }
 
 func (s *Service) fillMeta(meta Meta) Meta {
@@ -201,6 +199,9 @@ func (s *Service) ensureCloseTask(ctx context.Context, positionID, queueReason s
 		Attempts:   0,
 		NextRunAt:  time.Now().UTC(),
 	}
+	if queueReason != "" {
+		t.Reason = sql.NullString{String: queueReason, Valid: true}
+	}
 	if err := s.st.InsertRiskTask(ctx, t); err != nil {
 		s.log.Error("risk_close_task_insert_failed", "position_id", positionID, "err", err.Error())
 		return err
@@ -232,20 +233,6 @@ func formatCloseQueuedTelegram(reason string, pos *store.RiskPosition, positionI
 	default:
 		return ""
 	}
-}
-
-func (s *Service) RecordPolymarketBuyFill(ctx context.Context, outcomeID, tokenID, title, sideLabel string, fillOdds, costUsd float64, accountID string) error {
-	entry := fillOdds * 100
-	if costUsd <= 0 || fillOdds <= 0 {
-		return nil
-	}
-	newShares := costUsd / fillOdds
-	if newShares <= 0 {
-		return nil
-	}
-	_ = s.st.NormalizeDustRisk(ctx, 1e-9)
-	stop := resolveStopLossPct(ctx, s.st, entry)
-	return s.st.MergeOpenRiskBuy(ctx, tokenID, outcomeID, title, sideLabel, entry, newShares, costUsd, stop, "bot", accountID)
 }
 
 func (s *Service) ProcessRiskTasksOnce(ctx context.Context) error {
@@ -471,6 +458,9 @@ func (s *Service) RiskEvaluateTokenAfterBookUpdate(ctx context.Context, tokenID 
 	return nil
 }
 
+// ApplyClobTradeIfNew deduplicates CLOB trade events. It no longer aggregates
+// positions locally; callers should trigger SyncPositionsFromDataAPI after it
+// returns applied=true.
 func (s *Service) ApplyClobTradeIfNew(ctx context.Context, trade struct {
 	ID, AssetID, Side, Size, Price, Status string
 	Market, Outcome                        string
@@ -483,57 +473,6 @@ func (s *Service) ApplyClobTradeIfNew(ctx context.Context, trade struct {
 	ok, err := s.st.InsertRiskAppliedTrade(ctx, trade.ID, accountID)
 	if err != nil || !ok {
 		return false, err
-	}
-	size, _ := strconv.ParseFloat(strings.TrimSpace(trade.Size), 64)
-	price, _ := strconv.ParseFloat(strings.TrimSpace(trade.Price), 64)
-	if trade.AssetID == "" || size <= 0 || price <= 0 {
-		return true, nil
-	}
-	side := strings.ToUpper(trade.Side)
-	min := s.minShares(ctx)
-	if side == "BUY" {
-		entry := price * 100
-		cost := size * price
-		stop := resolveStopLossPct(ctx, s.st, entry)
-		oid, has, _ := s.st.FindOutcomeIDByToken(ctx, trade.AssetID)
-		outcomeID := ""
-		if has {
-			outcomeID = oid
-		}
-		title := "Polymarket"
-		if trade.Market != "" {
-			m := strings.TrimSpace(trade.Market)
-			// User-channel payloads sometimes carry the full market question; keep it readable.
-			if len(m) > 48 && !strings.HasPrefix(strings.ToLower(m), "0x") {
-				title = m
-			} else {
-				title = "CLOB " + m[:minInt(len(m), 12)]
-			}
-		}
-		sideLabel := trade.Outcome
-		if sideLabel == "" {
-			sideLabel = "YES"
-		}
-		if err := s.st.MergeOpenRiskBuy(ctx, trade.AssetID, outcomeID, title, sideLabel, entry, size, cost, stop, "polymarket_clob", accountID); err != nil {
-			return true, err
-		}
-		tg.Notify(ctx, s.cfg, s.st, s.log, fmt.Sprintf(
-			"Polybet 成交同步（买入）\n%s\n%.2f 股 @ %.1f¢ · 成本约 $%.2f · trade %s",
-			title, size, entry, cost, trade.ID,
-		))
-		tg.MaybeNotifyCollateralChanged(s.cfg, s.log, s.st)
-		return true, nil
-	}
-	if side == "SELL" {
-		if err := s.st.ReduceOpenRiskSell(ctx, trade.AssetID, size, price, min, accountID); err != nil {
-			return true, err
-		}
-		tg.Notify(ctx, s.cfg, s.st, s.log, fmt.Sprintf(
-			"Polybet 成交同步（卖出）\nasset %s\n%.2f 股 @ %.4f · trade %s",
-			trade.AssetID, size, price, trade.ID,
-		))
-		tg.MaybeNotifyCollateralChanged(s.cfg, s.log, s.st)
-		return true, nil
 	}
 	return true, nil
 }

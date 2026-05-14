@@ -52,6 +52,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@floating-ui/dom": "^1.7.6",
     "@polybet/core": "workspace:*",
+    "@polybet/types": "workspace:*",
     "@polybet/ui": "workspace:*",
     "@tiptap/core": "^3.22.1",
     "@tiptap/extension-code-block-lowlight": "^3.22.1",
@@ -120,6 +121,7 @@
     "react-i18next": "catalog:",
     "rehype-sanitize": "^6.0.0",
     "typescript": "catalog:",
+    "vite": "catalog:",
     "vitest": "catalog:",
     "zustand": "catalog:"
   }

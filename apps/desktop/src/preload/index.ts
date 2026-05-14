@@ -179,6 +179,14 @@ const desktopAPI = {
    */
   playSound: (soundName: string): Promise<{ ok: true } | { ok: false; error: string }> =>
     ipcRenderer.invoke("sound:play", soundName),
+  /** Subscribe to sidecar status changes (starting, ready, crashed, stopped). */
+  onSidecarStatusChanged: (callback: (status: unknown) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: unknown) => callback(status);
+    ipcRenderer.on("sidecar:status-changed", handler);
+    return () => {
+      ipcRenderer.removeListener("sidecar:status-changed", handler);
+    };
+  },
 };
 
 const updaterAPI = {

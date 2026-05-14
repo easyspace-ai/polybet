@@ -32,7 +32,7 @@
       "dependsOn": ["^typecheck"]
     },
     "test": {
-      "dependsOn": ["^typecheck"]
+      "dependsOn": ["^build"]
     },
     "lint": {
       "dependsOn": ["^typecheck"]

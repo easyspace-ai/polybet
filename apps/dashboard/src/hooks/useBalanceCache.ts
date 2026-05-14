@@ -51,9 +51,11 @@ function fetchBalance(silent = false) {
 }
 
 function handleBalanceUpdate(msg: BalanceUpdateMessage) {
-  cache.data = msg.data;
-  cache.lastRefresh = new Date();
-  notifySubscribers();
+   cache.data = msg.data;
+   cache.loading = false;
+   cache.error = null;
+   cache.lastRefresh = new Date();
+   notifySubscribers();
 }
 
 function handleWsStatus(connected: boolean) {
@@ -65,7 +67,7 @@ function handleWsStatus(connected: boolean) {
 if (typeof window !== 'undefined') {
   fetchBalance(true); // Initial silent fetch
   wsBus.onBalanceUpdate(handleBalanceUpdate);
-  wsBus.onStatus(handleWsStatus);
+  wsBus.onStatusChange(handleWsStatus);
 }
 
 export function useBalanceCache() {

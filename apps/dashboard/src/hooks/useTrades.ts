@@ -51,7 +51,7 @@ export function useTrades(page: number = 1, limit: number = 20) {
       fetchTrades();
     });
 
-    const offStatus = wsBus.onStatus((connected) => {
+    const offStatus = wsBus.onStatusChange((connected) => {
       setState(prev => ({ ...prev, wsConnected: connected }));
     });
 

@@ -103,6 +103,7 @@ func Migrate(ctx context.Context, conn *sql.DB) error {
 		{1, "migrations/001_init.sql"},
 		{2, "migrations/002_events_poly_slug.sql"},
 		{3, "migrations/003_account_isolation.sql"},
+		{4, "migrations/004_risk_configs.sql"},
 	}
 	for _, step := range steps {
 		if v >= step.version {

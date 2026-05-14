@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   listPolymarketAccounts,
   createPolymarketAccount,
@@ -8,38 +8,77 @@ import {
   type PolymarketAccountCreateBody,
 } from '@/lib/api';
 
+interface AccountsState {
+  accounts: PolymarketAccountListItem[];
+  loading: boolean;
+  error: string | null;
+}
+
+const cache: AccountsState = {
+  accounts: [],
+  loading: true,
+  error: null,
+};
+
+const subscribers = new Set<(state: AccountsState) => void>();
+
+function notifySubscribers() {
+  subscribers.forEach((fn) => fn({ ...cache }));
+}
+
+function fetchAccounts() {
+  cache.loading = true;
+  cache.error = null;
+  notifySubscribers();
+
+  listPolymarketAccounts()
+    .then((data) => {
+      cache.accounts = data;
+      cache.loading = false;
+      cache.error = null;
+    })
+    .catch((err) => {
+      cache.loading = false;
+      cache.error = err instanceof Error ? err.message : '加载账号失败';
+    })
+    .finally(() => {
+      notifySubscribers();
+    });
+}
+
+if (typeof window !== 'undefined') {
+  fetchAccounts();
+}
+
 export function useAccounts() {
-  const [accounts, setAccounts] = useState<PolymarketAccountListItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = () => {
-    setLoading(true);
-    setError(null);
-    listPolymarketAccounts()
-      .then(setAccounts)
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load accounts'))
-      .finally(() => setLoading(false));
-  };
-
-  const create = async (body: PolymarketAccountCreateBody) => {
-    await createPolymarketAccount(body);
-    refresh();
-  };
-
-  const activate = async (id: string) => {
-    await activatePolymarketAccount(id);
-    refresh();
-  };
-
-  const remove = async (id: string) => {
-    await deletePolymarketAccount(id);
-    refresh();
-  };
+  const [state, setState] = useState<AccountsState>({ ...cache });
 
   useEffect(() => {
-    refresh();
+    subscribers.add(setState);
+    setState({ ...cache });
+    return () => {
+      subscribers.delete(setState);
+    };
   }, []);
 
-  return { accounts, loading, error, refresh, create, activate, remove };
+  const refresh = useCallback(() => {
+    fetchAccounts();
+  }, []);
+
+  const create = useCallback(async (body: PolymarketAccountCreateBody) => {
+    await createPolymarketAccount(body);
+    fetchAccounts();
+  }, []);
+
+  const activate = useCallback(async (id: string) => {
+    await activatePolymarketAccount(id);
+    fetchAccounts();
+  }, []);
+
+  const remove = useCallback(async (id: string) => {
+    await deletePolymarketAccount(id);
+    fetchAccounts();
+  }, []);
+
+  return { accounts: state.accounts, loading: state.loading, error: state.error, refresh, create, activate, remove };
 }
