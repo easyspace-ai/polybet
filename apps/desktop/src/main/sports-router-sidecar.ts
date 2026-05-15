@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { app } from "electron";
@@ -57,7 +57,13 @@ async function waitHealth(base: string, timeoutMs: number): Promise<boolean> {
 }
 
 function spawnSidecar(bin: string, cwd: string, env: Record<string, string | undefined>, project: PolybetProjectConfig, _origin?: string): void {
-  child = spawn(bin, [], { cwd, env, stdio: "inherit" });
+  const opts: SpawnOptions = { cwd, env, stdio: "inherit" };
+  if (process.platform === "win32") {
+    opts.windowsHide = true;
+    // Packaged app: avoid attaching a console; dev keeps stdio for local logs.
+    if (!is.dev) opts.stdio = "ignore";
+  }
+  child = spawn(bin, [], opts);
   emitStatus({ state: "starting" });
 
   child.on("error", (err) => {

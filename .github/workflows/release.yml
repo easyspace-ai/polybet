@@ -67,8 +67,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Build Desktop installers and attach to the same GitHub Release.
-  # Unsigned builds: DMG (mac), NSIS installer (win). Code signing can be added
-  # later via repo secrets (CSC_LINK, APPLE_ID).
+  #
+  # Release assets are intentionally limited to:
+  #   - polybet-desktop-*-mac-arm64.dmg (Apple Silicon only; no Intel mac zip/dmg)
+  #   - polybet-desktop-*-windows-x64.exe (NSIS; no Windows arm64 / portable)
+  # Linux and other formats are dropped from CI to keep the release page small.
+  #
+  # We use `electron-builder --publish never` and upload only those two files via
+  # `gh release upload` so blockmaps and latest-*.yml are not attached. Tradeoff:
+  # electron-updater cannot use this GitHub Release for update discovery unless
+  # you add those metadata files again or host updates elsewhere.
+  #
+  # Unsigned builds by default; code signing can be added via CSC_LINK, APPLE_ID, etc.
   desktop:
     needs: release
     strategy:
@@ -77,10 +87,8 @@ jobs:
         include:
           - os: windows-latest
             target: win
-          - os: macos-latest
-            target: mac
             arch: x64
-          - os: macos-latest
+          - os: macos-14
             target: mac
             arch: arm64
     runs-on: ${{ matrix.os }}
@@ -89,10 +97,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
-      - name: Install rpmbuild (Linux)
-        if: matrix.target == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y rpm
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -127,4 +131,23 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
           POLYBET_ALLOW_GENERATED_DIRTY: "true"
-        run: node scripts/package.mjs --${{ matrix.target }} --${{ matrix.arch }} --publish always
+        run: node scripts/package.mjs --${{ matrix.target }} --${{ matrix.arch }} --publish never
+
+      - name: Upload desktop installer to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          if [[ "${{ matrix.target }}" == "mac" ]]; then
+            files=(apps/desktop/dist/polybet-desktop-*-mac-arm64.dmg)
+          else
+            files=(apps/desktop/dist/polybet-desktop-*-windows-x64.exe)
+          fi
+          if [[ "${#files[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one installer for ${{ matrix.target }} ${{ matrix.arch }}, got ${#files[@]}: ${files[*]}"
+            ls -la apps/desktop/dist || true
+            exit 1
+          fi
+          gh release upload "${GITHUB_REF_NAME}" "${files[0]}" --clobber

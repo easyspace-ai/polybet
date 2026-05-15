@@ -26,14 +26,19 @@ extraResources:
     to: sounds
     filter:
       - "**/*.mp3"
+# CI release assets are Apple Silicon DMG + Windows x64 NSIS only (see
+# `.github/workflows/release.yml`). Linux and Intel mac installers are not
+# shipped from GitHub Actions; the linux block remains for optional local
+# `pnpm package -- --linux` builds.
 mac:
   # Disable signing for local dev builds - set CSC_IDENTITY_AUTO_DISCOVERY
   # or CODE_SIGNING_KEYCHAIN in CI to enable
   sign: false
   entitlementsInherit: build/entitlements.mac.plist
   target:
-    - dmg
-    - zip
+    - target: dmg
+      arch:
+        - arm64
   # Hardcoded name avoids the `@polybet/desktop-*` subdirectory that
   # `${name}` produces for scoped package names.
   # Naming scheme: polybet-desktop-<version>-<platform>-<arch>.<ext>
@@ -62,7 +67,9 @@ rpm:
     - "--rpm-rpmbuild-define=_build_id_links none"
 win:
   target:
-    - nsis
+    - target: nsis
+      arch:
+        - x64
   artifactName: polybet-desktop-${version}-windows-${arch}.${ext}
 publish:
   provider: github
@@ -71,6 +78,6 @@ publish:
   # Align with our CLI release flow which pre-creates a *published* GitHub
   # Release via `gh release create`. The electron-builder default of
   # `releaseType: draft` conflicts with `existingType=release` and causes
-  # uploads of the DMG/ZIP/blockmaps/latest-mac.yml to be silently skipped,
+  # uploads of the DMG/blockmaps/latest-mac.yml to be silently skipped,
   # which breaks electron-updater auto-update on installed clients.
   releaseType: release

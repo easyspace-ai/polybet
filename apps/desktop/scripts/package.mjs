@@ -62,12 +62,10 @@ const ARCH_FLAGS = new Map([
 ]);
 
 const SUPPORTED_CLI_ARCHS = new Set(["x64", "arm64"]);
+// Matches shipped CI artifacts: Apple Silicon DMG + Windows x64 NSIS only.
 const MAC_ALL_PLATFORM_TARGETS = [
   { platform: "mac", arch: "arm64" },
   { platform: "win", arch: "x64" },
-  { platform: "win", arch: "arm64" },
-  { platform: "linux", arch: "x64" },
-  { platform: "linux", arch: "arm64" },
 ];
 
 function sh(cmd) {

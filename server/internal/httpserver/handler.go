@@ -715,6 +715,7 @@ func (h *Handler) handleCreateAccount(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "db"})
 		return
 	}
+	accountsCache.Delete("list")
 	polysession.InvalidateEnvCache()
 	h.app.InvalidateAndRebuildCache()
 	c.JSON(201, gin.H{"id": ac.ID, "name": ac.Name, "funderAddress": ac.FunderAddress, "isActive": ac.IsActive})

@@ -61,13 +61,10 @@ export function useAccounts() {
     };
   }, []);
 
-  const refresh = useCallback(() => {
-    fetchAccounts();
-  }, []);
+  const refresh = useCallback(() => fetchAccounts(), []);
 
   const create = useCallback(async (body: PolymarketAccountCreateBody) => {
     await createPolymarketAccount(body);
-    await fetchAccounts();
   }, []);
 
   const activate = useCallback(async (id: string) => {

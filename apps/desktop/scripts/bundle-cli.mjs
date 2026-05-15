@@ -111,7 +111,12 @@ if (hasGo()) {
   const version = releaseTagFromEnv() || sh("git describe --tags --always --dirty") || "dev";
   const commit = sh("git rev-parse --short HEAD") || "unknown";
   const date = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-  const ldflags = `-X main.version=${version} -X main.commit=${commit} -X main.date=${date}`;
+  // Windows: `-H windowsgui` sets the PE subsystem to GUI so `polybet.exe`
+  // does not allocate a console when Electron spawns it (see `go doc cmd/link`).
+  // Cross-compiling from macOS/Linux with GOOS=windows is supported.
+  const ldflags =
+    (goos === "windows" ? "-H windowsgui " : "") +
+    `-X main.version=${version} -X main.commit=${commit} -X main.date=${date}`;
 
   console.log(
     `[bundle-cli] go build → ${srcBinary} (${goos}/${goarch}, version=${version} commit=${commit})`,

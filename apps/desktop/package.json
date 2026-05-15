@@ -27,7 +27,7 @@
     "preview": "electron-vite preview",
     "package": "node scripts/package.mjs",
     "package:all": "node scripts/package.mjs --all-platforms --publish never",
-    "package:win": "node scripts/package.mjs --win --x64 --arm64 --publish never",
+    "package:win": "node scripts/package.mjs --win --x64 --publish never",
     "lint": "eslint .",
     "test": "vitest run"
   },

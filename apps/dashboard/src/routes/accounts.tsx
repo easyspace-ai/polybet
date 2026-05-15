@@ -14,7 +14,7 @@ function formatUsd(n: number): string {
 }
 
 function AccountsPage() {
-  const { accounts, loading, error, create, activate, remove } = useAccounts();
+  const { accounts, loading, error, create, activate, remove, refresh } = useAccounts();
   const { balance, loading: balanceLoading, refresh: refreshBalance } = useBalanceCache();
   const [name, setName] = useState('');
   const [privateKey, setPrivateKey] = useState('');
@@ -34,6 +34,7 @@ function AccountsPage() {
     setSubmitting(true);
     try {
       await create({ name: name.trim(), privateKey: privateKey.trim() });
+      await refresh();
       toast.success('已添加', { description: '首个账号会自动设为当前下单账号' });
       setName('');
       setPrivateKey('');
