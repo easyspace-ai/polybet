@@ -3,11 +3,13 @@ package tradesvc
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
+
+	"github.com/sirupsen/logrus"
 
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/config"
+	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/polyexec"
 	"github.com/easyspace-ai/polybet/internal/polywarm"
 	"github.com/easyspace-ai/polybet/internal/service/polysession"
@@ -48,32 +50,33 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 	for _, a := range plan.Allocations {
 		_, mid, label, _, home, away, err := st.GetOutcomeWithMarket(ctx, a.OutcomeID)
 		if err != nil {
-			slog.Warn("trade_leg_outcome_lookup_failed", "outcome_id", a.OutcomeID, "platform", a.Platform, "err", err.Error())
+			logrus.WithFields(logx.Pairs("outcome_id", a.OutcomeID, "platform", a.Platform, "err", err.Error())).Warn("交易：查询 outcome 失败")
 			results = append(results, TradeResult{TradeID: "unknown", Status: "failed", Platform: a.Platform, FailureReason: "outcome_lookup: " + err.Error()})
 			continue
 		}
 		tid, err := st.CreatePendingTrade(ctx, mid, a.OutcomeID, a.Platform, side, a.Size, a.ExpectedOdds, accountID)
 		if err != nil {
-			slog.Warn("trade_leg_create_pending_failed", "outcome_id", a.OutcomeID, "market_id", mid, "err", err.Error())
+			logrus.WithFields(logx.Pairs("outcome_id", a.OutcomeID, "market_id", mid, "err", err.Error())).Warn("交易：创建 pending 记录失败")
 			results = append(results, TradeResult{TradeID: "unknown", Status: "failed", Platform: a.Platform, FailureReason: "create_trade: " + err.Error()})
 			continue
 		}
 		if a.Platform != "polymarket" {
 			_ = st.MarkTradeFailed(ctx, tid, "unsupported_platform")
-			slog.Warn("trade_leg_unsupported_platform", "trade_id", tid, "platform", a.Platform)
+			logrus.WithFields(logx.Pairs("trade_id", tid, "platform", a.Platform)).Warn("交易：不支持的平台")
 			results = append(results, TradeResult{TradeID: tid, Status: "failed", Platform: a.Platform, FailureReason: "unsupported_platform"})
 			continue
 		}
-		slog.Info("trade_fok_buy_send",
+		logrus.WithFields(logx.Pairs(
 			"trade_id", tid, "outcome_id", a.OutcomeID, "token_id", a.ExternalOutcomeID,
 			"size_usdc", a.Size, "expected_odds", a.ExpectedOdds, "extra_ticks", buyExtra,
-			"match", home+" vs "+away, "label", label)
+			"match", home+" vs "+away, "label", label,
+		)).Info("交易：发送 FOK 买单")
 		orderID, fillOdds, err := polyexec.ExecuteFOKBuy(ctx, cl.Client, cl.Signer, a.ExternalOutcomeID, a.Size, a.ExpectedOdds, buyExtra)
 		if err != nil {
 			reason := err.Error()
 			_ = st.MarkTradeFailed(ctx, tid, reason)
-			slog.Warn("trade_fok_buy_rejected", "trade_id", tid, "outcome_id", a.OutcomeID, "token_id", a.ExternalOutcomeID, "err", reason)
-			tg.Notify(ctx, cfg, st, slog.Default(), fmt.Sprintf(
+			logrus.WithFields(logx.Pairs("trade_id", tid, "outcome_id", a.OutcomeID, "token_id", a.ExternalOutcomeID, "err", reason)).Warn("交易：FOK 买单被拒")
+			tg.Notify(ctx, cfg, st, logrus.StandardLogger(), fmt.Sprintf(
 				"Polybet 开单失败\n%s vs %s · $%.2f @ 期望 %.1f¢\n%s",
 				home, away, a.Size, a.ExpectedOdds*100, reason,
 			))
@@ -81,12 +84,12 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 			continue
 		}
 		_ = st.MarkTradeFilled(ctx, tid, orderID, a.Size, fillOdds)
-		slog.Info("trade_fok_buy_filled", "trade_id", tid, "outcome_id", a.OutcomeID, "order_id", orderID, "fill_odds", fillOdds)
-		tg.Notify(ctx, cfg, st, slog.Default(), fmt.Sprintf(
+		logrus.WithFields(logx.Pairs("trade_id", tid, "outcome_id", a.OutcomeID, "order_id", orderID, "fill_odds", fillOdds)).Info("交易：FOK 买单成交")
+		tg.Notify(ctx, cfg, st, logrus.StandardLogger(), fmt.Sprintf(
 			"Polybet 开单成交\n%s vs %s · %s · $%.2f @ 成交 %.1f¢\norder %s",
 			home, away, label, a.Size, fillOdds*100, orderID,
 		))
-		tg.MaybeNotifyCollateralChanged(cfg, slog.Default(), st)
+		tg.MaybeNotifyCollateralChanged(cfg, logrus.StandardLogger(), st)
 		results = append(results, TradeResult{TradeID: tid, Status: "filled", Platform: a.Platform, TxHash: orderID})
 		tok := a.ExternalOutcomeID
 		go func() {
@@ -118,7 +121,7 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 		code = 201
 	}
 	msg := tradeFailureSummary(results)
-	slog.Info("trade_plan_summary", "side", side, "allocations", len(plan.Allocations), "status", status, "http_status", code, "all_filled", allFilled, "any_filled", anyFilled, "failure_summary", msg)
+	logrus.WithFields(logx.Pairs("side", side, "allocations", len(plan.Allocations), "status", status, "http_status", code, "all_filled", allFilled, "any_filled", anyFilled, "failure_summary", msg)).Info("交易：计划执行汇总")
 	return &TradeResponse{Status: status, Message: msg, Trades: results, Plan: plan}, code, nil
 }
 

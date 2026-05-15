@@ -1,6 +1,6 @@
 // Shared WebSocket bus — single connection per dashboard tab.
 
-import type { Market } from "./api";
+import type { Market, RiskRuntimeLogEnvelope } from "./api";
 
 export type MarketLifecycleMessage =
   | { type: "marketsSnapshot"; data: Market[] }
@@ -71,7 +71,13 @@ type IncomingMessage =
   | { type: "balance_update"; data: BalanceUpdateData }
   | { type: "position_update"; data: unknown[] }
   | { type: "poly_status"; polyOrderbookConnected?: boolean; polyUserConnected?: boolean }
+  | { type: "risk_runtime_log"; data: RiskRuntimeLogEnvelope }
+  | { type: "risk_runtime_log_snapshot"; data: RiskRuntimeLogEnvelope[] }
   | MarketLifecycleMessage;
+
+export type RiskRuntimeLogMessage =
+  | { type: "risk_runtime_log"; data: RiskRuntimeLogEnvelope }
+  | { type: "risk_runtime_log_snapshot"; data: RiskRuntimeLogEnvelope[] };
 
 type OddsListener = (
   msg: { type: "snapshot"; data: BestOddsEntry[] } | { type: "update"; data: BestOddsEntry },
@@ -84,6 +90,7 @@ type StatusListener = (connected: boolean) => void;
 type PolyStatusListener = (msg: PolyStatusMessage) => void;
 type BalanceUpdateListener = (msg: BalanceUpdateMessage) => void;
 type PositionUpdateListener = (msg: PositionUpdateMessage) => void;
+type RuntimeLogListener = (msg: RiskRuntimeLogMessage) => void;
 
 const WS_URL = (() => {
   if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL as string;
@@ -95,125 +102,8 @@ const WS_URL = (() => {
 })();
 
 const RISK_WS_URL = WS_URL + "/risk";
-const POLY_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
 
 const isBrowser = () => typeof window !== "undefined" && typeof WebSocket !== "undefined";
-
-function hexToDec(hex: string): string {
-  if (!hex.startsWith("0x")) hex = "0x" + hex;
-  return BigInt(hex).toString();
-}
-
-function decToHex(dec: string): string {
-  return "0x" + BigInt(dec).toString(16).padStart(64, "0");
-}
-
-/** Direct connection to Polymarket Market Channel for dual-insurance and low latency. */
-class PolyDirectBus {
-  private ws: WebSocket | null = null;
-  private listeners: PolyBookListener[] = [];
-  private subTokens = new Set<string>();
-  private reconnectTimer: any = null;
-
-  constructor() {
-    if (isBrowser()) this.connect();
-  }
-
-  private connect() {
-    if (this.ws) return;
-    this.ws = new WebSocket(POLY_WS_URL);
-    this.ws.onopen = () => {
-      console.log("[PolyDirect] Connected to Polymarket Market Channel");
-      this.resubscribe();
-    };
-    this.ws.onmessage = (ev) => {
-      try {
-        const data = JSON.parse(ev.data);
-        const events = Array.isArray(data) ? data : [data];
-        for (const ev of events) {
-          const tid = ev.asset_id ? decToHex(ev.asset_id) : null;
-          if (!tid) continue;
-
-          if (ev.event_type === "book") {
-            const bids: BookLevel[] = (ev.bids || []).map((b: any) => ({
-              odds: parseFloat(b.price),
-              size: parseFloat(b.size) * parseFloat(b.price),
-              platform: "polymarket" as const
-            })).sort((a, b) => b.odds - a.odds); // 买盘 (Bids): 高价在前 (Descending)
-            
-            const asks: BookLevel[] = (ev.asks || []).map((a: any) => ({
-              odds: parseFloat(a.price),
-              size: parseFloat(a.size) * parseFloat(a.price),
-              platform: "polymarket" as const
-            })).sort((a, b) => a.odds - b.odds); // 卖盘 (Asks): 低价在前 (Ascending)
-
-            const bestBid = bids.length > 0 ? bids[0].odds * 100 : (ev.best_bid ? parseFloat(ev.best_bid) * 100 : 0);
-            const bestAsk = asks.length > 0 ? asks[0].odds * 100 : (ev.best_ask ? parseFloat(ev.best_ask) * 100 : 0);
-
-            const frame: PolyBookFrame = { tokenId: tid, bids, asks, bestBid, bestAsk };
-            for (const l of this.listeners) l(frame);
-          } else if (ev.event_type === "best_bid_ask") {
-            const frame: PolyBookFrame = {
-              tokenId: tid,
-              bestBid: parseFloat(ev.best_bid) * 100,
-              bestAsk: parseFloat(ev.best_ask) * 100
-            };
-            for (const l of this.listeners) l(frame);
-          } else if (ev.event_type === "price_change") {
-            // price_change can have multiple changes for different tokens, but usually it's per-token in this channel
-            // or it's an array in some versions. Docs show ev.price_changes array.
-            const changes = ev.price_changes || [];
-            for (const change of changes) {
-              const ctid = decToHex(change.asset_id);
-              const frame: PolyBookFrame = {
-                tokenId: ctid,
-                bestBid: parseFloat(change.best_bid) * 100,
-                bestAsk: parseFloat(change.best_ask) * 100
-              };
-              for (const l of this.listeners) l(frame);
-            }
-          }
-        }
-      } catch (e) {}
-    };
-    this.ws.onclose = () => {
-      this.ws = null;
-      this.reconnectTimer = setTimeout(() => this.connect(), 5000);
-    };
-  }
-
-  private resubscribe() {
-    if (this.subTokens.size === 0) return;
-    const assetIds = Array.from(this.subTokens).map(id => hexToDec(id));
-    this.send({
-      type: "market",
-      assets_ids: assetIds,
-      // custom_feature_enabled: true // 暂时移除，排查 INVALID_OPERATION 错误
-    });
-  }
-
-  private send(obj: any) {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(obj));
-    }
-  }
-
-  subscribe(tokenId: string, l: PolyBookListener) {
-    this.listeners.push(l);
-    const normalized = "0x" + tokenId.replace(/^0x/, "").toLowerCase().padStart(64, "0");
-    if (!this.subTokens.has(normalized)) {
-      this.subTokens.add(normalized);
-      this.send({
-        type: "market",
-        assets_ids: [hexToDec(normalized)],
-        // custom_feature_enabled: true // 暂时移除，排查 INVALID_OPERATION 错误
-      });
-    }
-    return () => {
-      this.listeners = this.listeners.filter((x) => x !== l);
-    };
-  }
-}
 
 class WsBus {
   private ws: WebSocket | null = null;
@@ -228,6 +118,7 @@ class WsBus {
   private polyStatusListeners: PolyStatusListener[] = [];
   private balanceUpdateListeners: BalanceUpdateListener[] = [];
   private positionUpdateListeners: PositionUpdateListener[] = [];
+  private runtimeLogListeners: RuntimeLogListener[] = [];
 
   private oddsSubRefs = new Set<string>();
   private bookSubRefs = new Set<string>();
@@ -294,6 +185,8 @@ class WsBus {
           for (const l of this.balanceUpdateListeners) l(msg);
         } else if (msg.type === "position_update") {
           for (const l of this.positionUpdateListeners) l(msg);
+        } else if (msg.type === "risk_runtime_log" || msg.type === "risk_runtime_log_snapshot") {
+          for (const l of this.runtimeLogListeners) l(msg);
         }
       } catch (err) {
         // ignore
@@ -333,6 +226,13 @@ class WsBus {
     this.positionUpdateListeners.push(l);
     return () => {
       this.positionUpdateListeners = this.positionUpdateListeners.filter((x) => x !== l);
+    };
+  }
+
+  onRuntimeLog(l: RuntimeLogListener) {
+    this.runtimeLogListeners.push(l);
+    return () => {
+      this.runtimeLogListeners = this.runtimeLogListeners.filter((x) => x !== l);
     };
   }
 
@@ -409,4 +309,3 @@ class WsBus {
 
 export const wsBus = new WsBus(WS_URL);
 export const riskWsBus = new WsBus(RISK_WS_URL);
-export const polyDirectBus = new PolyDirectBus();

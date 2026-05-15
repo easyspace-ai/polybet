@@ -104,3 +104,6 @@ pnpm lint                 # ESLint across all packages
 - **Frontend**: React 19, TanStack Router/Query, Tailwind CSS 4
 - **Desktop**: Electron 39, electron-vite, electron-builder
 - **Monorepo**: pnpm workspaces, Turborepo, pnpm catalog
+
+
+ok

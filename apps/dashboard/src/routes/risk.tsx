@@ -1,11 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { TopBar } from "@/components/TopBar";
-import { RefreshCw, AlertTriangle, ExternalLink } from "lucide-react";
+import { RiskRuntimeLogPanel } from "@/components/RiskRuntimeLogPanel";
+import { RefreshCw, AlertTriangle, ExternalLink, EyeOff } from "lucide-react";
 import { useRiskControlCache } from "@/hooks/useRiskControlCache";
-import { postRiskClosePosition, postRiskCloseAll, patchRiskPosition, postRiskOfficialRefresh } from "@/lib/api";
+import { postRiskClosePosition, postRiskCloseAll, patchRiskPosition, postRiskOfficialRefresh, postRiskHidePosition, postRiskTasksClear } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 export const Route = createFileRoute("/risk")({ component: RiskPage });
 
@@ -19,6 +21,12 @@ function fmtUsd(n: number | null | undefined): string {
 function fmtCents(c: number | null | undefined): string {
   if (c == null || !Number.isFinite(c)) return '—';
   return `${c.toFixed(1)}¢`;
+}
+
+function truncTitle(s: string, max = 42): string {
+  const t = s.trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, max - 1)}…`;
 }
 
 function relAgeShort(iso: string | null): string {
@@ -40,23 +48,36 @@ function RiskPage() {
   const [closingId, setClosingId] = useState<string | null>(null);
   const [closingAll, setClosingAll] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, { sl: string; hw: string }>>({});
+  /** Row id whose 「高」 input is focused — draft.hw is not overwritten from server while set. */
+  const [hwEditingRowId, setHwEditingRowId] = useState<string | null>(null);
+  const hwEditingRowIdRef = useRef<string | null>(null);
+  hwEditingRowIdRef.current = hwEditingRowId;
   const [patchingKey, setPatchingKey] = useState<string | null>(null);
+  const [hidingKey, setHidingKey] = useState<string | null>(null);
   const [officialSyncing, setOfficialSyncing] = useState(false);
+  const [clearingTasks, setClearingTasks] = useState(false);
 
-  // 初始化 drafts，当 positions 变化时同步
+  // Init drafts; keep 「高」 aligned with server highWaterCents unless that input is focused.
   useEffect(() => {
     setDrafts(prev => {
       const next = { ...prev };
       let changed = false;
       for (const p of positions) {
+        const sl0 = String(p.stopLossPct);
+        const hw0 = String(p.highWaterCents);
         if (!next[p.id]) {
-          next[p.id] = { sl: String(p.stopLossPct), hw: String(p.highWaterCents) };
+          next[p.id] = { sl: sl0, hw: hw0 };
+          changed = true;
+          continue;
+        }
+        if (hwEditingRowIdRef.current !== p.id && next[p.id].hw !== hw0) {
+          next[p.id] = { ...next[p.id], hw: hw0 };
           changed = true;
         }
       }
       return changed ? next : prev;
     });
-  }, [positions]);
+  }, [positions, hwEditingRowId]);
 
   const handleCloseOne = async (id: string) => {
     setClosingId(id);
@@ -84,18 +105,23 @@ function RiskPage() {
     }
   };
 
-  const applyStopLossPct = async (id: string) => {
+  const applyRiskControls = async (id: string) => {
     const d = drafts[id];
     if (!d) return;
-    const n = parseFloat(d.sl);
-    if (!Number.isFinite(n) || n < 1 || n > 99) {
+    const sl = parseFloat(d.sl);
+    const hw = parseFloat(d.hw);
+    if (!Number.isFinite(sl) || sl < 1 || sl > 99) {
       toast.error('无效', { description: '止损% 须在 1–99 之间' });
       return;
     }
-    setPatchingKey(`${id}:sl`);
+    if (!Number.isFinite(hw) || hw <= 0 || hw > 100) {
+      toast.error('无效', { description: '最高水位须在 (0, 100]（¢）' });
+      return;
+    }
+    setPatchingKey(`${id}:risk`);
     try {
-      await patchRiskPosition(id, { stopLossPct: n });
-      toast.success('已更新', { description: `止损% = ${n}` });
+      await patchRiskPosition(id, { stopLossPct: sl, highWaterCents: hw });
+      toast.success('已更新', { description: `高水位 ${hw}¢ · 止损 ${sl}%` });
       refresh();
     } catch (err) {
       toast.error('失败', { description: err instanceof Error ? err.message : '未知错误' });
@@ -104,23 +130,37 @@ function RiskPage() {
     }
   };
 
-  const applyHighWater = async (id: string) => {
-    const d = drafts[id];
-    if (!d) return;
-    const n = parseFloat(d.hw);
-    if (!Number.isFinite(n) || n <= 0 || n > 100) {
-      toast.error('无效', { description: '最高水位须在 (0, 100]（¢）' });
-      return;
-    }
-    setPatchingKey(`${id}:hw`);
+  const handleHideFromMonitor = async (p: { id: string; tokenId: string; sideLabel: string }) => {
+    if (!confirm('确定不再监控该仓位？（仍可在账户下通过 DELETE /api/risk/hidden-positions 恢复）')) return;
+    setHidingKey(p.id);
     try {
-      await patchRiskPosition(id, { highWaterCents: n });
-      toast.success('已更新', { description: `最高水位 = ${n}¢` });
+      await postRiskHidePosition({ tokenId: p.tokenId, sideLabel: p.sideLabel });
+      toast.success('已隐藏', { description: '该仓位已从持仓监控中移除' });
       refresh();
     } catch (err) {
       toast.error('失败', { description: err instanceof Error ? err.message : '未知错误' });
     } finally {
-      setPatchingKey(null);
+      setHidingKey(null);
+    }
+  };
+
+  const handleClearTaskLog = async () => {
+    if (
+      !confirm(
+        "确定清除任务日志中的已完成记录？将删除状态为成功、失败、已取消的行；进行中的任务（待处理 / 执行中）会保留。",
+      )
+    ) {
+      return;
+    }
+    setClearingTasks(true);
+    try {
+      const r = await postRiskTasksClear();
+      toast.success("已清除", { description: `已删除 ${r.deleted} 条记录` });
+      refresh();
+    } catch (err) {
+      toast.error("失败", { description: err instanceof Error ? err.message : "未知错误" });
+    } finally {
+      setClearingTasks(false);
     }
   };
 
@@ -147,12 +187,12 @@ function RiskPage() {
         title="风控"
         subtitle={
           <>
-            <span className="flex items-center gap-1.5" title="Polymarket 盘口推送状态">
+            <span className="flex items-center gap-1.5" title="服务端 Polymarket 盘口上游（经本机 WS 推送）">
               <span className={`size-1.5 rounded-full ${polyOrderbookConnected ? 'bg-success animate-breathe' : 'bg-warning'}`} />
               OB {polyOrderbookConnected ? '已连接' : '未连接'}
             </span>
             <span className="text-border">·</span>
-            <span className="flex items-center gap-1.5" title="Polymarket 用户订单/成交状态推送">
+            <span className="flex items-center gap-1.5" title="服务端 Polymarket 用户订单/成交上游（经本机 WS 推送）">
               <span className={`size-1.5 rounded-full ${polyUserConnected ? 'bg-success animate-breathe' : 'bg-warning'}`} />
               USER {polyUserConnected ? '已连接' : '未连接'}
             </span>
@@ -193,7 +233,7 @@ function RiskPage() {
         }
       />
 
-      <div className="p-6 space-y-6 animate-slide-up">
+      <div className="p-6 pb-28 space-y-6 animate-slide-up">
         {error && (
           <div className="p-4 rounded-md border border-destructive/30 bg-destructive/10 text-destructive text-[12px]">
             {error}
@@ -211,157 +251,216 @@ function RiskPage() {
           </div>
         ) : (
           <>
+            <TooltipProvider delayDuration={300}>
             {/* positions table */}
-            <section className="surface rounded-xl border border-border overflow-hidden">
-              <div className="px-5 py-3.5 border-b border-border flex items-center justify-between">
-                <h2 className="text-[13px] font-semibold">持仓监控</h2>
-                <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-widest">{positions.length} 个市场</span>
+            <section className="surface rounded-xl border border-border overflow-hidden min-w-0">
+              <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-2 min-w-0">
+                <h2 className="text-[13px] font-semibold shrink-0">持仓监控</h2>
+                <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-widest truncate">{positions.length} 个市场</span>
               </div>
-              <table className="w-full text-[12px]">
-                <thead className="text-[10px] uppercase tracking-widest text-muted-foreground bg-background/40">
-                  <tr>
-                    {["市场", "均价 → 当前", "Bids (买盘)", "Asks (卖盘)", "份额", "成本", "可赢利", "市值", "最高水位", "止损 %", "移动止损价", ""].map((h) => (
-                      <th key={h} className="px-4 py-2.5 font-medium text-left">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {positions.map((p) => {
-                    const pnlPct = p.pnlUsd != null && p.costUsd > 0 ? (p.pnlUsd / p.costUsd) * 100 : null;
-                    const display = (p.displayTitle?.trim() || p.title).trim();
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px] table-fixed text-[11px]">
+                  <colgroup>
+                    <col className="w-[32%]" />
+                    <col className="w-[20%]" />
+                    <col className="w-[20%]" />
+                    <col className="w-[14%]" />
+                    <col className="w-[14%]" />
+                  </colgroup>
+                  <thead className="text-[9px] uppercase tracking-widest text-muted-foreground bg-background/40">
+                    <tr>
+                      <th className="px-2 py-2 font-medium text-left align-bottom">市场</th>
+                      <th className="px-2 py-2 font-medium text-left align-bottom">盘口</th>
+                      <th className="px-2 py-2 font-medium text-left align-bottom">移动止损</th>
+                      <th className="px-2 py-2 font-medium text-right align-bottom">市值</th>
+                      <th className="px-2 py-2 font-medium text-right align-bottom w-[120px]">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {positions.map((p) => {
+                      const pnlPct = p.pnlUsd != null && p.costUsd > 0 ? (p.pnlUsd / p.costUsd) * 100 : null;
+                      const display = (p.displayTitle?.trim() || p.title).trim();
+                      const href = p.officialUrl || p.officialSearchUrl;
+                      const titleShort = truncTitle(display, 38);
 
-                    return (
-                      <tr key={p.id} className="hover:bg-accent/30 transition-colors">
-                        <td className="px-4 py-4">
-                          <div className="flex items-center gap-2.5">
-                            {p.iconUrl ? (
-                              <img src={p.iconUrl} alt="" className="size-7 rounded object-contain shrink-0" />
-                            ) : (
-                              <div className="size-7 rounded-md bg-brand/10 border border-brand/20 flex items-center justify-center shrink-0">
-                                <div className="size-2 rounded-sm bg-brand" />
+                      return (
+                        <tr key={p.id} className="hover:bg-accent/30 transition-colors align-top">
+                          <td className="px-2 py-2.5 min-w-0">
+                            <div className="flex items-start gap-2 min-w-0">
+                              {p.iconUrl ? (
+                                <img src={p.iconUrl} alt="" className="size-6 rounded object-contain shrink-0 mt-0.5" />
+                              ) : (
+                                <div className="size-6 rounded-md bg-brand/10 border border-brand/20 flex items-center justify-center shrink-0 mt-0.5">
+                                  <div className="size-1.5 rounded-sm bg-brand" />
+                                </div>
+                              )}
+                              <div className="flex flex-col min-w-0 gap-0.5">
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <a
+                                      href={href || '#'}
+                                      target={href ? '_blank' : undefined}
+                                      rel={href ? 'noopener noreferrer' : undefined}
+                                      className="text-[11px] font-medium text-foreground leading-snug line-clamp-2 hover:text-brand transition-colors flex items-start gap-1 min-w-0 group"
+                                    >
+                                      <span className="min-w-0 break-words">{titleShort}</span>
+                                      {href && (
+                                        <ExternalLink className="size-2.5 shrink-0 mt-0.5 text-muted-foreground group-hover:text-brand" />
+                                      )}
+                                    </a>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="bottom" className="max-w-sm text-left font-normal">
+                                    <p className="text-[11px]">{display}</p>
+                                    {p.sideLabel && (
+                                      <p className="text-[10px] text-muted-foreground mt-1">方向：{p.sideLabel}</p>
+                                    )}
+                                  </TooltipContent>
+                                </Tooltip>
+                                <div className="text-[10px] num text-muted-foreground leading-tight">
+                                  买价(均价) <span className="text-foreground">{fmtCents(p.avgEntryCents)}</span>
+                                  <span className="text-border mx-1">·</span>
+                                  当前 <span className="text-foreground">{fmtCents(p.currentCents)}</span>
+                                </div>
+                                <div className="text-[10px] num text-muted-foreground leading-tight">
+                                  份额 <span className="text-foreground">{p.sizeShares.toFixed(2)}</span>
+                                  <span className="text-border mx-1">·</span>
+                                  成本 <span className="text-foreground">{fmtUsd(p.costUsd)}</span>
+                                  <span className="text-border mx-1">·</span>
+                                  可赢利 <span className="text-success">{fmtUsd(p.potentialProfitUsd)}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-2 py-2.5">
+                            <div className="flex gap-2 text-[9px] leading-tight">
+                              <div className="flex-1 min-w-0 space-y-0.5">
+                                <div className="text-muted-foreground uppercase tracking-tighter">Bid</div>
+                                {[0, 1, 2, 3].map((i) => (
+                                  <div key={i} className="num text-success/90 truncate">
+                                    {p.bids?.[i] ? `${fmtCents(p.bids[i].odds * 100)} $${p.bids[i].size.toFixed(0)}` : '—'}
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="flex-1 min-w-0 space-y-0.5">
+                                <div className="text-muted-foreground uppercase tracking-tighter">Ask</div>
+                                {[0, 1, 2, 3].map((i) => (
+                                  <div key={i} className="num text-danger/90 truncate">
+                                    {p.asks?.[i] ? `${fmtCents(p.asks[i].odds * 100)} $${p.asks[i].size.toFixed(0)}` : '—'}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-2 py-2.5">
+                            <div className="flex flex-col gap-1 min-w-0">
+                              <div className="flex items-center gap-1">
+                                <span className="text-[9px] text-muted-foreground shrink-0">高</span>
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  min={0.1}
+                                  max={100}
+                                  disabled={p.status !== 'open'}
+                                  value={drafts[p.id]?.hw ?? ''}
+                                  onFocus={() => {
+                                    setHwEditingRowId(p.id);
+                                  }}
+                                  onBlur={() => {
+                                    setHwEditingRowId((id) => (id === p.id ? null : id));
+                                  }}
+                                  onChange={(e) => setDrafts(prev => ({
+                                    ...prev,
+                                    [p.id]: { sl: prev[p.id]?.sl ?? String(p.stopLossPct), hw: e.target.value }
+                                  }))}
+                                  className="min-w-0 flex-1 h-6 px-1 text-[10px] num rounded border border-border bg-background focus:outline-none focus:border-brand"
+                                />
+                                <span className="text-[9px] text-muted-foreground shrink-0">¢</span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-[9px] text-muted-foreground shrink-0">损%</span>
+                                <input
+                                  type="number"
+                                  step={1}
+                                  min={1}
+                                  max={99}
+                                  disabled={p.status !== 'open'}
+                                  value={drafts[p.id]?.sl ?? ''}
+                                  onChange={(e) => setDrafts(prev => ({
+                                    ...prev,
+                                    [p.id]: { sl: e.target.value, hw: prev[p.id]?.hw ?? String(p.highWaterCents) }
+                                  }))}
+                                  className="min-w-0 flex-1 h-6 px-1 text-[10px] num rounded border border-border bg-background focus:outline-none focus:border-brand"
+                                />
+                              </div>
+                              <div className="text-[9px] num text-warning leading-tight">触发 {fmtCents(p.trailingStopCents)}</div>
+                              <button
+                                type="button"
+                                onClick={() => applyRiskControls(p.id)}
+                                disabled={p.status !== 'open' || patchingKey === `${p.id}:risk`}
+                                className="h-6 text-[10px] rounded border border-border hover:bg-accent transition disabled:opacity-50"
+                              >
+                                {patchingKey === `${p.id}:risk` ? '…' : '应用'}
+                              </button>
+                            </div>
+                          </td>
+                          <td className="px-2 py-2.5 text-right">
+                            <div className="num text-muted-foreground text-[10px]">{fmtUsd(p.valueUsd)}</div>
+                            {p.pnlUsd != null && (
+                              <div className={cn("text-[9px] num mt-0.5", p.pnlUsd >= 0 ? "text-success" : "text-danger")}>
+                                {fmtUsd(p.pnlUsd)}
+                                {pnlPct != null && Number.isFinite(pnlPct) && (
+                                  <span> ({pnlPct >= 0 ? '' : '−'}{Math.abs(pnlPct).toFixed(1)}%)</span>
+                                )}
                               </div>
                             )}
-                            <div className="flex flex-col min-w-0">
-                              <a
-                                href={p.officialUrl ?? '#'}
-                                target={p.officialUrl ? '_blank' : undefined}
-                                rel={p.officialUrl ? 'noopener noreferrer' : undefined}
-                                className="font-mono text-[11px] text-brand truncate flex items-center gap-1 hover:underline group"
+                          </td>
+                          <td className="px-2 py-2.5 text-right">
+                            <div className="inline-flex flex-col items-stretch gap-1.5 min-w-[88px]">
+                              <button
+                                type="button"
+                                onClick={() => handleHideFromMonitor(p)}
+                                disabled={hidingKey === p.id}
+                                className="h-7 px-2 rounded border border-border text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground transition flex items-center justify-center gap-1 disabled:opacity-50"
                               >
-                                {display}
-                                {p.officialUrl && (
-                                  <ExternalLink className="size-2.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-                                )}
-                              </a>
-                              <span className="mt-0.5 text-[10px] num text-muted-foreground bg-accent rounded px-1.5 py-0.5 w-fit">{fmtCents(p.avgEntryCents)}</span>
+                                <EyeOff className="size-3 shrink-0" />
+                                {hidingKey === p.id ? '…' : '不再监控'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleCloseOne(p.id)}
+                                disabled={p.status !== 'open' || closingId === p.id}
+                                className="h-7 px-2 rounded-md bg-brand text-brand-foreground text-[11px] font-medium hover:opacity-90 transition active:scale-[0.98] disabled:opacity-50"
+                              >
+                                {closingId === p.id ? '…' : '卖出'}
+                              </button>
                             </div>
-                          </div>
-                        </td>
-                        <td className="px-4 py-4 num">{fmtCents(p.avgEntryCents)} <span className="text-muted-foreground">→ {fmtCents(p.currentCents)}</span></td>
-                        <td className="px-4 py-4">
-                          <div className="flex flex-col gap-0.5 min-w-[80px]">
-                            {p.bids && p.bids.length > 0 ? p.bids.map((b, i) => (
-                              <div key={i} className="flex justify-between gap-2 text-[10px] num">
-                                <span className="text-success font-medium">{fmtCents(b.odds * 100)}</span>
-                                <span className="text-muted-foreground opacity-60">${b.size.toFixed(0)}</span>
-                              </div>
-                            )) : <span className="text-muted-foreground opacity-40 italic">空</span>}
-                          </div>
-                        </td>
-                        <td className="px-4 py-4">
-                          <div className="flex flex-col gap-0.5 min-w-[80px]">
-                            {p.asks && p.asks.length > 0 ? p.asks.map((a, i) => (
-                              <div key={i} className="flex justify-between gap-2 text-[10px] num">
-                                <span className="text-danger font-medium">{fmtCents(a.odds * 100)}</span>
-                                <span className="text-muted-foreground opacity-60">${a.size.toFixed(0)}</span>
-                              </div>
-                            )) : <span className="text-muted-foreground opacity-40 italic">空</span>}
-                          </div>
-                        </td>
-                        <td className="px-4 py-4 num">{p.sizeShares.toFixed(2)}</td>
-                        <td className="px-4 py-4 num">{fmtUsd(p.costUsd)}</td>
-                        <td className="px-4 py-4 num text-success">{fmtUsd(p.potentialProfitUsd)}</td>
-                        <td className="px-4 py-4">
-                          <div className="num text-muted-foreground">{fmtUsd(p.valueUsd)}</div>
-                          {p.pnlUsd != null && (
-                            <div className={cn("text-[9px] mt-0.5", p.pnlUsd >= 0 ? "text-success" : "text-danger")}>
-                              {fmtUsd(p.pnlUsd)}
-                              {pnlPct != null && Number.isFinite(pnlPct) && (
-                                ` (${pnlPct >= 0 ? '' : '−'}${Math.abs(pnlPct).toFixed(1)}%)`
-                              )}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-4 py-4">
-                          <div className="flex flex-col gap-1">
-                            <input
-                              type="number"
-                              step="0.1"
-                              min={0.1}
-                              max={100}
-                              disabled={p.status !== 'open'}
-                              value={drafts[p.id]?.hw ?? ''}
-                              onChange={(e) => setDrafts(prev => ({
-                                ...prev,
-                                [p.id]: { ...prev[p.id], hw: e.target.value }
-                              }))}
-                              className="w-20 h-7 px-2 text-[11.5px] num rounded border border-border bg-background focus:outline-none focus:border-brand focus:ring-2 focus:ring-brand/30 transition"
-                            />
-                            <button
-                              onClick={() => applyHighWater(p.id)}
-                              disabled={p.status !== 'open' || patchingKey === `${p.id}:hw`}
-                              className="h-6 text-[10px] rounded border border-border hover:bg-accent transition disabled:opacity-50"
-                            >
-                              {patchingKey === `${p.id}:hw` ? '...' : '应用'}
-                            </button>
-                          </div>
-                        </td>
-                        <td className="px-4 py-4">
-                          <div className="flex flex-col gap-1">
-                            <input
-                              type="number"
-                              step={1}
-                              min={1}
-                              max={99}
-                              disabled={p.status !== 'open'}
-                              value={drafts[p.id]?.sl ?? ''}
-                              onChange={(e) => setDrafts(prev => ({
-                                ...prev,
-                                [p.id]: { ...prev[p.id], sl: e.target.value }
-                              }))}
-                              className="w-16 h-7 px-2 text-[11.5px] num rounded border border-border bg-background focus:outline-none focus:border-brand focus:ring-2 focus:ring-brand/30 transition"
-                            />
-                            <button
-                              onClick={() => applyStopLossPct(p.id)}
-                              disabled={p.status !== 'open' || patchingKey === `${p.id}:sl`}
-                              className="h-6 text-[10px] rounded border border-border hover:bg-accent transition disabled:opacity-50"
-                            >
-                              {patchingKey === `${p.id}:sl` ? '...' : '应用'}
-                            </button>
-                          </div>
-                        </td>
-                        <td className="px-4 py-4 num text-warning">{fmtCents(p.trailingStopCents)}</td>
-                        <td className="px-4 py-4">
-                          <button
-                            onClick={() => handleCloseOne(p.id)}
-                            disabled={p.status !== 'open' || closingId === p.id}
-                            className="px-3 py-1.5 rounded-md bg-brand text-brand-foreground text-[11.5px] font-medium hover:opacity-90 transition active:scale-95 disabled:opacity-50"
-                          >
-                            {closingId === p.id ? '...' : '卖出'}
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </section>
+            </TooltipProvider>
 
             {/* task queue logs */}
             <section className="space-y-3">
-              <div className="flex items-baseline justify-between">
-                <h2 className="text-[13px] font-semibold">任务队列</h2>
-                <p className="text-[11px] text-muted-foreground max-w-2xl text-right">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <h2 className="text-[13px] font-semibold shrink-0">任务队列</h2>
+                  {tasks.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleClearTaskLog}
+                      disabled={clearingTasks}
+                      className="h-7 px-2.5 text-[10px] rounded-md border border-border bg-background hover:bg-accent transition disabled:opacity-50 shrink-0"
+                    >
+                      {clearingTasks ? "…" : "清除已完成"}
+                    </button>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted-foreground max-w-2xl text-right flex-1 min-w-[200px]">
                   止损触发与手动平仓均进入此队列；状态为 <code className="text-warning">FAILED</code> 时自动重试。
                 </p>
               </div>
@@ -397,6 +496,7 @@ function RiskPage() {
           </>
         )}
       </div>
+      <RiskRuntimeLogPanel />
     </>
   );
 }

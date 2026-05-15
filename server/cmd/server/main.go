@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,6 +9,8 @@ import (
 	"github.com/easyspace-ai/polybet/internal/app"
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/db"
+	"github.com/easyspace-ai/polybet/internal/logx"
+	"github.com/sirupsen/logrus"
 )
 
 // Injected by go build -ldflags (see apps/desktop/scripts/bundle-cli.mjs).
@@ -20,31 +21,39 @@ var (
 )
 
 func main() {
+	logx.Configure("info")
 	config.LoadEnvFile()
 	config.ApplyHomePolybetProjectJSON()
+
 	cfg, err := config.Load()
 	if err != nil {
-		slog.Error("config", "err", err)
+		logrus.WithFields(logx.Pairs("err", err)).Error("加载配置失败")
 		os.Exit(1)
 	}
+	logx.Configure(cfg.LogLevel)
+
 	sqlDB, err := db.Open(cfg.DatabaseURL)
 	if err != nil {
-		slog.Error("db 1", "err", err)
+		logrus.WithFields(logx.Pairs("err", err)).Error("打开数据库失败")
 		os.Exit(1)
 	}
 	defer sqlDB.Close()
 
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: app.SlogLevel(cfg.LogLevel),
-	}))
-	slog.SetDefault(log)
-	log.Info("sports_router_build", "version", version, "commit", commit, "date", date)
-	a := app.New(cfg, sqlDB, log)
+	logrus.WithFields(logx.Pairs(
+		"version", version,
+		"commit", commit,
+		"date", date,
+	)).Info("Polybet 服务进程已启动")
+
+	a := app.New(cfg, sqlDB, logrus.StandardLogger())
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// ctx cancellation propagates to tickers, Gamma sync, and HTTP clients. Run stops HTTP
+	// then bounded-waits for background goroutines (timeouts in internal/app).
+
 	if err := a.Run(ctx); err != nil {
-		slog.Error("run", "err", err)
+		logrus.WithFields(logx.Pairs("err", err)).Error("服务退出异常")
 		os.Exit(1)
 	}
 }

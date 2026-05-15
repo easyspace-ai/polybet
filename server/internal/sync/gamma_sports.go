@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
+
+	"github.com/easyspace-ai/polybet/internal/logx"
 )
 
 // GammaSport is a single entry from https://gamma-api.polymarket.com/sports
@@ -68,14 +71,14 @@ func (c *SportsCache) Refresh(ctx context.Context) ([]GammaSport, error) {
 	if err != nil {
 		// If we have stale data, return it as fallback
 		if len(c.items) > 0 {
-			slog.Warn("sports_cache_refresh_failed_fallback", "err", err.Error())
+			logrus.WithFields(logx.Pairs("err", err.Error())).Warn("体育缓存：刷新失败，使用旧数据")
 			return c.items, nil
 		}
 		return nil, err
 	}
 	c.items = items
 	c.expires = time.Now().Unix() + c.ttlSec
-	slog.Info("sports_cache_refreshed", "count", len(items))
+	logrus.WithFields(logx.Pairs("count", len(items))).Info("体育缓存：已刷新 Gamma /sports")
 	return items, nil
 }
 

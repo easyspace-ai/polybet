@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 )
 
@@ -107,9 +108,16 @@ func (s *Store) ActivateAccount(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
-func (s *Store) DeletePolymarketAccount(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM polymarket_accounts WHERE id = ?`, id)
-	return err
+func (s *Store) DeletePolymarketAccount(ctx context.Context, id string) (rowsAffected int64, err error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM polymarket_accounts WHERE id = ?`, id)
+	if err != nil {
+		return 0, fmt.Errorf("delete polymarket account %s: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete polymarket account %s rows_affected: %w", id, err)
+	}
+	return n, nil
 }
 
 func (s *Store) CountPolymarketAccounts(ctx context.Context) (int, error) {

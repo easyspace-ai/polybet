@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sirupsen/logrus"
+
+	"github.com/easyspace-ai/polybet/internal/logx"
 )
 
 const gammaAPI = "https://gamma-api.polymarket.com"
@@ -45,7 +48,7 @@ func fetchGammaEvents(ctx context.Context, httpProxy string, seriesID int) ([]ga
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
-			slog.Warn("gamma_http_retry", "attempt", attempt+1, "series_id", seriesID, "backoff", backoff.String())
+			logrus.WithFields(logx.Pairs("attempt", attempt+1, "series_id", seriesID, "backoff", backoff.String())).Warn("Gamma HTTP：重试前等待")
 			time.Sleep(backoff)
 		}
 
@@ -58,7 +61,7 @@ func fetchGammaEvents(ctx context.Context, httpProxy string, seriesID int) ([]ga
 		if !isRetryableError(err) {
 			return nil, err
 		}
-		slog.Warn("gamma_http_retryable_error", "series_id", seriesID, "attempt", attempt+1, "err", err.Error())
+		logrus.WithFields(logx.Pairs("series_id", seriesID, "attempt", attempt+1, "err", err.Error())).Warn("Gamma HTTP：可重试错误")
 	}
 
 	return nil, lastErr
@@ -95,7 +98,7 @@ func doFetchGammaEvents(ctx context.Context, httpProxy string, seriesID int) ([]
 		q.Set("series_id", strconv.Itoa(seriesID))
 		u := gammaAPI + "/events?" + q.Encode()
 		if offset == 0 {
-			slog.Debug("gamma_http_request", "url", u)
+			logrus.WithFields(logx.Pairs("url", u)).Debug("Gamma HTTP：请求")
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
@@ -111,7 +114,7 @@ func doFetchGammaEvents(ctx context.Context, httpProxy string, seriesID int) ([]
 			return nil, err
 		}
 		if res.StatusCode != http.StatusOK {
-			slog.Warn("gamma_http_non_200", "status", res.StatusCode, "series_id", seriesID, "offset", offset, "body_prefix", truncateForLog(string(body), 240))
+			logrus.WithFields(logx.Pairs("status", res.StatusCode, "series_id", seriesID, "offset", offset, "body_prefix", truncateForLog(string(body), 240))).Warn("Gamma HTTP：非 200 响应")
 			return nil, fmt.Errorf("gamma %d: %s", res.StatusCode, string(body))
 		}
 		var page []gammaEvent

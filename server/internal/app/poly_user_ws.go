@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
-	polymarket "github.com/easyspace-ai/polysdk"
-
-	"github.com/easyspace-ai/polybet/internal/rediska"
+	"github.com/easyspace-ai/polybet/internal/logx"
+	"github.com/easyspace-ai/polybet/internal/marketstream"
+	"github.com/easyspace-ai/polybet/internal/memcache"
 	"github.com/easyspace-ai/polybet/internal/service/balancesvc"
 	"github.com/easyspace-ai/polybet/internal/service/polysession"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
@@ -21,151 +22,211 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		cl, err := polysession.ResolveAuthedCLOB(context.Background(), a.Cfg, a.Store)
+		cl, err := polysession.ResolveAuthedCLOB(ctx, a.Cfg, a.Store)
 		if err != nil {
-			a.Log.Warn("poly_user_ws_session", "err", err.Error())
+			a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("用户 CLOB WS：会话解析失败")
 			a.Risk.SetUserWSState(false, false, err.Error())
-			a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyUserConnected": false})
+			st := map[string]any{"type": "poly_status", "polyUserConnected": false}
+			a.Hub.BroadcastJSON(st)
+			a.RiskHub.BroadcastJSON(st)
+			if a.RiskRuntime != nil {
+				a.RiskRuntime.Publish("transport", "warn", "ws.user.session_error", "", "", "", "", map[string]any{"phase": "resolve_clob", "err": err.Error()})
+			}
 			if a.LogService != nil {
 				a.LogService.Warn("风控", fmt.Sprintf("WS会话解析失败: %s", err.Error()))
 			}
-			time.Sleep(5 * time.Second)
+			sleepCtx(ctx, 5*time.Second)
 			continue
 		}
 		if cl.APIKey == nil {
-			a.Log.Warn("poly_user_ws_missing_api_key")
+			a.Log.Warn("用户 CLOB WS：缺少 API Key")
 			a.Risk.SetUserWSState(false, false, "missing_api_key")
-			a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyUserConnected": false})
-			if a.LogService != nil {
-				a.LogService.Warn("风控", "WS会话缺少API Key")
+			st := map[string]any{"type": "poly_status", "polyUserConnected": false}
+			a.Hub.BroadcastJSON(st)
+			a.RiskHub.BroadcastJSON(st)
+			if a.RiskRuntime != nil {
+				a.RiskRuntime.Publish("transport", "warn", "ws.user.session_error", "", "", "", "", map[string]any{"phase": "missing_api_key"})
 			}
-			time.Sleep(5 * time.Second)
+			sleepCtx(ctx, 5*time.Second)
 			continue
 		}
-		pc := polymarket.DefaultConfig()
-		pc.BaseURLs.CLOB = a.Cfg.PolymarketAPIURL
-		if a.Cfg.PolymarketCLOBWS != "" {
-			pc.BaseURLs.CLOBWS = a.Cfg.PolymarketCLOBWS
+
+		msCfg := a.polymarketMarketstreamConfig()
+		creds := &marketstream.APICreds{
+			APIKey:        cl.APIKey.Key,
+			APISecret:     cl.APIKey.Secret,
+			APIPassphrase: cl.APIKey.Passphrase,
 		}
-		opts := []polymarket.Option{polymarket.WithConfig(pc)}
-		if a.Cfg.HTTPPlatformProxy != "" {
-			opts = append(opts, polymarket.WithProxyURL(a.Cfg.HTTPPlatformProxy))
-		}
-		root, err := polymarket.NewClientE(opts...)
-		if err != nil {
-			a.Log.Warn("poly_user_ws_client", "err", err.Error())
-			a.Risk.SetUserWSState(false, false, err.Error())
-			a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyUserConnected": false})
-			time.Sleep(3 * time.Second)
-			continue
-		}
-		a.Log.Info("poly_user_ws_client_created",
-			"base_urls", fmt.Sprintf("clob=%s ws=%s", pc.BaseURLs.CLOB, pc.BaseURLs.CLOBWS),
-			"proxy", a.Cfg.HTTPPlatformProxy,
-			"proxy_set", a.Cfg.HTTPPlatformProxy != "")
-		authRoot := root.WithAuth(cl.Signer, cl.APIKey)
+		user := marketstream.NewUserStreamWithConfig(creds, msCfg)
+
 		subCtx, cancel := context.WithCancel(ctx)
+
 		a.Risk.SetUserWSState(true, false, "")
-		a.Log.Info("poly_user_ws_subscribing",
-			"clob_ws", pc.BaseURLs.CLOBWS,
+		acct, _ := a.Store.GetActivePolymarketAccount(context.Background())
+		accountID := ""
+		if acct != nil {
+			accountID = acct.ID
+		}
+		if a.RiskRuntime != nil {
+			a.RiskRuntime.Publish("transport", "info", "ws.user.connecting", accountID, "", "", "", map[string]any{"urlHost": msCfg.UserWSURL})
+		}
+		a.Log.WithFields(logx.Pairs(
+			"ws_url", msCfg.UserWSURL,
 			"api_key_id", cl.APIKey.Key,
 			"api_key_has_secret", cl.APIKey.Secret != "",
-			"signer_type", fmt.Sprintf("%T", cl.Signer))
-		ch, err := authRoot.CLOBWS.SubscribeUserTrades(subCtx, nil)
-		a.Log.Info("poly_user_ws_subscribe_returned",
-			"err", func() string { if err != nil { return err.Error() }; return "nil" }(),
-			"ch_nil", ch == nil,
-			"ch_open", func() string {
-				if ch == nil { return "N/A" }
-				select {
-				case _, ok := <-ch:
-					if ok { return "has_data" }
-					return "closed"
-				default:
-					return "blocking"
+			"proxy", a.Cfg.HTTPPlatformProxy,
+			"proxy_set", a.Cfg.HTTPPlatformProxy != "",
+		)).Info("用户 CLOB WS：正在连接")
+
+		user.OnUserTrade(func(ev marketstream.UserTradeEvent) {
+			if subCtx.Err() != nil {
+				return
+			}
+			a.Risk.TouchUserWSMessage()
+			acct, _ := a.Store.GetActivePolymarketAccount(context.Background())
+			accountID := ""
+			if acct != nil {
+				accountID = acct.ID
+			}
+			rawAsset := strings.TrimSpace(ev.AssetID)
+			if rawAsset == "" {
+				rawAsset = strings.TrimSpace(ev.Asset)
+			}
+			assetID := strings.ToLower(rawAsset)
+			if assetID != "" && !strings.HasPrefix(assetID, "0x") {
+				assetID = "0x" + assetID
+			}
+			if len(assetID) < 66 && strings.HasPrefix(assetID, "0x") {
+				assetID = "0x" + strings.Repeat("0", 66-len(assetID)) + assetID[2:]
+			}
+
+			tradeID := strings.TrimSpace(ev.ID)
+			if tradeID == "" {
+				tradeID = strings.TrimSpace(ev.TransactionHash)
+			}
+
+			sizeStr := strconv.FormatFloat(ev.Size.Float64(), 'f', -1, 64)
+			priceStr := strconv.FormatFloat(ev.Price.Float64(), 'f', -1, 64)
+
+			applied, err := a.Risk.ApplyClobTradeIfNew(context.Background(), struct {
+				ID, AssetID, Side, Size, Price, Status string
+				Market, Outcome                        string
+			}{
+				ID: tradeID, AssetID: assetID, Side: ev.Side, Size: sizeStr, Price: priceStr,
+				Status: ev.Status, Market: ev.Market, Outcome: "",
+			}, accountID)
+			if err != nil {
+				a.Log.WithFields(logx.Pairs("trade_id", tradeID, "asset_id", assetID, "status", ev.Status, "err", err.Error())).Warn("用户 CLOB WS：应用成交失败")
+				if a.LogService != nil {
+					a.LogService.Error("风控", fmt.Sprintf("应用 CLOB 交易失败: %s", err.Error()))
 				}
-			}())
-		if err != nil {
+			} else if applied {
+				a.Log.WithFields(logx.Pairs("trade_id", tradeID, "asset_id", assetID, "side", ev.Side, "size", sizeStr, "price", priceStr, "status", ev.Status)).Info("用户 CLOB WS：成交已入账")
+				if a.LogService != nil {
+					a.LogService.Info("交易", fmt.Sprintf("CLOB 成交: %s %s $%s @ $%s", ev.Side, assetID, sizeStr, priceStr))
+				}
+				if a.RiskRuntime != nil && accountID != "" {
+					a.RiskRuntime.Publish("position", "info", "order.execution_summary", accountID, "", assetID, tradeID, map[string]any{
+						"tradeId": tradeID, "side": ev.Side, "size": sizeStr, "price": priceStr, "status": ev.Status,
+					})
+				}
+				if syncErr := a.Risk.SyncPositionsFromDataAPI(context.Background(), accountID); syncErr != nil {
+					a.Log.WithFields(logx.Pairs("err", syncErr.Error())).Warn("用户 CLOB WS：成交后同步持仓失败")
+				}
+				a.rebuildAndBroadcastCache()
+			} else {
+				a.Log.WithFields(logx.Pairs("trade_id", tradeID, "status", ev.Status)).Debug("用户 CLOB WS：跳过重复或非新成交")
+			}
+		})
+
+		if err := user.Start(subCtx); err != nil {
+			user.Stop()
 			cancel()
-			a.Log.Warn("poly_user_ws_subscribe_failed",
-				"err", err.Error(),
-				"ws_url", pc.BaseURLs.CLOBWS,
-				"proxy", a.Cfg.HTTPPlatformProxy)
+			a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("用户 CLOB WS：启动失败")
 			a.Risk.SetUserWSState(false, false, err.Error())
-			a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyUserConnected": false})
-			time.Sleep(3 * time.Second)
+			st := map[string]any{"type": "poly_status", "polyUserConnected": false}
+			a.Hub.BroadcastJSON(st)
+			a.RiskHub.BroadcastJSON(st)
+			if a.RiskRuntime != nil {
+				a.RiskRuntime.Publish("transport", "warn", "ws.user.disconnected", accountID, "", "", "", map[string]any{"phase": "start_failed", "err": err.Error()})
+			}
+			sleepCtx(ctx, 3*time.Second)
 			continue
 		}
+
+		if err := user.SubscribeAll(); err != nil {
+			user.Stop()
+			cancel()
+			a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("用户 CLOB WS：订阅失败")
+			a.Risk.SetUserWSState(false, false, err.Error())
+			st := map[string]any{"type": "poly_status", "polyUserConnected": false}
+			a.Hub.BroadcastJSON(st)
+			a.RiskHub.BroadcastJSON(st)
+			if a.RiskRuntime != nil {
+				a.RiskRuntime.Publish("transport", "warn", "ws.user.disconnected", accountID, "", "", "", map[string]any{"phase": "subscribe_failed", "err": err.Error()})
+			}
+			sleepCtx(ctx, 3*time.Second)
+			continue
+		}
+
+		go func() {
+			for {
+				select {
+				case <-subCtx.Done():
+					return
+				case err := <-user.Errors():
+					if err == nil {
+						continue
+					}
+					a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("用户 CLOB WS：底层连接报错")
+					if a.RiskRuntime != nil {
+						a.RiskRuntime.Publish("transport", "warn", "ws.user.error", accountID, "", "", "", map[string]any{"err": err.Error()})
+					}
+					if strings.Contains(err.Error(), "max reconnect attempts") {
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+
 		a.Risk.SetUserWSState(false, true, "")
-		a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyUserConnected": true})
-		a.Log.Info("poly_user_ws_connected")
+		stOk := map[string]any{"type": "poly_status", "polyUserConnected": true}
+		a.Hub.BroadcastJSON(stOk)
+		a.RiskHub.BroadcastJSON(stOk)
+		if a.RiskRuntime != nil {
+			a.RiskRuntime.Publish("transport", "info", "ws.user.connected", accountID, "", "", "", map[string]any{})
+		}
+		a.Log.Info("用户 CLOB WS：已连接")
 		if a.LogService != nil {
 			a.LogService.Info("WebSocket", "用户 CLOB 连接成功")
 		}
-		for {
-			select {
-			case <-subCtx.Done():
-				cancel()
-				a.Log.Info("poly_user_ws_ctx_done", "reason", "disconnected")
-				a.Risk.SetUserWSState(false, false, "disconnected")
-				a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyUserConnected": false})
-				if a.LogService != nil {
-					a.LogService.Warn("WebSocket", "用户 CLOB 断开")
-				}
-				goto reconnect
-			case ev, ok := <-ch:
-				if !ok {
-					cancel()
-					a.Log.Warn("poly_user_ws_channel_closed")
-					a.Risk.SetUserWSState(false, false, "channel_closed")
-					a.Hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyUserConnected": false})
-					if a.LogService != nil {
-						a.LogService.Warn("WebSocket", "用户 CLOB 通道关闭, 正在重连...")
-					}
-					goto reconnect
-				}
-				a.Risk.TouchUserWSMessage()
-				acct, _ := a.Store.GetActivePolymarketAccount(context.Background())
-				accountID := ""
-				if acct != nil {
-					accountID = acct.ID
-				}
-				assetID := strings.ToLower(ev.AssetID)
-				if !strings.HasPrefix(assetID, "0x") {
-					assetID = "0x" + assetID
-				}
-				if len(assetID) < 66 {
-					assetID = "0x" + strings.Repeat("0", 66-len(assetID)) + assetID[2:]
-				}
-				applied, err := a.Risk.ApplyClobTradeIfNew(context.Background(), struct {
-					ID, AssetID, Side, Size, Price, Status string
-					Market, Outcome                        string
-				}{
-					ID: ev.ID, AssetID: assetID, Side: ev.Side, Size: ev.Size, Price: ev.Price,
-					Status: ev.Status, Market: ev.Market, Outcome: "",
-				}, accountID)
-				if err != nil {
-					a.Log.Warn("poly_user_ws_trade_apply_err", "trade_id", ev.ID, "asset_id", assetID, "status", ev.Status, "err", err.Error())
-					if a.LogService != nil {
-						a.LogService.Error("风控", fmt.Sprintf("应用 CLOB 交易失败: %s", err.Error()))
-					}
-				} else if applied {
-					a.Log.Info("poly_user_ws_trade_applied", "trade_id", ev.ID, "asset_id", assetID, "side", ev.Side, "size", ev.Size, "price", ev.Price, "status", ev.Status)
-					if a.LogService != nil {
-						a.LogService.Info("交易", fmt.Sprintf("CLOB 成交: %s %s $%s @ $%s", ev.Side, assetID, ev.Size, ev.Price))
-					}
-					if syncErr := a.Risk.SyncPositionsFromDataAPI(context.Background(), accountID); syncErr != nil {
-						a.Log.Warn("sync_positions_after_trade", "err", syncErr.Error())
-					}
-					a.rebuildAndBroadcastCache()
-				} else {
-					a.Log.Debug("poly_user_ws_trade_skip", "trade_id", ev.ID, "status", ev.Status)
-				}
-			}
+
+		<-subCtx.Done()
+		user.Stop()
+		cancel()
+
+		a.Log.WithFields(logx.Pairs("reason", "disconnected")).Info("用户 CLOB WS：连接已结束")
+		a.Risk.SetUserWSState(false, false, "disconnected")
+		stOff := map[string]any{"type": "poly_status", "polyUserConnected": false}
+		a.Hub.BroadcastJSON(stOff)
+		a.RiskHub.BroadcastJSON(stOff)
+		if a.RiskRuntime != nil {
+			a.RiskRuntime.Publish("transport", "info", "ws.user.disconnected", accountID, "", "", "", map[string]any{"reason": "disconnected"})
 		}
-	reconnect:
-		a.Log.Info("poly_user_ws_reconnect_wait", "delay_sec", 2)
-		time.Sleep(2 * time.Second)
+		if a.LogService != nil {
+			a.LogService.Warn("WebSocket", "用户 CLOB 断开")
+		}
+
+		if ctx.Err() != nil {
+			return
+		}
+
+		if a.RiskRuntime != nil {
+			a.RiskRuntime.Publish("transport", "info", "ws.user.reconnect_scheduled", accountID, "", "", "", map[string]any{"backoffMs": 2000})
+		}
+		a.Log.WithFields(logx.Pairs("delay_sec", 2)).Info("用户 CLOB WS：等待重连")
+		sleepCtx(ctx, 2*time.Second)
 	}
 }
 
@@ -181,7 +242,7 @@ func (a *App) rebuildAndBroadcastCache() {
 	if err == nil {
 		oldRows, _, found, _ := a.RiskCache.Get(context.Background())
 		shouldBroadcast := !found || !positionsStructurallyEqual(oldRows, rows)
-		_ = a.RiskCache.Set(context.Background(), rediska.RiskFetchResult{Positions: rows, Meta: rediska.RiskMeta{
+		_ = a.RiskCache.Set(context.Background(), memcache.RiskFetchResult{Positions: rows, Meta: memcache.RiskMeta{
 			UserWsConnected:         enrichedMeta.UserWsConnected,
 			UserWsConnecting:        enrichedMeta.UserWsConnecting,
 			OutboundProxyConfigured: enrichedMeta.OutboundProxyConfigured,
@@ -189,17 +250,32 @@ func (a *App) rebuildAndBroadcastCache() {
 		}})
 		if shouldBroadcast {
 			a.Hub.BroadcastJSON(map[string]any{"type": "position_update", "data": rows})
+			a.RiskHub.BroadcastJSON(map[string]any{"type": "position_update", "data": rows})
+			if a.RiskRuntime != nil {
+				a.RiskRuntime.Publish("position", "info", "position.snapshot_changed", accountID, "", "", "", map[string]any{
+					"openCount": countOpenRiskRows(rows),
+				})
+			}
 		}
 	}
 
-	if summary, err := balancesvc.Fetch(context.Background(), a.Cfg, a.Store); err == nil {
-		_ = a.BalanceCache.Set(context.Background(), summary)
-		a.Hub.BroadcastJSON(map[string]any{"type": "balance_update", "data": summary})
+	a.scheduleBalanceBroadcast()
+}
+
+func countOpenRiskRows(rows []map[string]any) int {
+	n := 0
+	for _, r := range rows {
+		if s, _ := r["status"].(string); s == "open" {
+			n++
+		}
 	}
+	return n
 }
 
 // positionsStructurallyEqual compares two position lists ignoring volatile fields
 // like currentCents / trailingStopCents / pnlUsd which are computed from live orderbook.
+// highWaterCents and stopLossPct are included so ratcheting high water and PATCH edits
+// still emit position_update (dashboard refetches / draft sync).
 func positionsStructurallyEqual(a, b []map[string]any) bool {
 	if len(a) != len(b) {
 		return false
@@ -208,8 +284,7 @@ func positionsStructurallyEqual(a, b []map[string]any) bool {
 		parts := make([]string, 0, len(rows))
 		for _, r := range rows {
 			tid, _ := r["tokenId"].(string)
-			// Include sizeShares and status as the structural identity
-			parts = append(parts, fmt.Sprintf("%s:%v:%v", tid, r["sizeShares"], r["status"]))
+			parts = append(parts, fmt.Sprintf("%s:%v:%v:%v:%v", tid, r["sizeShares"], r["status"], r["highWaterCents"], r["stopLossPct"]))
 		}
 		sort.Strings(parts)
 		return strings.Join(parts, "|")
@@ -230,7 +305,7 @@ func (a *App) InvalidateAndRebuildCache() {
 
 	rows, enrichedMeta, err := a.Risk.ListRiskPositionsEnriched(context.Background(), meta, accountID)
 	if err == nil {
-		_ = a.RiskCache.Set(context.Background(), rediska.RiskFetchResult{Positions: rows, Meta: rediska.RiskMeta{
+		_ = a.RiskCache.Set(context.Background(), memcache.RiskFetchResult{Positions: rows, Meta: memcache.RiskMeta{
 			UserWsConnected:         enrichedMeta.UserWsConnected,
 			UserWsConnecting:        enrichedMeta.UserWsConnecting,
 			OutboundProxyConfigured: enrichedMeta.OutboundProxyConfigured,
@@ -241,8 +316,8 @@ func (a *App) InvalidateAndRebuildCache() {
 
 	if summary, err := balancesvc.Fetch(context.Background(), a.Cfg, a.Store); err == nil {
 		_ = a.BalanceCache.Set(context.Background(), summary)
-		a.Hub.BroadcastJSON(map[string]any{"type": "balance_update", "data": summary})
+		a.broadcastBalanceUpdateIfChanged(context.Background(), summary)
 	} else {
-		a.Log.Warn("invalidate_rebuild_balance_fetch_failed", "err", err.Error())
+		a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("缓存重建：拉取余额失败")
 	}
 }

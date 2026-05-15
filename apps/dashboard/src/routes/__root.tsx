@@ -18,7 +18,7 @@ function NotFound() {
         </p>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight">页面未找到</h1>
         <Link
-          to="/"
+          to="/risk"
           className="mt-6 inline-flex px-4 py-2 rounded-md bg-brand text-brand-foreground text-sm font-medium hover:opacity-90 transition"
         >
           返回首页

@@ -1,13 +1,14 @@
 package httpserver
 
 import (
-	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 
+	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/service/marketsvc"
 	"github.com/easyspace-ai/polybet/internal/service/polysession"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
@@ -86,9 +87,10 @@ func NewPublicRouter(d Deps) *gin.Engine {
 			res := routersvc.BuildAllocationPlan(c, d.Store, d.Cache, oid, side, size)
 			if !res.OK {
 				st := mapRouterErr(res.Error)
-				slog.Warn("trade_preview_failed_public",
+				logrus.WithFields(logx.Pairs(
 					"request_id", rid, "outcome_id", oid, "side", side, "size", size,
-					"router_code", res.Error.Code, "router_message", res.Error.Message, "detail", res.Error.Detail, "http_status", st)
+					"router_code", res.Error.Code, "router_message", res.Error.Message, "detail", res.Error.Detail, "http_status", st,
+				)).Warn("公开端口：交易预览失败")
 				c.JSON(st, gin.H{"error": res.Error.Code, "message": res.Error.Message, "detail": res.Error.Detail})
 				return
 			}
@@ -113,12 +115,12 @@ func NewPublicRouter(d Deps) *gin.Engine {
 			if acct != nil {
 				accountID = acct.ID
 			}
-			rows, meta2, err := d.Risk.ListRiskPositionsEnriched(c, meta, accountID)
+			res, err := riskPositionsFetchResult(c.Request.Context(), c.GetString("request_id"), d.Risk, accountID, meta)
 			if err != nil {
 				c.JSON(500, gin.H{"error": "risk"})
 				return
 			}
-			c.JSON(200, gin.H{"positions": rows, "meta": meta2})
+			c.JSON(200, gin.H{"positions": res.Positions, "meta": res.Meta})
 		})
 		api.GET("/risk/tasks", func(c *gin.Context) {
 			limit := 40

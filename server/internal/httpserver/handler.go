@@ -3,10 +3,10 @@ package httpserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,12 +16,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
 
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/debounce"
+	"github.com/easyspace-ai/polybet/internal/logx"
+	"github.com/easyspace-ai/polybet/internal/memcache"
 	"github.com/easyspace-ai/polybet/internal/polyprov"
-	"github.com/easyspace-ai/polybet/internal/rediska"
+	"github.com/easyspace-ai/polybet/internal/riskruntime"
 	"github.com/easyspace-ai/polybet/internal/service/initsvc"
 	"github.com/easyspace-ai/polybet/internal/service/logsvc"
 	"github.com/easyspace-ai/polybet/internal/service/marketsvc"
@@ -41,18 +44,50 @@ type Handler struct {
 	st           *store.Store
 	cache        *bookcache.Cache
 	hub          *wsrelay.Hub
+	riskHub      *wsrelay.Hub
 	risk         *risksvc.Service
 	debounce     *debounce.Debouncer
-	balanceCache *rediska.BalanceCache
-	riskCache    *rediska.RiskCache
+	balanceCache *memcache.BalanceCache
+	riskCache    *memcache.RiskCache
 	initService  *initsvc.Service
 	logService   *logsvc.Service
 	sportsCache  *mktSync.SportsCache
+	riskRuntime  *riskruntime.Bus
 	app          interface {
 		InvalidateAndRebuildCache()
-		SyncAndBroadcastMarkets(ctx context.Context) error
+		SyncAndBroadcastMarkets(ctx context.Context, force bool) error
 		RequestRestart()
 	}
+}
+
+func riskMetaForAPI(m risksvc.Meta) memcache.RiskMeta {
+	return memcache.RiskMeta{
+		UserWsConnected:         m.UserWsConnected,
+		UserWsConnecting:        m.UserWsConnecting,
+		OutboundProxyConfigured: m.OutboundProxyConfigured,
+		MinOpenRiskShares:       m.MinOpenRiskShares,
+	}
+}
+
+// riskPositionsFetchResult loads enriched positions. DB/list failures degrade to an
+// empty list with live meta so GET /api/risk/positions stays 200 for non-auth cases.
+func riskPositionsFetchResult(ctx context.Context, requestID string, risk *risksvc.Service, accountID string, meta risksvc.Meta) (memcache.RiskFetchResult, error) {
+	if risk == nil {
+		return memcache.RiskFetchResult{
+			Positions: []map[string]any{},
+			Meta: memcache.RiskMeta{
+				OutboundProxyConfigured: meta.OutboundProxyConfigured,
+			},
+		}, nil
+	}
+	ctxBase := context.WithoutCancel(ctx)
+	rows, m, err := risk.ListRiskPositionsEnriched(ctxBase, meta, accountID)
+	if err != nil {
+		logrus.WithFields(logx.Pairs("request_id", requestID, "err", err.Error())).Warn("风控持仓：列举失败，返回空列表")
+		snap := risk.DashboardListingMeta(ctxBase, meta)
+		return memcache.RiskFetchResult{Positions: []map[string]any{}, Meta: riskMetaForAPI(snap)}, nil
+	}
+	return memcache.RiskFetchResult{Positions: rows, Meta: riskMetaForAPI(m)}, nil
 }
 
 func NewHandler(d Deps) *Handler {
@@ -62,6 +97,7 @@ func NewHandler(d Deps) *Handler {
 		st:           d.Store,
 		cache:        d.Cache,
 		hub:          d.Hub,
+		riskHub:      d.RiskHub,
 		risk:         d.Risk,
 		debounce:     d.Debounce,
 		balanceCache: d.BalanceCache,
@@ -69,6 +105,7 @@ func NewHandler(d Deps) *Handler {
 		initService:  d.InitService,
 		logService:   d.LogService,
 		sportsCache:  d.SportsCache,
+		riskRuntime:  d.RiskRuntime,
 		app:          d.App,
 	}
 }
@@ -157,7 +194,7 @@ func (h *Handler) handleHealth(c *gin.Context) {
 }
 
 func (h *Handler) handleRestart(c *gin.Context) {
-	slog.Info("restart_request_via_api", "request_id", c.GetString("request_id"))
+	logrus.WithFields(logx.Pairs("request_id", c.GetString("request_id"))).Info("收到 API 重启请求")
 	if h.app != nil {
 		h.app.RequestRestart()
 	}
@@ -212,7 +249,7 @@ func (h *Handler) handleUpdateConfig(c *gin.Context) {
 func (h *Handler) handleTelegramTest(c *gin.Context) {
 	token, chat := tg.ResolveTelegramCreds(c, h.cfg, h.st)
 	rid := c.GetString("request_id")
-	slog.Info("telegram_test_request", "request_id", rid, "token_set", token != "", "chat_set", chat != "", "proxy", h.cfg.HTTPPlatformProxy)
+	logrus.WithFields(logx.Pairs("request_id", rid, "token_set", token != "", "chat_set", chat != "", "proxy", h.cfg.HTTPPlatformProxy)).Info("Telegram 连通性测试请求")
 	if token == "" || chat == "" {
 		c.JSON(400, gin.H{"error": "telegram_not_configured", "message": "请先配置 Bot Token 和 Chat ID"})
 		return
@@ -225,7 +262,7 @@ func (h *Handler) handleTelegramTest(c *gin.Context) {
 	u := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", url.PathEscape(token))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(form.Encode()))
 	if err != nil {
-		slog.Warn("telegram_test_request_create_failed", "request_id", rid, "err", err.Error())
+		logrus.WithFields(logx.Pairs("request_id", rid, "err", err.Error())).Warn("Telegram 测试：构造请求失败")
 		c.JSON(500, gin.H{"error": "request_failed", "message": err.Error()})
 		return
 	}
@@ -233,26 +270,26 @@ func (h *Handler) handleTelegramTest(c *gin.Context) {
 	var hc *http.Client
 	if h.cfg.HTTPPlatformProxy != "" {
 		if proxyURL, err := url.Parse(h.cfg.HTTPPlatformProxy); err == nil {
-			slog.Info("telegram_test_using_proxy", "request_id", rid, "proxy", h.cfg.HTTPPlatformProxy)
+			logrus.WithFields(logx.Pairs("request_id", rid, "proxy", h.cfg.HTTPPlatformProxy)).Info("Telegram 测试：使用 HTTP 代理")
 			hc = &http.Client{
-				Timeout: 14 * time.Second,
+				Timeout:   14 * time.Second,
 				Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
 			}
 		}
 	}
 	if hc == nil {
-		slog.Info("telegram_test_no_proxy", "request_id", rid)
+		logrus.WithFields(logx.Pairs("request_id", rid)).Info("Telegram 测试：直连（无代理）")
 		hc = &http.Client{Timeout: 14 * time.Second}
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		slog.Warn("telegram_test_send_failed", "request_id", rid, "err", err.Error())
+		logrus.WithFields(logx.Pairs("request_id", rid, "err", err.Error())).Warn("Telegram 测试：发送失败")
 		c.JSON(502, gin.H{"error": "send_failed", "message": err.Error()})
 		return
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	slog.Info("telegram_test_response", "request_id", rid, "status", resp.StatusCode, "body", string(body))
+	logrus.WithFields(logx.Pairs("request_id", rid, "status", resp.StatusCode, "body", string(body))).Info("Telegram 测试：HTTP 响应")
 	if resp.StatusCode != 200 {
 		c.JSON(502, gin.H{"error": "telegram_api_error", "message": fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body))})
 		return
@@ -272,7 +309,7 @@ func (h *Handler) handleStatus(c *gin.Context) {
 	}
 	c.JSON(200, gin.H{
 		"initStatus": initStatus,
-		"wsClients": hubSize,
+		"wsClients":  hubSize,
 		"serverTime": time.Now().Format("2006-01-02 15:04:05"),
 	})
 }
@@ -283,8 +320,8 @@ func (h *Handler) handleWSStatus(c *gin.Context) {
 		hubSize = h.hub.ClientCount()
 	}
 	c.JSON(200, gin.H{
-		"dashConnected":         hubSize > 0,
-		"dashClients":           hubSize,
+		"dashConnected":           hubSize > 0,
+		"dashClients":             hubSize,
 		"polyOrderbookConnected":  h.risk.OrderbookWSConnected(),
 		"polyOrderbookConnecting": h.risk.OrderbookWSConnecting(),
 		"polyUserConnected":       h.risk.UserWSConnected(),
@@ -382,15 +419,21 @@ func (h *Handler) handleSports(c *gin.Context) {
 func (h *Handler) handleMarketsRefresh(c *gin.Context) {
 	rid := c.GetString("request_id")
 	if h.cfg.ReadOnlyMode {
-		slog.Warn("markets_refresh_blocked_read_only", "request_id", rid)
+		logrus.WithFields(logx.Pairs("request_id", rid)).Warn("市场刷新：只读模式已阻止")
 		c.JSON(403, gin.H{"error": "read_only"})
 		return
 	}
-	slog.Info("markets_refresh_request", "request_id", rid)
+	logrus.WithFields(logx.Pairs("request_id", rid)).Info("市场刷新：收到请求")
 	if h.logService != nil {
 		h.logService.Info("市场同步", "用户触发强制刷新")
 	}
-	if err := h.app.SyncAndBroadcastMarkets(c); err != nil {
+	// Default: bypass throttle (empty ?force=). Opt out with ?force=0|false|no.
+	fq := strings.TrimSpace(strings.ToLower(c.Query("force")))
+	force := fq == "" || fq == "1" || fq == "true" || fq == "yes"
+	if fq == "0" || fq == "false" || fq == "no" {
+		force = false
+	}
+	if err := h.app.SyncAndBroadcastMarkets(c, force); err != nil {
 		c.JSON(500, gin.H{"error": "sync_failed", "message": err.Error()})
 		return
 	}
@@ -408,26 +451,74 @@ func (h *Handler) handleOrderbook(c *gin.Context) {
 		c.JSON(200, gin.H{"levels": []any{}, "polyTokenId": nil})
 		return
 	}
+
+	var polyTok string
+	for _, o := range rows {
+		if o.ExternalID.Valid {
+			polyTok = o.ExternalID.String
+			break
+		}
+	}
+	if polyTok == "" {
+		c.JSON(200, gin.H{"levels": []any{}, "polyTokenId": nil})
+		return
+	}
+
+	// Try cache first
+	levels := h.cache.GetLevels(polyTok)
+	if len(levels) == 0 {
+		// Cache miss -> fetch from Polymarket REST once
+		h.fetchAndCachePolyBook(c.Request.Context(), polyTok)
+		levels = h.cache.GetLevels(polyTok)
+	}
+
 	type lvl struct {
 		Odds     float64 `json:"odds"`
 		Size     float64 `json:"size"`
 		Platform string  `json:"platform"`
 	}
-	levels := make([]lvl, 0)
-	var polyTok string
-	for _, o := range rows {
-		if o.ExternalID.Valid && polyTok == "" {
-			polyTok = o.ExternalID.String
-		}
-		tok := ""
-		if o.ExternalID.Valid {
-			tok = o.ExternalID.String
-		}
-		for _, L := range h.cache.GetLevels(tok) {
-			levels = append(levels, lvl{Odds: L.Odds, Size: L.Size, Platform: "polymarket"})
+	out := make([]lvl, 0, len(levels))
+	for _, L := range levels {
+		out = append(out, lvl{
+			Odds:     L.Odds,
+			Size:     L.Size,
+			Platform: "polymarket",
+		})
+	}
+	c.JSON(200, gin.H{"levels": out, "polyTokenId": polyTok})
+}
+
+func (h *Handler) fetchAndCachePolyBook(ctx context.Context, tokenID string) {
+	clobAPI := "https://clob.polymarket.com/book?token_id=" + tokenID
+	client := &http.Client{Timeout: 5 * time.Second}
+	if strings.TrimSpace(h.cfg.HTTPPlatformProxy) != "" {
+		pu, err := url.Parse(h.cfg.HTTPPlatformProxy)
+		if err == nil {
+			client.Transport = &http.Transport{Proxy: http.ProxyURL(pu)}
 		}
 	}
-	c.JSON(200, gin.H{"levels": levels, "polyTokenId": polyTok})
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, clobAPI, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		logrus.WithFields(logx.Pairs("token_id", tokenID, "err", err)).Warn("订单簿：从 Polymarket 拉取失败")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	var data struct {
+		Bids []struct{ Price, Size string } `json:"bids"`
+		Asks []struct{ Price, Size string } `json:"asks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return
+	}
+
+	h.cache.ReplaceBook(tokenID, data.Bids, data.Asks, time.Now().UnixMilli())
 }
 
 func (h *Handler) handleTradePreview(c *gin.Context) {
@@ -445,20 +536,21 @@ func (h *Handler) handleTradePreview(c *gin.Context) {
 	res := routersvc.BuildAllocationPlan(c, h.st, h.cache, oid, side, size)
 	if !res.OK {
 		st := mapRouterErr(res.Error)
-		slog.Warn("trade_preview_failed",
+		logrus.WithFields(logx.Pairs(
 			"request_id", rid, "outcome_id", oid, "side", side, "size", size,
-			"router_code", res.Error.Code, "router_message", res.Error.Message, "detail", res.Error.Detail, "http_status", st)
+			"router_code", res.Error.Code, "router_message", res.Error.Message, "detail", res.Error.Detail, "http_status", st,
+		)).Warn("交易预览失败")
 		c.JSON(st, gin.H{"error": res.Error.Code, "message": res.Error.Message, "detail": res.Error.Detail})
 		return
 	}
-	slog.Info("trade_preview_ok", "request_id", rid, "outcome_id", oid, "side", side, "size", size, "allocations", len(res.Plan.Allocations))
+	logrus.WithFields(logx.Pairs("request_id", rid, "outcome_id", oid, "side", side, "size", size, "allocations", len(res.Plan.Allocations))).Info("交易预览成功")
 	c.JSON(200, res.Plan)
 }
 
 func (h *Handler) handleTradeExecute(c *gin.Context) {
 	rid := c.GetString("request_id")
 	if h.cfg.ReadOnlyMode {
-		slog.Warn("trade_blocked_read_only", "request_id", rid)
+		logrus.WithFields(logx.Pairs("request_id", rid)).Warn("交易执行：只读模式已阻止")
 		c.JSON(403, gin.H{"error": "read_only"})
 		return
 	}
@@ -470,39 +562,40 @@ func (h *Handler) handleTradeExecute(c *gin.Context) {
 	bindErr := c.BindJSON(&body)
 	if bindErr != nil || body.OutcomeID == "" || body.Side == "" || body.Size <= 0 {
 		if bindErr != nil {
-			slog.Warn("trade_bad_request", "request_id", rid, "bind_err", bindErr.Error())
+			logrus.WithFields(logx.Pairs("request_id", rid, "bind_err", bindErr.Error())).Warn("交易执行：请求体无效")
 		} else {
-			slog.Warn("trade_bad_request", "request_id", rid, "reason", "missing_fields")
+			logrus.WithFields(logx.Pairs("request_id", rid, "reason", "missing_fields")).Warn("交易执行：缺少必填字段")
 		}
 		c.JSON(400, gin.H{"error": "outcomeId, side, and size are required"})
 		return
 	}
 	if strings.ToLower(body.Side) != "buy" {
-		slog.Warn("trade_side_not_supported", "request_id", rid, "side", body.Side)
+		logrus.WithFields(logx.Pairs("request_id", rid, "side", body.Side)).Warn("交易执行：暂不支持该方向")
 		c.JSON(400, gin.H{"error": "only_buy_supported"})
 		return
 	}
-	slog.Info("trade_request", "request_id", rid, "outcome_id", body.OutcomeID, "side", body.Side, "size", body.Size)
+	logrus.WithFields(logx.Pairs("request_id", rid, "outcome_id", body.OutcomeID, "side", body.Side, "size", body.Size)).Info("交易执行：收到下单请求")
 	if h.logService != nil {
 		h.logService.Info("交易", fmt.Sprintf("用户下单: %s $%.2f", body.OutcomeID, body.Size))
 	}
 	res := routersvc.BuildAllocationPlan(c, h.st, h.cache, body.OutcomeID, body.Side, body.Size)
 	if !res.OK {
 		st := mapRouterErr(res.Error)
-		slog.Warn("trade_plan_failed",
+		logrus.WithFields(logx.Pairs(
 			"request_id", rid, "outcome_id", body.OutcomeID, "size", body.Size,
-			"router_code", res.Error.Code, "router_message", res.Error.Message, "detail", res.Error.Detail, "http_status", st)
+			"router_code", res.Error.Code, "router_message", res.Error.Message, "detail", res.Error.Detail, "http_status", st,
+		)).Warn("交易执行：路由计划失败")
 		c.JSON(st, gin.H{"error": res.Error.Code, "message": res.Error.Message, "detail": res.Error.Detail})
 		return
 	}
 	if _, err := polysession.ResolveAuthedCLOB(c, h.cfg, h.st); err != nil {
-		slog.Warn("trade_polymarket_session_missing", "request_id", rid, "err", err.Error())
+		logrus.WithFields(logx.Pairs("request_id", rid, "err", err.Error())).Warn("交易执行：Polymarket 会话未就绪")
 		c.JSON(503, gin.H{"error": "polymarket_not_configured", "message": err.Error()})
 		return
 	}
 	resp, code, err := tradesvc.ExecutePlan(c, h.cfg, h.st, h.cache, h.risk, res.Plan, body.Side)
 	if err != nil {
-		slog.Error("trade_execute_error", "request_id", rid, "outcome_id", body.OutcomeID, "err", err.Error())
+		logrus.WithFields(logx.Pairs("request_id", rid, "outcome_id", body.OutcomeID, "err", err.Error())).Error("交易执行：内部错误")
 		if h.logService != nil {
 			h.logService.Error("交易", fmt.Sprintf("执行失败: %s", err.Error()))
 		}
@@ -510,11 +603,11 @@ func (h *Handler) handleTradeExecute(c *gin.Context) {
 		return
 	}
 	if code == 422 {
-		slog.Warn("trade_execute_no_fill", "request_id", rid, "outcome_id", body.OutcomeID, "response_status", resp.Status,
-			"allocations", len(resp.Trades), "trades", tradeResultsLog(resp.Trades))
+		logrus.WithFields(logx.Pairs("request_id", rid, "outcome_id", body.OutcomeID, "response_status", resp.Status,
+			"allocations", len(resp.Trades), "trades", tradeResultsLog(resp.Trades))).Warn("交易执行：未完全成交")
 	} else {
-		slog.Info("trade_execute_done", "request_id", rid, "outcome_id", body.OutcomeID, "http_status", code,
-			"response_status", resp.Status, "trades", tradeResultsLog(resp.Trades))
+		logrus.WithFields(logx.Pairs("request_id", rid, "outcome_id", body.OutcomeID, "http_status", code,
+			"response_status", resp.Status, "trades", tradeResultsLog(resp.Trades))).Info("交易执行：已完成")
 	}
 	if h.logService != nil {
 		filled := 0
@@ -566,19 +659,6 @@ func (h *Handler) handleTradesList(c *gin.Context) {
 
 func (h *Handler) handleListAccounts(c *gin.Context) {
 	if cached, ok := accountsCache.Get("list"); ok {
-		go func() {
-			accts, err := h.st.ListPolymarketAccounts(context.Background())
-			if err == nil {
-				out := make([]gin.H, 0, len(accts))
-				for _, x := range accts {
-					out = append(out, gin.H{
-						"id": x.ID, "name": x.Name, "funderAddress": x.FunderAddress,
-						"isActive": x.IsActive, "createdAt": x.CreatedAt.UTC().Format(time.RFC3339Nano),
-					})
-				}
-				accountsCache.Set("list", out)
-			}
-		}()
 		c.JSON(200, cached)
 		return
 	}
@@ -661,8 +741,29 @@ func (h *Handler) handleDeleteAccount(c *gin.Context) {
 		c.JSON(403, gin.H{"error": "read_only"})
 		return
 	}
-	_ = h.st.DeletePolymarketAccount(c, c.Param("id"))
+	id := c.Param("id")
+	n, err := h.st.DeletePolymarketAccount(c, id)
+	if err != nil {
+		logrus.WithError(err).WithField("account_id", id).Error("delete polymarket account failed")
+		if isSQLiteForeignKeyViolation(err) {
+			c.JSON(500, gin.H{
+				"error":   "foreign_key_blocked",
+				"message": "该账号仍存在关联数据（交易记录、风控持仓等），无法删除。请先清理关联数据后再试。",
+				"detail":  "仍有关联表（如 trades、risk_positions、risk_applied_clob_trades）引用此账号，需先清理或迁移后再删除。",
+			})
+			return
+		}
+		c.JSON(500, gin.H{
+			"error":   "delete_failed",
+			"message": "删除账号失败，请稍后重试。",
+		})
+		return
+	}
 	accountsCache.Delete("list")
+	if n == 0 {
+		c.JSON(404, gin.H{"error": "not_found"})
+		return
+	}
 	polysession.InvalidateEnvCache()
 	h.app.InvalidateAndRebuildCache()
 	c.Status(204)
@@ -675,20 +776,8 @@ func (h *Handler) handleRiskPositions(c *gin.Context) {
 	if acct != nil {
 		accountID = acct.ID
 	}
-	fetch := func() (rediska.RiskFetchResult, error) {
-		rows, m, err := h.risk.ListRiskPositionsEnriched(c, meta, accountID)
-		if err != nil {
-			return rediska.RiskFetchResult{}, err
-		}
-		return rediska.RiskFetchResult{
-			Positions: rows,
-			Meta: rediska.RiskMeta{
-				UserWsConnected:         m.UserWsConnected,
-				UserWsConnecting:        m.UserWsConnecting,
-				OutboundProxyConfigured: m.OutboundProxyConfigured,
-				MinOpenRiskShares:       m.MinOpenRiskShares,
-			},
-		}, nil
+	fetch := func() (memcache.RiskFetchResult, error) {
+		return riskPositionsFetchResult(c.Request.Context(), c.GetString("request_id"), h.risk, accountID, meta)
 	}
 	rows, meta2, fromCache, err := h.riskCache.GetWithRefresh(c, fetch)
 	if err != nil {
@@ -701,7 +790,7 @@ func (h *Handler) handleRiskPositions(c *gin.Context) {
 func (h *Handler) handleRiskRefresh(c *gin.Context) {
 	rid := c.GetString("request_id")
 	if h.cfg.ReadOnlyMode {
-		slog.Warn("risk_refresh_blocked_read_only", "request_id", rid)
+		logrus.WithFields(logx.Pairs("request_id", rid)).Warn("风控刷新：只读模式已阻止")
 		c.JSON(403, gin.H{"error": "read_only"})
 		return
 	}
@@ -710,9 +799,9 @@ func (h *Handler) handleRiskRefresh(c *gin.Context) {
 		if err := h.risk.SyncRiskFromRESTTrades(c); err != nil {
 			es := err.Error()
 			syncErr = &es
-			slog.Warn("risk_refresh_clob_sync", "request_id", rid, "err", es)
+			logrus.WithFields(logx.Pairs("request_id", rid, "err", es)).Warn("风控刷新：CLOB 成交同步失败")
 		} else {
-			slog.Info("risk_refresh_clob_sync_ok", "request_id", rid)
+			logrus.WithFields(logx.Pairs("request_id", rid)).Info("风控刷新：CLOB 成交同步成功")
 		}
 	}
 	if h.app != nil {
@@ -723,6 +812,23 @@ func (h *Handler) handleRiskRefresh(c *gin.Context) {
 		body["syncError"] = *syncErr
 	}
 	c.JSON(200, body)
+}
+
+// handleRiskTasksClear deletes terminal risk_tasks rows only (succeeded, failed,
+// cancelled) so the dashboard log matches “clear completed / history”. Pending
+// and running tasks are preserved so in-flight closes are not dropped.
+func (h *Handler) handleRiskTasksClear(c *gin.Context) {
+	if h.cfg.ReadOnlyMode {
+		c.JSON(403, gin.H{"error": "read_only"})
+		return
+	}
+	n, err := h.st.DeleteRiskTasksTerminal(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": "clear_failed"})
+		return
+	}
+	tasksCache.Delete("list")
+	c.JSON(200, gin.H{"ok": true, "deleted": n})
 }
 
 func (h *Handler) handleRiskTasks(c *gin.Context) {
@@ -750,6 +856,22 @@ func (h *Handler) handleRiskTasks(c *gin.Context) {
 	out := buildTaskRows(tasks)
 	tasksCache.Set(cacheKey, gin.H{"tasks": out})
 	c.JSON(200, gin.H{"tasks": out})
+}
+
+func (h *Handler) handleRiskRuntimeLogs(c *gin.Context) {
+	if h.riskRuntime == nil {
+		c.JSON(200, gin.H{"logs": []any{}})
+		return
+	}
+	limit := 100
+	if l, err := strconv.Atoi(c.DefaultQuery("limit", "100")); err == nil && l > 0 {
+		if l > 500 {
+			l = 500
+		}
+		limit = l
+	}
+	logs := h.riskRuntime.ListChronological(limit)
+	c.JSON(200, gin.H{"logs": logs})
 }
 
 func (h *Handler) handleStopLossHistory(c *gin.Context) {
@@ -833,20 +955,48 @@ func (h *Handler) handlePatchRiskPosition(c *gin.Context) {
 		c.JSON(404, gin.H{"error": "not_found"})
 		return
 	}
-	c.JSON(200, gin.H{"ok": true, "position": riskRowFromPosition(p)})
+	c.JSON(200, gin.H{"ok": true, "position": h.riskRowFromPosition(c, p)})
+}
+
+func (h *Handler) riskRowFromPosition(ctx context.Context, p *store.RiskPosition) gin.H {
+	row := riskRowFromPosition(p)
+
+	if bid, ok := h.risk.BestBidCents(ctx, p.TokenID); ok {
+		row["currentCents"] = bid
+		v := bid / 100 * p.SizeShares
+		row["valueUsd"] = v
+		pnl := v - p.CostUSD
+		row["pnlUsd"] = pnl
+	}
+
+	return row
+}
+
+func riskRowFromPosition(p *store.RiskPosition) gin.H {
+	hw := p.HighWaterCents
+	trail := hw * (1 - p.StopLossPct/100)
+	tid := strings.ToLower(strings.TrimSpace(p.TokenID))
+	return gin.H{
+		"id": p.ID, "title": p.Title, "sideLabel": p.SideLabel, "tokenId": tid,
+		"avgEntryCents": p.AvgEntryCents, "currentCents": nil,
+		"sizeShares": p.SizeShares, "costUsd": p.CostUSD,
+		"highWaterCents": hw, "stopLossPct": p.StopLossPct, "trailingStopCents": trail,
+		"valueUsd": nil, "pnlUsd": nil, "maxPayoffUsd": p.SizeShares, "potentialProfitUsd": p.SizeShares - p.CostUSD,
+		"status": p.Status, "source": p.Source,
+	}
 }
 
 func (h *Handler) handleClosePosition(c *gin.Context) {
 	rid := c.GetString("request_id")
 	pid := c.Param("id")
 	if h.cfg.ReadOnlyMode {
-		slog.Warn("risk_close_blocked_read_only", "request_id", rid, "position_id", pid)
+		logrus.WithFields(logx.Pairs("request_id", rid, "position_id", pid)).Warn("风控平仓：只读模式已阻止")
 		c.JSON(403, gin.H{"error": "read_only"})
 		return
 	}
-	slog.Info("risk_close_api", "request_id", rid, "position_id", pid)
+	logrus.WithFields(logx.Pairs("request_id", rid, "position_id", pid)).Info("风控平仓：API 入队请求")
 	if err := h.risk.EnqueueClosePosition(c, pid); err != nil {
-		slog.Error("risk_close_enqueue_failed", "request_id", rid, "position_id", pid, "err", err.Error())
+		logrus.WithFields(logx.Pairs("request_id", rid, "position_id", pid, "err", err.Error())).Error("风控平仓：入队失败")
 		c.JSON(500, gin.H{"error": "enqueue_failed"})
 		return
 	}
@@ -856,17 +1006,101 @@ func (h *Handler) handleClosePosition(c *gin.Context) {
 func (h *Handler) handleCloseAll(c *gin.Context) {
 	rid := c.GetString("request_id")
 	if h.cfg.ReadOnlyMode {
-		slog.Warn("risk_close_all_blocked_read_only", "request_id", rid)
+		logrus.WithFields(logx.Pairs("request_id", rid)).Warn("风控一键平仓：只读模式已阻止")
 		c.JSON(403, gin.H{"error": "read_only"})
 		return
 	}
 	t := &store.RiskTask{ID: uuid.NewString(), Type: "close_all", Status: "pending", NextRunAt: time.Now().UTC()}
 	if err := h.st.InsertRiskTask(c, t); err != nil {
-		slog.Error("risk_close_all_enqueue_failed", "request_id", rid, "err", err.Error())
+		logrus.WithFields(logx.Pairs("request_id", rid, "err", err.Error())).Error("风控一键平仓：入队失败")
 		c.JSON(500, gin.H{"error": "enqueue_failed"})
 		return
 	}
-	slog.Info("risk_close_all_enqueued", "request_id", rid, "task_id", t.ID)
+	logrus.WithFields(logx.Pairs("request_id", rid, "task_id", t.ID)).Info("风控一键平仓：任务已入队")
+	c.JSON(200, gin.H{"ok": true})
+}
+
+func (h *Handler) handleRiskHiddenList(c *gin.Context) {
+	acct, err := h.st.GetActivePolymarketAccount(c)
+	if err != nil || acct == nil {
+		c.JSON(400, gin.H{"error": "no_active_account"})
+		return
+	}
+	rows, err := h.st.ListRiskHiddenPositions(c.Request.Context(), acct.ID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "db"})
+		return
+	}
+	out := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, gin.H{"tokenId": r.TokenID, "sideLabel": r.SideLabel, "createdAt": r.CreatedAt})
+	}
+	c.JSON(200, gin.H{"hidden": out})
+}
+
+func (h *Handler) handleRiskHiddenPost(c *gin.Context) {
+	if h.cfg.ReadOnlyMode {
+		c.JSON(403, gin.H{"error": "read_only"})
+		return
+	}
+	acct, err := h.st.GetActivePolymarketAccount(c)
+	if err != nil || acct == nil {
+		c.JSON(400, gin.H{"error": "no_active_account"})
+		return
+	}
+	var body struct {
+		TokenID   string `json:"tokenId"`
+		SideLabel string `json:"sideLabel"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": "bad_body"})
+		return
+	}
+	if strings.TrimSpace(body.TokenID) == "" {
+		c.JSON(400, gin.H{"error": "tokenId_required"})
+		return
+	}
+	if err := h.st.UpsertRiskHiddenPosition(c.Request.Context(), acct.ID, body.TokenID, body.SideLabel); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if h.riskCache != nil {
+		h.riskCache.Invalidate(c.Request.Context())
+	}
+	if h.app != nil {
+		h.app.InvalidateAndRebuildCache()
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+func (h *Handler) handleRiskHiddenDelete(c *gin.Context) {
+	if h.cfg.ReadOnlyMode {
+		c.JSON(403, gin.H{"error": "read_only"})
+		return
+	}
+	acct, err := h.st.GetActivePolymarketAccount(c)
+	if err != nil || acct == nil {
+		c.JSON(400, gin.H{"error": "no_active_account"})
+		return
+	}
+	var body struct {
+		TokenID   string `json:"tokenId"`
+		SideLabel string `json:"sideLabel"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": "bad_body"})
+		return
+	}
+	if err := h.st.DeleteRiskHiddenPosition(c.Request.Context(), acct.ID, body.TokenID, body.SideLabel); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if h.riskCache != nil {
+		h.riskCache.Invalidate(c.Request.Context())
+	}
+	if h.app != nil {
+		h.app.InvalidateAndRebuildCache()
+	}
 	c.JSON(200, gin.H{"ok": true})
 }
 
@@ -892,18 +1126,5 @@ func mapRouterErr(e *routersvc.RouterError) int {
 		return 422
 	default:
 		return 400
-	}
-}
-
-func riskRowFromPosition(p *store.RiskPosition) gin.H {
-	hw := p.HighWaterCents
-	trail := hw * (1 - p.StopLossPct/100)
-	return gin.H{
-		"id": p.ID, "title": p.Title, "sideLabel": p.SideLabel, "tokenId": p.TokenID,
-		"avgEntryCents": p.AvgEntryCents, "currentCents": nil,
-		"sizeShares": p.SizeShares, "costUsd": p.CostUSD,
-		"highWaterCents": hw, "stopLossPct": p.StopLossPct, "trailingStopCents": trail,
-		"valueUsd": nil, "pnlUsd": nil, "maxPayoffUsd": p.SizeShares, "potentialProfitUsd": p.SizeShares - p.CostUSD,
-		"status": p.Status, "source": p.Source,
 	}
 }

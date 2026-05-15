@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/easyspace-ai/polybet/internal/gammaclient"
+	"github.com/easyspace-ai/polybet/internal/logx"
 )
 
 const gammaMetaTTL = 8 * time.Minute
@@ -59,7 +60,7 @@ func (s *Service) gammaMetaBatch(ctx context.Context, tokenIDs []string) map[str
 
 	fetched, err := gammaclient.FetchMarketsByCLOBTokenIDs(ctx, s.cfg.HTTPPlatformProxy, need)
 	if err != nil && s.log != nil {
-		s.log.Debug("gamma_markets_by_token", "err", err.Error())
+		s.log.WithFields(logx.Pairs("err", err.Error())).Debug("风控：Gamma 按 token 拉取市场元数据失败")
 	}
 	if fetched == nil {
 		fetched = make(map[string]gammaclient.TokenMarketDisplay)

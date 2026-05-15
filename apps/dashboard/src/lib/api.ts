@@ -127,14 +127,37 @@ export interface PolymarketAccountCreateBody {
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? '';
 
+/** Short API error tokens that should not be shown alone as user-facing text. */
+const OPAQUE_API_ERROR_TOKENS = new Set(['db', 'ok', 'risk']);
+
+function formatApiErrorBody(body: unknown, status: number): string {
+  if (!body || typeof body !== 'object') {
+    return `HTTP ${status}`;
+  }
+  const o = body as { detail?: unknown; message?: unknown; error?: unknown };
+  const detail = typeof o.detail === 'string' ? o.detail.trim() : '';
+  const message = typeof o.message === 'string' ? o.message.trim() : '';
+  const errTok = typeof o.error === 'string' ? o.error.trim() : '';
+  if (message) {
+    return message;
+  }
+  if (detail) {
+    return detail;
+  }
+  if (errTok) {
+    const low = errTok.toLowerCase();
+    if (!OPAQUE_API_ERROR_TOKENS.has(low) && errTok.length > 3) {
+      return errTok;
+    }
+  }
+  return `HTTP ${status}`;
+}
+
 async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${url}`, options);
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    const msg = (body as { message?: string; error?: string }).message
-      || (body as { error?: string }).error
-      || `HTTP ${res.status}`;
-    throw new Error(msg);
+    throw new Error(formatApiErrorBody(body, res.status));
   }
   return res.json() as Promise<T>;
 }
@@ -177,12 +200,9 @@ export const activatePolymarketAccount = (id: string) =>
 
 export const deletePolymarketAccount = async (id: string): Promise<void> => {
   const res = await fetch(`${BASE}/api/polymarket/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  if (!res.ok && res.status !== 204) {
+  if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    const msg = (body as { message?: string; error?: string }).message
-      || (body as { error?: string }).error
-      || `HTTP ${res.status}`;
-    throw new Error(msg);
+    throw new Error(formatApiErrorBody(body, res.status));
   }
 };
 
@@ -213,6 +233,7 @@ export interface RiskPositionRow {
   sport?: string;
   officialUrl?: string;
   officialSearchUrl?: string;
+  polySlug?: string;
   imageUrl?: string;
   iconUrl?: string;
   sideLabel: string;
@@ -260,6 +281,10 @@ export const getRiskPositions = () =>
 
 export const getRiskTasks = (limit = 40) =>
   apiFetch<{ tasks: RiskTaskRow[] }>(`/api/risk/tasks?limit=${limit}`);
+
+/** Removes terminal task rows (succeeded / failed / cancelled); pending & running are kept. */
+export const postRiskTasksClear = () =>
+  apiFetch<{ ok: boolean; deleted: number }>('/api/risk/tasks/clear', { method: 'POST' });
 
 export const postRiskOfficialRefresh = () =>
   apiFetch<{ ok: boolean; syncError?: string }>('/api/risk/refresh', { method: 'POST' });
@@ -317,6 +342,29 @@ export const getTradeHistory = (limit = 50) =>
 export const postRiskCloseAll = () =>
   apiFetch<{ ok: boolean }>('/api/risk/close-all', { method: 'POST' });
 
+export interface RiskHiddenRow {
+  tokenId: string;
+  sideLabel: string;
+  createdAt: string;
+}
+
+export const getRiskHiddenPositions = () =>
+  apiFetch<{ hidden: RiskHiddenRow[] }>('/api/risk/hidden-positions');
+
+export const postRiskHidePosition = (body: { tokenId: string; sideLabel: string }) =>
+  apiFetch<{ ok: boolean }>('/api/risk/hidden-positions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+export const deleteRiskUnhidePosition = (body: { tokenId: string; sideLabel: string }) =>
+  apiFetch<{ ok: boolean }>('/api/risk/hidden-positions', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
 export const putConfig = (key: string, value: string) =>
   apiFetch<ConfigRow>(`/api/config/${encodeURIComponent(key)}`, {
     method: 'PUT',
@@ -344,7 +392,7 @@ export const postCacheRefresh = () =>
   apiFetch<{ ok: boolean; message: string }>('/api/cache/refresh', { method: 'POST' });
 
 export const postMarketsRefresh = () =>
-  apiFetch<{ ok: boolean; message: string }>('/api/markets/refresh', { method: 'POST' });
+  apiFetch<{ ok: boolean; message: string }>('/api/markets/refresh?force=1', { method: 'POST' });
 
 export interface GammaSport {
   id: number;
@@ -359,15 +407,18 @@ export interface GammaSport {
 
 export const getSports = () => apiFetch<GammaSport[]>('/api/sports');
 
-export interface LogEntry {
-  time: string;
-  level: string;
+export interface RiskRuntimeLogEnvelope {
+  seq: number;
+  ts: string;
+  type: string;
   category: string;
-  message: string;
+  severity: string;
+  accountId: string | null;
+  marketId: string | null;
+  tokenId: string | null;
+  correlationId: string;
+  detail: Record<string, unknown>;
 }
 
-export const getLogs = () => apiFetch<{ logs: LogEntry[] }>('/api/logs');
-
-export const getLogErrors = () => apiFetch<{ logs: LogEntry[] }>('/api/logs/errors');
-
-export const postLogClear = () => apiFetch<{ ok: boolean }>('/api/logs/clear', { method: 'POST' });
+export const getRiskRuntimeLogs = (limit = 100) =>
+  apiFetch<{ logs: RiskRuntimeLogEnvelope[] }>(`/api/risk/runtime-logs?limit=${limit}`);

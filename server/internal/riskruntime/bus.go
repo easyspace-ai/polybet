@@ -1,0 +1,153 @@
+// Package riskruntime provides an in-process ring buffer of structured risk events
+// and broadcasts them to the risk WebSocket hub.
+package riskruntime
+
+import (
+	"math"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/easyspace-ai/polybet/internal/wsrelay"
+)
+
+// DefaultRingCap is the maximum number of runtime log entries retained in memory.
+const DefaultRingCap = 400
+
+// Envelope matches docs/runtime-observability.md §2 (WebSocket wraps this in { type, data }).
+type Envelope struct {
+	Seq             uint64         `json:"seq"`
+	Ts              string         `json:"ts"`
+	Type            string         `json:"type"`
+	Category        string         `json:"category"`
+	Severity        string         `json:"severity"`
+	AccountID       *string        `json:"accountId"`
+	MarketID        *string        `json:"marketId"`
+	TokenID         *string        `json:"tokenId"`
+	CorrelationID   string         `json:"correlationId"`
+	Detail          map[string]any `json:"detail"`
+}
+
+// Bus is a single-writer-safe ring of recent events plus throttled market_data lines.
+type Bus struct {
+	mu       sync.Mutex
+	hub      *wsrelay.Hub
+	max      int
+	entries  []Envelope
+	nextSeq  uint64
+	bookMu   sync.Mutex
+	bookLast map[string]time.Time
+	bookPrev map[string]struct{ bid, ask float64 }
+}
+
+// NewBus returns a bus that broadcasts JSON { "type": "risk_runtime_log", "data": Envelope } to hub.
+func NewBus(hub *wsrelay.Hub, maxEntries int) *Bus {
+	if maxEntries <= 0 {
+		maxEntries = DefaultRingCap
+	}
+	return &Bus{
+		hub:      hub,
+		max:      maxEntries,
+		bookLast: make(map[string]time.Time),
+		bookPrev: make(map[string]struct{ bid, ask float64 }),
+	}
+}
+
+func strPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// Publish appends an event and broadcasts it. detail may be nil.
+func (b *Bus) Publish(category, severity, eventType string, accountID, marketID, tokenID, correlationID string, detail map[string]any) {
+	if b == nil || b.hub == nil {
+		return
+	}
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	corr := correlationID
+	if corr == "" {
+		corr = uuid.NewString()
+	}
+
+	b.mu.Lock()
+	b.nextSeq++
+	env := Envelope{
+		Seq:           b.nextSeq,
+		Ts:            time.Now().UTC().Format(time.RFC3339Nano),
+		Type:          eventType,
+		Category:      category,
+		Severity:      severity,
+		AccountID:     strPtr(accountID),
+		MarketID:      strPtr(marketID),
+		TokenID:       strPtr(tokenID),
+		CorrelationID: corr,
+		Detail:        detail,
+	}
+	b.entries = append(b.entries, env)
+	if len(b.entries) > b.max {
+		b.entries = b.entries[len(b.entries)-b.max:]
+	}
+	b.mu.Unlock()
+
+	b.hub.BroadcastJSON(map[string]any{
+		"type": "risk_runtime_log",
+		"data": env,
+	})
+}
+
+// MaybePublishMarketBookSummary emits market.book.summary_tick throttled per token (time + epsilon on bid/ask cents).
+func (b *Bus) MaybePublishMarketBookSummary(tokenID string, accountID string, bestBidCents, bestAskCents float64) {
+	if b == nil || b.hub == nil || tokenID == "" {
+		return
+	}
+	const minGap = 600 * time.Millisecond
+	const eps = 0.5 // half cent
+
+	now := time.Now()
+	spread := bestAskCents - bestBidCents
+
+	b.bookMu.Lock()
+	last, okT := b.bookLast[tokenID]
+	prev, okP := b.bookPrev[tokenID]
+	changed := !okP || math.Abs(prev.bid-bestBidCents) >= eps || math.Abs(prev.ask-bestAskCents) >= eps
+	elapsed := !okT || now.Sub(last) >= minGap
+	if !elapsed && !changed {
+		b.bookMu.Unlock()
+		return
+	}
+	b.bookLast[tokenID] = now
+	b.bookPrev[tokenID] = struct{ bid, ask float64 }{bid: bestBidCents, ask: bestAskCents}
+	b.bookMu.Unlock()
+
+	detail := map[string]any{
+		"bestBid":  bestBidCents,
+		"bestAsk":  bestAskCents,
+		"spread":   spread,
+		"schemaVersion": 1,
+	}
+	b.Publish("market_data", "info", "market.book.summary_tick", accountID, "", tokenID, "", detail)
+}
+
+// ListChronological returns up to limit entries from oldest to newest in the buffer.
+func (b *Bus) ListChronological(limit int) []Envelope {
+	if b == nil || limit <= 0 {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.entries) == 0 {
+		return nil
+	}
+	n := len(b.entries)
+	if limit < n {
+		return append([]Envelope(nil), b.entries[n-limit:]...)
+	}
+	out := make([]Envelope, n)
+	copy(out, b.entries)
+	return out
+}

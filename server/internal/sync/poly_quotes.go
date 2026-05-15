@@ -2,12 +2,14 @@ package sync
 
 import (
 	"fmt"
-	"log/slog"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/easyspace-ai/polybet/internal/domain"
+	"github.com/easyspace-ai/polybet/internal/logx"
 )
 
 const sportsFeeRate = 0.03
@@ -61,22 +63,22 @@ func startTimeFromEvent(ev gammaEvent) time.Time {
 			if t, ok := parseGammaTime(*m.GameStartTime); ok {
 				return t
 			}
-			slog.Debug("startTimeFromEvent_GameStartTime_parse_failed", "event_id", ev.ID, "raw", *m.GameStartTime)
+			logrus.WithFields(logx.Pairs("event_id", ev.ID, "raw", *m.GameStartTime)).Debug("市场同步：解析 gameStartTime 失败")
 		}
 	}
 	if ev.EndDate != "" {
 		if t, ok := parseGammaTime(ev.EndDate); ok {
 			return t
 		}
-		slog.Debug("startTimeFromEvent_EndDate_parse_failed", "event_id", ev.ID, "raw", ev.EndDate)
+		logrus.WithFields(logx.Pairs("event_id", ev.ID, "raw", ev.EndDate)).Debug("市场同步：解析 EndDate 失败")
 	}
 	if ev.StartDate != "" {
 		if t, ok := parseGammaTime(ev.StartDate); ok {
 			return t
 		}
-		slog.Debug("startTimeFromEvent_StartDate_parse_failed", "event_id", ev.ID, "raw", ev.StartDate)
+		logrus.WithFields(logx.Pairs("event_id", ev.ID, "raw", ev.StartDate)).Debug("市场同步：解析 StartDate 失败")
 	}
-	slog.Warn("startTimeFromEvent_fallback_now", "event_id", ev.ID)
+	logrus.WithFields(logx.Pairs("event_id", ev.ID)).Warn("市场同步：开赛时间回退为当前时间")
 	return time.Now().UTC()
 }
 

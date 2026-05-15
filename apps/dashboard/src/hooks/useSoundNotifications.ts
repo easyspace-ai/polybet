@@ -175,13 +175,13 @@ export function useSoundNotifications() {
         polyWarnedRef.current.orderbook = true;
         polyWarnedRef.current.hasWarned = true;
         playSound("alert");
-        toast.error("Polymarket 盘口连接断开", { duration: 5000 });
+        toast.error("服务端盘口上游断开", { duration: 5000 });
       }
       if (lostUser) {
         polyWarnedRef.current.user = true;
         polyWarnedRef.current.hasWarned = true;
         playSound("alert");
-        toast.error("Polymarket 用户连接断开", { duration: 5000 });
+        toast.error("服务端用户通道断开", { duration: 5000 });
       }
       const orderbookOk = msg.polyOrderbookConnected !== false;
       const userOk = msg.polyUserConnected !== false;
@@ -189,7 +189,7 @@ export function useSoundNotifications() {
       if (userOk) polyWarnedRef.current.user = false;
       if (polyWarnedRef.current.hasWarned && orderbookOk && userOk) {
         polyWarnedRef.current.hasWarned = false;
-        toast.success("Polymarket 连接已恢复", { duration: 3000 });
+        toast.success("服务端上游已恢复", { duration: 3000 });
       }
     });
 

@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sirupsen/logrus"
 
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/store"
@@ -17,9 +18,9 @@ import (
 
 // Run long-polls Telegram when credentials are set (env or bot_config). If unset,
 // it sleeps and retries so dashboard saves apply without restarting the process.
-func Run(ctx context.Context, cfg *config.Config, st *store.Store, log *slog.Logger) {
+func Run(ctx context.Context, cfg *config.Config, st *store.Store, log *logrus.Logger) {
 	if log == nil {
-		log = slog.Default()
+		log = logrus.StandardLogger()
 	}
 	hc := &http.Client{Timeout: 65 * time.Second}
 	var offset int64
@@ -38,18 +39,26 @@ func Run(ctx context.Context, cfg *config.Config, st *store.Store, log *slog.Log
 			}
 		}
 		if !startedLog {
-			log.Info("telegram_bot_starting")
+			log.Info("Telegram Bot：长轮询已启动")
 			startedLog = true
 		}
 		u := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?timeout=60&offset=%d", url.PathEscape(token), offset)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
-			time.Sleep(3 * time.Second)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(3 * time.Second):
+			}
 			continue
 		}
 		resp, err := hc.Do(req)
 		if err != nil {
-			time.Sleep(3 * time.Second)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(3 * time.Second):
+			}
 			continue
 		}
 		var body struct {

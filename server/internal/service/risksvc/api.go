@@ -11,6 +11,7 @@ import (
 	"github.com/easyspace-ai/polysdk/pkg/data"
 
 	"github.com/easyspace-ai/polybet/internal/gammaclient"
+	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/store"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/google/uuid"
@@ -37,19 +38,69 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// avgPriceUSDFromDataPosition returns average entry in 0–1 "probability price" units
+// (same units as Data API avgPrice). When the API reports avgPrice as 0 for a fresh
+// position (indexing lag), initialValue/size matches Polymarket's documented cost basis.
+func avgPriceUSDFromDataPosition(pos data.Position) float64 {
+	size, _ := pos.Size.Float64()
+	avg, _ := pos.AvgPrice.Float64()
+	if size <= 0 {
+		return avg
+	}
+	if avg > 0 {
+		return avg
+	}
+	init, _ := pos.InitialValue.Float64()
+	if init > 0 {
+		return init / size
+	}
+	return avg
+}
+
+func withPolymarketOutcomeQuery(eventURL, outcomeLabel string) string {
+	outcomeTrim := strings.TrimSpace(outcomeLabel)
+	if eventURL == "" || outcomeTrim == "" {
+		return eventURL
+	}
+	if !strings.Contains(eventURL, "/event/") {
+		return eventURL
+	}
+	// TODO(polymarket): ?outcome= is a best-effort deep link; confirm against live polymarket.com when UI/routes change.
+	u, err := url.Parse(eventURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return eventURL
+	}
+	q := u.Query()
+	if q.Get("outcome") != "" {
+		return eventURL
+	}
+	q.Set("outcome", outcomeTrim)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
 // polymarketLinks builds human-facing Polymarket URLs from local DB sync + live Gamma /markets.
-func polymarketLinks(dm store.RiskDisplayMeta, gm gammaclient.TokenMarketDisplay, title string) (eventURL, searchURL string) {
+func polymarketLinks(dm store.RiskDisplayMeta, gm gammaclient.TokenMarketDisplay, title, outcomeLabel string) (eventURL, searchURL string) {
 	slug := strings.Trim(firstNonEmpty(dm.PolySlug, gm.EventSlug, gm.Slug), "/")
 	if slug != "" {
 		slug = strings.TrimPrefix(slug, "event/")
-		return "https://polymarket.com/event/" + slug, ""
+		eventURL = "https://polymarket.com/event/" + slug
 	}
-	cond := strings.TrimSpace(gm.ConditionID)
-	if strings.HasPrefix(strings.ToLower(cond), "0x") {
-		return "https://polymarket.com/market/" + cond, ""
+	if eventURL == "" {
+		cond := strings.TrimSpace(gm.ConditionID)
+		if strings.HasPrefix(strings.ToLower(cond), "0x") {
+			// TODO(polymarket): reliable per-outcome URL for conditionId-only markets not confirmed.
+			return "https://polymarket.com/market/" + cond, ""
+		}
 	}
-	if id := strings.Trim(strings.TrimSpace(dm.PolyEventID), "/"); id != "" {
-		return "https://polymarket.com/event/" + id, ""
+	if eventURL == "" {
+		if id := strings.Trim(strings.TrimSpace(dm.PolyEventID), "/"); id != "" {
+			eventURL = "https://polymarket.com/event/" + id
+		}
+	}
+	eventURL = withPolymarketOutcomeQuery(eventURL, outcomeLabel)
+	if eventURL != "" {
+		return eventURL, ""
 	}
 	t := strings.TrimSpace(title)
 	if t != "" {
@@ -74,23 +125,41 @@ func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 	}
 	disp, derr := s.st.RiskDisplayMetaForPositions(ctx, rows)
 	if derr != nil {
-		s.log.Warn("risk_display_meta", "err", derr.Error())
+		s.log.WithFields(logx.Pairs("err", derr.Error())).Warn("风控：展示元数据加载失败")
 		disp = map[string]store.RiskDisplayMeta{}
 	}
 	gammaByTok := s.gammaMetaBatch(ctx, tokens)
+	hiddenKeys, herr := s.st.ListRiskHiddenCompositeKeys(ctx, accountID)
+	if herr != nil {
+		s.log.WithFields(logx.Pairs("err", herr.Error())).Warn("风控：隐藏持仓键加载失败")
+		hiddenKeys = map[string]struct{}{}
+	}
 	out := make([]map[string]any, 0, len(rows))
+	seen := make(map[string]string) // key -> id
+
 	for _, p := range rows {
 		if p.SizeShares < min && p.Status == "open" {
 			continue
 		}
-		bid, ok := s.bestBidCents(ctx, p.TokenID)
+		tid := store.NormalizeRiskCLOBTokenID(p.TokenID)
+		if _, hid := hiddenKeys[store.RiskPositionMonitorKey(p.TokenID, p.SideLabel)]; hid {
+			continue
+		}
+		key := fmt.Sprintf("%s_%s", tid, p.SideLabel)
+		if oldID, ok := seen[key]; ok {
+			s.log.WithFields(logx.Pairs("key", key, "old_id", oldID, "new_id", p.ID)).Debug("风控：检测到重复持仓键，已跳过")
+			continue
+		}
+		seen[key] = p.ID
+
+		bid, ok := s.BestBidCents(ctx, tid)
 		var hw, trail float64
 		var curPtr *float64
 		var err error
 		if ok {
 			hw, trail, curPtr, err = s.UpdateHighWaterAndMaybeQueueStop(ctx, p, bid)
 			if err != nil {
-				s.log.Warn("hw", "err", err)
+				s.log.WithFields(logx.Pairs("err", err)).Warn("风控：更新高点/止损队列失败")
 			}
 		} else {
 			hw = p.HighWaterCents
@@ -118,7 +187,8 @@ func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 		if sport != "" {
 			sport = strings.ToLower(sport)
 		}
-		eventURL, searchURL := polymarketLinks(dm, gm, displayTitle)
+		eventURL, searchURL := polymarketLinks(dm, gm, displayTitle, p.SideLabel)
+		polySlug := strings.Trim(strings.TrimPrefix(strings.TrimSpace(firstNonEmpty(dm.PolySlug, gm.EventSlug, gm.Slug)), "event/"), "/")
 		image := strings.TrimSpace(gm.Image)
 		icon := strings.TrimSpace(gm.Icon)
 		if icon == "" {
@@ -130,10 +200,11 @@ func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 		m := map[string]any{
 			"id": p.ID, "title": p.Title, "sideLabel": p.SideLabel,
 			"displayTitle": displayTitle, "sport": sport,
+			"polySlug":     polySlug,
 			"officialUrl": eventURL, "officialSearchUrl": searchURL,
-			"imageUrl": image,
-			"iconUrl":  icon,
-			"tokenId": p.TokenID,
+			"imageUrl":      image,
+			"iconUrl":       icon,
+			"tokenId":       tid,
 			"avgEntryCents": p.AvgEntryCents, "currentCents": curPtr,
 			"sizeShares": p.SizeShares, "costUsd": p.CostUSD,
 			"highWaterCents": hw, "stopLossPct": p.StopLossPct,
@@ -165,15 +236,15 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 		return fmt.Errorf("positions api: %w", err)
 	}
 
-	// Build map of official positions by token_id
+	// Build map of official positions by token_id (canonical CLOB id for DB + unique index).
 	officialByToken := make(map[string]data.Position, len(positions))
 	for _, pos := range positions {
 		hexStr := strings.ToLower(pos.Asset.Text(16))
 		if len(hexStr) < 64 {
 			hexStr = strings.Repeat("0", 64-len(hexStr)) + hexStr
 		}
-		tokenID := "0x" + hexStr
-		if tokenID != "0x" {
+		tokenID := store.NormalizeRiskCLOBTokenID("0x" + hexStr)
+		if tokenID != "" {
 			officialByToken[tokenID] = pos
 		}
 	}
@@ -181,11 +252,11 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 	// Upsert or update existing positions
 	for tokenID, pos := range officialByToken {
 		size, _ := pos.Size.Float64()
-		avgPrice, _ := pos.AvgPrice.Float64()
-		initialVal, _ := pos.InitialValue.Float64()
 		if size <= 0 {
 			continue
 		}
+		avgPrice := avgPriceUSDFromDataPosition(pos)
+		initialVal, _ := pos.InitialValue.Float64()
 		entryCents := avgPrice * 100
 		costUsd := initialVal
 		if costUsd <= 0 {
@@ -194,7 +265,7 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 
 		existing, err := s.st.GetOpenRiskPositionByToken(ctx, tokenID, acct.ID)
 		if err != nil {
-			s.log.Warn("sync_positions_lookup", "token", tokenID, "err", err)
+			s.log.WithFields(logx.Pairs("token", tokenID, "err", err)).Warn("风控同步：按 token 查询持仓失败")
 			continue
 		}
 		if existing == nil {
@@ -216,13 +287,13 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 				Status:         "open",
 			})
 			if err != nil {
-				s.log.Warn("sync_positions_create", "token", tokenID, "err", err)
+				s.log.WithFields(logx.Pairs("token", tokenID, "err", err)).Warn("风控同步：创建持仓失败")
 			}
 		} else {
 			// Existing position: keep high_water, update shares/avg/cost
 			err = s.st.UpdateRiskPositionSharesCost(ctx, existing.ID, size, costUsd)
 			if err != nil {
-				s.log.Warn("sync_positions_update_shares", "token", tokenID, "err", err)
+				s.log.WithFields(logx.Pairs("token", tokenID, "err", err)).Warn("风控同步：更新份额失败")
 			}
 			if existing.AvgEntryCents != entryCents {
 				_ = s.st.UpdateRiskPositionAvgEntry(ctx, existing.ID, entryCents)
@@ -240,9 +311,10 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 		return err
 	}
 	for _, p := range openRows {
-		if _, ok := officialByToken[strings.ToLower(p.TokenID)]; !ok {
+		tok := store.NormalizeRiskCLOBTokenID(p.TokenID)
+		if _, ok := officialByToken[tok]; !ok {
 			_ = s.st.CloseRiskPosition(ctx, p.ID)
-			s.log.Info("sync_positions_close_missing", "token", p.TokenID)
+			s.log.WithFields(logx.Pairs("token", p.TokenID)).Info("风控同步：官方已无该持仓，已关闭本地记录")
 		}
 	}
 

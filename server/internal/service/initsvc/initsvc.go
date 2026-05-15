@@ -3,13 +3,15 @@ package initsvc
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"sync"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/easyspace-ai/polybet/internal/config"
+	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/service/balancesvc"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
 	"github.com/easyspace-ai/polybet/internal/store"
@@ -45,16 +47,16 @@ type Service struct {
 	cfg  *config.Config
 	st   *store.Store
 	hub  *wsrelay.Hub
-	log  *slog.Logger
+	log  *logrus.Logger
 	risk *risksvc.Service
 
 	mu     sync.RWMutex
 	status InitStatus
 }
 
-func New(cfg *config.Config, st *store.Store, hub *wsrelay.Hub, risk *risksvc.Service, log *slog.Logger) *Service {
+func New(cfg *config.Config, st *store.Store, hub *wsrelay.Hub, risk *risksvc.Service, log *logrus.Logger) *Service {
 	if log == nil {
-		log = slog.Default()
+		log = logrus.StandardLogger()
 	}
 	return &Service{
 		cfg:  cfg,
@@ -100,30 +102,30 @@ func (s *Service) setComplete(complete bool) {
 }
 
 func (s *Service) Run(ctx context.Context) error {
-	s.log.Info("init_service_start")
+	s.log.Info("初始化服务：开始")
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	if err := s.checkConfig(ctx); err != nil {
-		s.log.Error("init_config_check_failed", "err", err)
+		s.log.WithFields(logx.Pairs("err", err)).Error("初始化：配置检查失败")
 		return err
 	}
 
 	if err := s.checkProxy(ctx); err != nil {
-		s.log.Error("init_proxy_check_failed", "err", err)
+		s.log.WithFields(logx.Pairs("err", err)).Error("初始化：代理检查失败")
 	}
 
 	if err := s.cacheBalances(ctx); err != nil {
-		s.log.Error("init_balance_cache_failed", "err", err)
+		s.log.WithFields(logx.Pairs("err", err)).Error("初始化：余额缓存失败")
 	}
 
 	if err := s.cachePositions(ctx); err != nil {
-		s.log.Error("init_position_cache_failed", "err", err)
+		s.log.WithFields(logx.Pairs("err", err)).Error("初始化：持仓缓存失败")
 	}
 
 	s.setComplete(true)
-	s.log.Info("init_service_complete")
+	s.log.Info("初始化服务：全部步骤已完成")
 	return nil
 }
 
@@ -186,7 +188,7 @@ func (s *Service) checkProxy(ctx context.Context) error {
 		Status:   "done",
 		Details:  result,
 	})
-	s.log.Info("proxy_check_done", "blocked", result.Blocked, "country", result.Country)
+	s.log.WithFields(logx.Pairs("blocked", result.Blocked, "country", result.Country)).Info("初始化：代理检测完成")
 	return nil
 }
 
@@ -208,7 +210,7 @@ func (s *Service) cacheBalances(ctx context.Context) error {
 		Status:  "done",
 		Details: CacheDetails{Count: count},
 	})
-	s.log.Info("balance_cache_done", "count", count)
+	s.log.WithFields(logx.Pairs("count", count)).Info("初始化：余额缓存完成")
 	return nil
 }
 
@@ -232,7 +234,7 @@ func (s *Service) cachePositions(ctx context.Context) error {
 		Status:  "done",
 		Details: CacheDetails{Count: count},
 	})
-	s.log.Info("position_cache_done", "count", count)
+	s.log.WithFields(logx.Pairs("count", count)).Info("初始化：持仓缓存完成")
 
 	if s.hub != nil {
 		s.hub.BroadcastJSON(map[string]any{

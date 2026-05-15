@@ -3,10 +3,11 @@ package tg
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/service/balancesvc"
@@ -24,12 +25,12 @@ var (
 // MaybeNotifyCollateralChanged fetches CLOB collateral (active / env funder) and notifies
 // when the value moves by more than collateralEpsilonUSD. The first successful read
 // only seeds the baseline (no message) to avoid noise on startup.
-func MaybeNotifyCollateralChanged(cfg *config.Config, log *slog.Logger, st *store.Store) {
+func MaybeNotifyCollateralChanged(cfg *config.Config, log *logrus.Logger, st *store.Store) {
 	if cfg == nil || st == nil {
 		return
 	}
 	if log == nil {
-		log = slog.Default()
+		log = logrus.StandardLogger()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 28*time.Second)
 	defer cancel()

@@ -1,15 +1,14 @@
 import React from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Activity, LineChart, Shield, History, Wallet, FileText, Settings, Loader2 } from "lucide-react";
+import { Activity, LineChart, Shield, History, Wallet, Settings, Loader2 } from "lucide-react";
 import { useBalanceCache } from "@/hooks/useBalanceCache";
 import { useAccounts } from "@/hooks/useAccounts";
 
 const items = [
-  { title: "市场", url: "/", icon: LineChart },
   { title: "风控", url: "/risk", icon: Shield },
+  { title: "市场", url: "/market", icon: LineChart },
   { title: "历史", url: "/history", icon: History },
   { title: "账号", url: "/accounts", icon: Wallet },
-  { title: "日志", url: "/logs", icon: FileText },
   { title: "设置", url: "/settings", icon: Settings },
 ];
 
@@ -40,7 +39,7 @@ export function AppSidebar() {
 
       <nav className="flex-1 px-3 py-2 flex flex-col gap-0.5">
         {items.map((item) => {
-          const active = item.url === "/" ? pathname === "/" : pathname.startsWith(item.url);
+          const active = pathname === item.url || pathname.startsWith(`${item.url}/`);
           const Icon = item.icon;
           return (
             <Link

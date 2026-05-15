@@ -7,7 +7,7 @@ import {
   type RiskPositionsMeta,
   type RiskTaskRow,
 } from '@/lib/api';
-import { riskWsBus, polyDirectBus, type PositionUpdateMessage, type PolyBookFrame } from '@/lib/wsBus';
+import { riskWsBus, type BookLevel, type PositionUpdateMessage, type PolyBookFrame } from '@/lib/wsBus';
 
 interface RiskState {
   positions: RiskPositionRow[];
@@ -33,7 +33,7 @@ const cache: RiskState = {
 
 const subscribers = new Set<(state: RiskState) => void>();
 const tokenBookMap = new Map<string, PolyBookFrame>();
-const tokenSubs = new Map<string, { unsubDash: () => void; unsubDirect: () => void }>();
+const tokenSubs = new Map<string, { unsubDash: () => void }>();
 
 function notifySubscribers() {
   subscribers.forEach(fn => fn({ ...cache }));
@@ -57,16 +57,58 @@ function getBestAskCents(frame: PolyBookFrame | undefined): number | null {
   return null;
 }
 
+/** Aligns with server `normalizeTokenID` (poly_ws / httpserver): decimal CLOB ids → 0x + 64 hex. */
 function normalizeTokenId(id: string | undefined | null): string {
   if (!id) return "";
-  let s = id.toLowerCase().trim();
-  if (!s.startsWith("0x")) s = "0x" + s;
-  // Ensure it's 66 chars (0x + 64 hex)
-  if (s.length < 66) {
-    const hex = s.slice(2);
-    s = "0x" + hex.padStart(64, "0");
+  const raw = id.trim();
+  if (!raw) return "";
+  const lower = raw.toLowerCase();
+  if (lower.startsWith("0x")) {
+    let hex = lower.slice(2);
+    if (!/^[0-9a-f]+$/.test(hex)) {
+      return lower.length >= 66 ? lower.slice(0, 66) : "0x" + hex.padStart(64, "0");
+    }
+    hex = hex.padStart(64, "0");
+    if (hex.length > 64) hex = hex.slice(-64);
+    return "0x" + hex;
   }
-  return s;
+  try {
+    const n = BigInt(raw);
+    let hex = n.toString(16);
+    hex = hex.padStart(64, "0");
+    if (hex.length > 64) hex = hex.slice(-64);
+    return "0x" + hex;
+  } catch {
+    const h = lower.replace(/^0x/, "");
+    return "0x" + h.padStart(64, "0");
+  }
+}
+
+const polyPlatform = "polymarket" as const;
+
+function mergeBookSide(
+  incoming: BookLevel[] | null | undefined,
+  existing: BookLevel[] | undefined,
+  sortBids: boolean,
+  bestCents: number | undefined,
+): BookLevel[] | undefined {
+  if (incoming && incoming.length > 0) {
+    const sorted = [...incoming].sort((a, b) => (sortBids ? b.odds - a.odds : a.odds - b.odds));
+    return sorted.slice(0, 5);
+  }
+  if (incoming === undefined || incoming === null) {
+    return existing;
+  }
+  // Empty ladder in payload (e.g. best_bid_ask-only WS tick) — do not wipe cached depth.
+  if (incoming.length === 0) {
+    const hasTop = typeof bestCents === "number" && bestCents > 0;
+    if (hasTop) {
+      if (existing && existing.length > 0) return existing;
+      return [{ odds: bestCents / 100, size: 0, platform: polyPlatform }];
+    }
+    return existing ?? [];
+  }
+  return existing;
 }
 
 function updatePositionsFromBook() {
@@ -187,15 +229,8 @@ function handlePolyBook(frame: PolyBookFrame) {
   // 合并逻辑：如果新 frame 有数据，更新本地 Map
   const existing = tokenBookMap.get(tid);
 
-  // 排序与深度控制：只保留离盘口最近的 5 档数据
-  // Bids: 价格从高到低排序 (买一价最高)
-  const bids = frame.bids 
-    ? [...frame.bids].sort((a, b) => b.odds - a.odds).slice(0, 5) 
-    : existing?.bids;
-  // Asks: 价格从低到高排序 (卖一价最低)
-  const asks = frame.asks 
-    ? [...frame.asks].sort((a, b) => a.odds - b.odds).slice(0, 5) 
-    : existing?.asks;
+  const bids = mergeBookSide(frame.bids, existing?.bids, true, frame.bestBid);
+  const asks = mergeBookSide(frame.asks, existing?.asks, false, frame.bestAsk);
 
   tokenBookMap.set(tid, { 
     ...existing, 
@@ -251,25 +286,18 @@ export function useRiskControlCache() {
         .map((p) => normalizeTokenId(p.tokenId))
     ));
 
-    // Subscribe to new tokens (Dual Insurance)
     for (const tid of openTokens) {
       if (!tokenSubs.has(tid)) {
-        // 订阅 1: 经过后端中转的专属风控 WS
         const unsubDash = riskWsBus.subscribePolyBook(tid, handlePolyBook);
-        // 订阅 2: 前端直接连接 Polymarket 官方 WS (双保险)
-        const unsubDirect = polyDirectBus.subscribe(tid, handlePolyBook);
-        
-        tokenSubs.set(tid, { unsubDash, unsubDirect });
-        console.log(`[Risk Guardian] Subscribed to ${tid} via Dual Channels`);
+        tokenSubs.set(tid, { unsubDash });
+        console.log(`[Risk Guardian] Subscribed to ${tid} via server WS`);
       }
     }
 
-    // Unsubscribe from removed tokens
     for (const tid of tokenSubs.keys()) {
       if (!openTokens.includes(tid)) {
         const subs = tokenSubs.get(tid);
         subs?.unsubDash();
-        subs?.unsubDirect();
         tokenSubs.delete(tid);
         tokenBookMap.delete(tid);
         console.log(`[Risk Guardian] Unsubscribed from ${tid}`);

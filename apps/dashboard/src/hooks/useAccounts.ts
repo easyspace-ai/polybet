@@ -26,12 +26,12 @@ function notifySubscribers() {
   subscribers.forEach((fn) => fn({ ...cache }));
 }
 
-function fetchAccounts() {
+function fetchAccounts(): Promise<void> {
   cache.loading = true;
   cache.error = null;
   notifySubscribers();
 
-  listPolymarketAccounts()
+  return listPolymarketAccounts()
     .then((data) => {
       cache.accounts = data;
       cache.loading = false;
@@ -67,17 +67,17 @@ export function useAccounts() {
 
   const create = useCallback(async (body: PolymarketAccountCreateBody) => {
     await createPolymarketAccount(body);
-    fetchAccounts();
+    await fetchAccounts();
   }, []);
 
   const activate = useCallback(async (id: string) => {
     await activatePolymarketAccount(id);
-    fetchAccounts();
+    await fetchAccounts();
   }, []);
 
   const remove = useCallback(async (id: string) => {
     await deletePolymarketAccount(id);
-    fetchAccounts();
+    await fetchAccounts();
   }, []);
 
   return { accounts: state.accounts, loading: state.loading, error: state.error, refresh, create, activate, remove };

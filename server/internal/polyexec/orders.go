@@ -37,6 +37,10 @@ func ConditionalBalanceShares(balanceStr string) float64 {
 
 // ExecuteFOKSell mirrors bot executePolymarketSell.
 func ExecuteFOKSell(ctx context.Context, client clob.Client, signer auth.Signer, tokenID string, sizeShares float64, sellExtraTicks int) (orderID string, err error) {
+	tokenID, err = MustCLOBAssetIDForAPI(tokenID)
+	if err != nil {
+		return "", err
+	}
 	book, err := client.OrderBook(ctx, &clobtypes.BookRequest{TokenID: tokenID})
 	if err != nil {
 		return "", fmt.Errorf("get orderbook: %w", err)
@@ -88,6 +92,10 @@ func ExecuteFOKSell(ctx context.Context, client clob.Client, signer auth.Signer,
 
 // ExecuteFOKBuy mirrors bot executePolymarketOrder (BUY).
 func ExecuteFOKBuy(ctx context.Context, client clob.Client, signer auth.Signer, tokenID string, sizeUSDC, expectedOdds float64, buyExtraTicks int) (orderID string, fillOdds float64, err error) {
+	tokenID, err = MustCLOBAssetIDForAPI(tokenID)
+	if err != nil {
+		return "", 0, err
+	}
 	book, err := client.OrderBook(ctx, &clobtypes.BookRequest{TokenID: tokenID})
 	if err != nil {
 		return "", 0, fmt.Errorf("get orderbook: %w", err)

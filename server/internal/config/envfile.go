@@ -1,11 +1,13 @@
 package config
 
 import (
-	"log/slog"
 	"os"
 	"path/filepath"
 
 	"github.com/joho/godotenv"
+	"github.com/sirupsen/logrus"
+
+	"github.com/easyspace-ai/polybet/internal/logx"
 )
 
 // LoadEnvFile loads key=value pairs from the first existing file among:
@@ -46,11 +48,11 @@ func LoadEnvFile() {
 			continue
 		}
 		if err := godotenv.Load(f); err != nil {
-			slog.Warn("env_file_parse_failed", "path", f, "err", err)
+			logrus.WithFields(logx.Pairs("path", f, "err", err)).Warn("环境变量文件：解析失败")
 			return
 		}
-		slog.Info("env_file_loaded", "path", filepath.Clean(f))
+		logrus.WithFields(logx.Pairs("path", filepath.Clean(f))).Info("环境变量文件：已加载")
 		return
 	}
-	slog.Debug("env_file_skipped", "reason", "no .env file found", "candidates", candidates)
+	logrus.WithFields(logx.Pairs("reason", "no .env file found", "candidates", candidates)).Debug("环境变量文件：未找到，跳过")
 }

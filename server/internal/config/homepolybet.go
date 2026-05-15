@@ -2,11 +2,14 @@ package config
 
 import (
 	"encoding/json"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/sirupsen/logrus"
+
+	"github.com/easyspace-ai/polybet/internal/logx"
 )
 
 // ApplyHomePolybetProjectJSON reads ~/.polybet/polybet-project.json and sets
@@ -24,7 +27,7 @@ func ApplyHomePolybetProjectJSON() {
 	}
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(data, &root); err != nil {
-		slog.Warn("polybet_project_json_invalid", "path", p, "err", err)
+		logrus.WithFields(logx.Pairs("path", p, "err", err)).Warn("polybet-project.json：无效 JSON")
 		return
 	}
 
@@ -78,7 +81,7 @@ func ApplyHomePolybetProjectJSON() {
 			setIfEmpty("LOG_LEVEL", strings.TrimSpace(s))
 		}
 	}
-	slog.Debug("polybet_project_json_applied_if_needed", "path", p)
+	logrus.WithFields(logx.Pairs("path", p)).Debug("polybet-project.json：已按需应用环境变量")
 }
 
 func portFromJSON(raw json.RawMessage) (string, bool) {

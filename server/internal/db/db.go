@@ -104,6 +104,8 @@ func Migrate(ctx context.Context, conn *sql.DB) error {
 		{2, "migrations/002_events_poly_slug.sql"},
 		{3, "migrations/003_account_isolation.sql"},
 		{4, "migrations/004_risk_configs.sql"},
+		{5, "migrations/005_risk_hidden_positions.sql"},
+		{6, "migrations/006_risk_positions_unique.sql"},
 	}
 	for _, step := range steps {
 		if v >= step.version {
@@ -111,6 +113,11 @@ func Migrate(ctx context.Context, conn *sql.DB) error {
 		}
 		if v != step.version-1 {
 			return fmt.Errorf("db migration: expected schema version %d before applying %d, found %d", step.version-1, step.version, v)
+		}
+		if step.version == 6 {
+			if err := normalizeAndDedupeRiskPositions(ctx, conn); err != nil {
+				return fmt.Errorf("migrate %d: dedupe risk_positions: %w", step.version, err)
+			}
 		}
 		b, err := migrations.ReadFile(step.file)
 		if err != nil {

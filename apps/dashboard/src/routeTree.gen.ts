@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RiskRouteImport } from './routes/risk'
+import { Route as MarketRouteImport } from './routes/market'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as HistoryRouteImport } from './routes/history'
 import { Route as AccountsRouteImport } from './routes/accounts'
@@ -24,6 +25,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const RiskRoute = RiskRouteImport.update({
   id: '/risk',
   path: '/risk',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MarketRoute = MarketRouteImport.update({
+  id: '/market',
+  path: '/market',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LogsRoute = LogsRouteImport.update({
@@ -52,6 +58,7 @@ export interface FileRoutesByFullPath {
   '/accounts': typeof AccountsRoute
   '/history': typeof HistoryRoute
   '/logs': typeof LogsRoute
+  '/market': typeof MarketRoute
   '/risk': typeof RiskRoute
   '/settings': typeof SettingsRoute
 }
@@ -60,6 +67,7 @@ export interface FileRoutesByTo {
   '/accounts': typeof AccountsRoute
   '/history': typeof HistoryRoute
   '/logs': typeof LogsRoute
+  '/market': typeof MarketRoute
   '/risk': typeof RiskRoute
   '/settings': typeof SettingsRoute
 }
@@ -69,20 +77,36 @@ export interface FileRoutesById {
   '/accounts': typeof AccountsRoute
   '/history': typeof HistoryRoute
   '/logs': typeof LogsRoute
+  '/market': typeof MarketRoute
   '/risk': typeof RiskRoute
   '/settings': typeof SettingsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/accounts' | '/history' | '/logs' | '/risk' | '/settings'
+  fullPaths:
+    | '/'
+    | '/accounts'
+    | '/history'
+    | '/logs'
+    | '/market'
+    | '/risk'
+    | '/settings'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/accounts' | '/history' | '/logs' | '/risk' | '/settings'
+  to:
+    | '/'
+    | '/accounts'
+    | '/history'
+    | '/logs'
+    | '/market'
+    | '/risk'
+    | '/settings'
   id:
     | '__root__'
     | '/'
     | '/accounts'
     | '/history'
     | '/logs'
+    | '/market'
     | '/risk'
     | '/settings'
   fileRoutesById: FileRoutesById
@@ -92,6 +116,7 @@ export interface RootRouteChildren {
   AccountsRoute: typeof AccountsRoute
   HistoryRoute: typeof HistoryRoute
   LogsRoute: typeof LogsRoute
+  MarketRoute: typeof MarketRoute
   RiskRoute: typeof RiskRoute
   SettingsRoute: typeof SettingsRoute
 }
@@ -110,6 +135,13 @@ declare module '@tanstack/react-router' {
       path: '/risk'
       fullPath: '/risk'
       preLoaderRoute: typeof RiskRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/market': {
+      id: '/market'
+      path: '/market'
+      fullPath: '/market'
+      preLoaderRoute: typeof MarketRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/logs': {
@@ -148,6 +180,7 @@ const rootRouteChildren: RootRouteChildren = {
   AccountsRoute: AccountsRoute,
   HistoryRoute: HistoryRoute,
   LogsRoute: LogsRoute,
+  MarketRoute: MarketRoute,
   RiskRoute: RiskRoute,
   SettingsRoute: SettingsRoute,
 }

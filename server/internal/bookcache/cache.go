@@ -11,8 +11,9 @@ import (
 
 // Level matches dashboard poly book ladder (fee-adjusted taker odds, USDC size).
 type Level struct {
-	Odds float64 `json:"odds"`
-	Size float64 `json:"size"`
+	Odds     float64 `json:"odds"`
+	Size     float64 `json:"size"`
+	Platform string  `json:"platform"`
 }
 
 type tokenBook struct {
@@ -194,6 +195,42 @@ func (c *Cache) TakerOdds(tokenID string) (float64, bool) {
 		return 0, false
 	}
 	return levels[0].Odds, true
+}
+
+func (c *Cache) GetBidsAsks(tokenID string, n int) (bids, asks []Level) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	tb := c.books[tokenID]
+	if tb == nil {
+		return nil, nil
+	}
+	fee := c.feeRates[tokenID]
+
+	// Asks (Sellers)
+	for pStr, shares := range tb.asks {
+		raw, _ := strconv.ParseFloat(pStr, 64)
+		if raw > 0 {
+			asks = append(asks, Level{Odds: applyFee(raw, fee), Size: shares * raw, Platform: "polymarket"})
+		}
+	}
+	sort.Slice(asks, func(i, j int) bool { return asks[i].Odds < asks[j].Odds })
+	if len(asks) > n {
+		asks = asks[:n]
+	}
+
+	// Bids (Buyers)
+	for pStr, shares := range tb.bids {
+		raw, _ := strconv.ParseFloat(pStr, 64)
+		if raw > 0 {
+			bids = append(bids, Level{Odds: applyFee(raw, fee), Size: shares * raw, Platform: "polymarket"})
+		}
+	}
+	sort.Slice(bids, func(i, j int) bool { return bids[i].Odds > bids[j].Odds })
+	if len(bids) > n {
+		bids = bids[:n]
+	}
+
+	return bids, asks
 }
 
 // SnapshotLevels returns JSON-serializable levels for WS relay.

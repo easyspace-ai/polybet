@@ -1,8 +1,11 @@
 package sync
 
 import (
-	"log/slog"
 	"strings"
+
+	"github.com/sirupsen/logrus"
+
+	"github.com/easyspace-ai/polybet/internal/logx"
 )
 
 // League is the internal mapping needed to fetch Gamma events for a sport.
@@ -43,7 +46,7 @@ func leaguesFromTags(tags []string, sports []GammaSport) []League {
 	for _, t := range tags {
 		lg := LeagueFromSport(t, sports)
 		if lg == nil {
-			slog.Warn("league_tag_unmatched", "tag", t)
+			logrus.WithFields(logx.Pairs("tag", t)).Warn("市场同步：未匹配到联赛标签")
 			continue
 		}
 		if _, dup := seen[lg.SeriesID]; dup {
@@ -53,7 +56,7 @@ func leaguesFromTags(tags []string, sports []GammaSport) []League {
 		out = append(out, *lg)
 	}
 	if len(out) == 0 {
-		slog.Warn("league_no_tags_matched_fallback_nba", "tags", tags)
+		logrus.WithFields(logx.Pairs("tags", tags)).Warn("市场同步：无匹配标签，回退 NBA")
 		if fallback := LeagueFromSport("nba", sports); fallback != nil {
 			return []League{*fallback}
 		}

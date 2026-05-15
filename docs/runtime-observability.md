@@ -85,7 +85,7 @@
 |--------|------|---------------|
 | `balance.refreshed` | **主动刷新** 成功后的快照差异 | `asset`, `before`, `after`, `delta`, `provider` |
 
-### 3.3 `transport`（`category: transport`）
+Dashboard 业务 WebSocket 上另有 **`type: "balance_update"`** 帧（`data` 为 `balancesvc.Summary` 形状），由服务端在余额拉取成功后广播；与 HTTP `GET /api/balances` 的进程内缓存同源，详见 [data-layer.md](./data-layer.md)。
 
 | `type` | 说明 | `detail` 示例 |
 |--------|------|---------------|
@@ -131,6 +131,20 @@
 | **复用现有 Dashboard WS，统一 typed message** | 一条连接、前端状态简单 | 需严格 `messageType` 区分业务推送与日志，避免与高频市场数据互相阻塞 |
 
 **推荐**：复用 **现有 Dashboard WebSocket**，增加一类 **`messageType: "system.log"`**（或 `op: "log"`）载荷即为 §2 信封。若日志量极大，再拆 `system:log` 子通道并对该通道单独 **rate limit**。
+
+#### 4.2.1 Polybet 实现（风控 WebSocket）
+
+运行日志挂在 **风控专用 WebSocket** `GET /ws/risk`（与 `polyBookUpdate`、`position_update` 等共享连接），主 `/ws` 不承载该通道。
+
+| 外层 `type` | 载荷 | 说明 |
+|-------------|------|------|
+| `risk_runtime_log` | `data`: §2 信封对象 | 单条追加 |
+| `risk_runtime_log_snapshot` | `data`: 信封数组（时间序） | 新连接在初始 `position_update` 之后发送，来自进程内 **ring** |
+
+- **Ring 容量**：默认 **400** 条（`internal/riskruntime.DefaultRingCap`），超出丢弃最旧。
+- **HTTP 快照**：`GET /api/risk/runtime-logs?limit=N`（默认 100，最大 500），用于面板打开或断线补历史。
+- **已接线的信封 `type` 示例**：`ws.user.*`、`order.execution_summary`、`position.snapshot_changed`、`position.stop_loss_triggered`、`position.close_queued`、`position.closed`、`position.close_failed`、`position.close_all_*`、`market.subscription.started` / `stopped`、`market.book.summary_tick`（按 token **约 600ms + 价差阈值** 节流）、`ws.market.error`、`risk.account_switched` 等。
+- **未转发**：通用 HTTP / logrus 文本、完整 order book 档位。
 
 ### 4.3 鉴权（Auth）
 
@@ -187,10 +201,10 @@
 
 ## 6. 实施检查清单
 
-- [ ] 定义并实现稳定 `type` 字符串与 `detail` JSON 约束（可加 JSON Schema 校验）。
-- [ ] 实现 ring +（可选）总线；单 writer `seq` 递增。
-- [ ] Dashboard WS 增加 `system.log` 类型与限流。
-- [ ] 前端虚拟列表 + `category` / `severity` 过滤 + 重连横幅 + `correlationId` 链接。
+- [x] 定义并实现稳定 `type` 字符串与 `detail` JSON 约束（可加 JSON Schema 校验）。
+- [x] 实现 ring +（可选）总线；单 writer `seq` 递增。
+- [x] Dashboard WS 增加 `system.log` 类型与限流。→ **已实现等价物**：风控 WS 上的 `risk_runtime_log` / `risk_runtime_log_snapshot`；`market_data` 按 token 时间+价差节流。
+- [x] 前端虚拟列表 + `category` / `severity` 过滤 + 重连横幅 + `correlationId` 链接。→ **已实现子集**：风控页底栏、最多 500 行、筛选 chips、严重级别着色；虚拟列表与重连横幅未做。
 - [ ] 压测：`market_data` 在高频行情下仍不超过配置带宽。
 
 ---

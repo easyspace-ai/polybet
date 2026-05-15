@@ -55,6 +55,17 @@ func (s *Store) ListRiskTasksRecent(ctx context.Context, limit int) ([]RiskTask,
 	return out, rows.Err()
 }
 
+// DeleteRiskTasksTerminal removes finished task rows from the visible log:
+// status in (succeeded, failed, cancelled). Rows still in progress (pending,
+// running) are never deleted.
+func (s *Store) DeleteRiskTasksTerminal(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM risk_tasks WHERE status IN ('succeeded','failed','cancelled')`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (s *Store) ListRiskTasksByReason(ctx context.Context, taskType, reason string, limit int) ([]RiskTask, error) {
 	if limit <= 0 {
 		limit = 100

@@ -48,7 +48,7 @@ const TABS: { id: SettingsTab; icon: typeof Monitor; title: string; desc: string
 const KEY_DESCRIPTIONS: Record<string, string> = {
   maxTradeSize: "单笔交易金额上限。",
   slippageTolerance: "允许的最优盘口价与实际成交量加权均价之间的最大偏离。",
-  pollingInterval: "市场同步循环从 Polymarket 拉取报价的间隔（毫秒）。",
+  pollingInterval: "市场同步（Gamma / 赛事列表）轮询间隔，单位：分钟。默认 60 表示每小时一次。",
   orderBookLevels: "投注单 / 交易面板中，实时推送的 Polymarket 盘口档位数。",
   polymarketFokBuyExtraTicks: "Polymarket FOK 买入：在最优卖价之上额外允许的 tick 档数。",
   polymarketFokSellExtraTicks: "Polymarket FOK 卖出：在最优买价之下额外放宽的 tick 档数。",

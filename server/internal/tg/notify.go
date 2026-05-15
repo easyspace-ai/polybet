@@ -4,13 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/easyspace-ai/polybet/internal/config"
+	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/store"
 )
 
@@ -41,23 +43,23 @@ func ResolveTelegramCreds(ctx context.Context, cfg *config.Config, st *store.Sto
 
 // Notify sends a plain-text Telegram message if bot token and chat id are configured
 // (env or store). It is best-effort, non-blocking, and ignores empty text.
-func Notify(ctx context.Context, cfg *config.Config, st *store.Store, log *slog.Logger, text string) {
+func Notify(ctx context.Context, cfg *config.Config, st *store.Store, log *logrus.Logger, text string) {
 	if log == nil {
-		log = slog.Default()
+		log = logrus.StandardLogger()
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	token, chat := ResolveTelegramCreds(ctx, cfg, st)
 	t := strings.TrimSpace(text)
-	log.Info("telegram_notify", "token_set", token != "", "chat_set", chat != "", "proxy", func() string {
+	log.WithFields(logx.Pairs("token_set", token != "", "chat_set", chat != "", "proxy", func() string {
 		if cfg != nil {
 			return cfg.HTTPPlatformProxy
 		}
 		return ""
-	}())
+	}())).Info("Telegram：准备发送通知")
 	if token == "" || chat == "" || t == "" {
-		log.Warn("telegram_notify_skipped", "token_empty", token == "", "chat_empty", chat == "", "text_empty", t == "")
+		log.WithFields(logx.Pairs("token_empty", token == "", "chat_empty", chat == "", "text_empty", t == "")).Warn("Telegram：跳过发送（凭证或正文为空）")
 		return
 	}
 	if len([]rune(t)) > maxTelegramMessageRunes {
@@ -73,7 +75,7 @@ func Notify(ctx context.Context, cfg *config.Config, st *store.Store, log *slog.
 		u := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", url.PathEscape(token))
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(form.Encode()))
 		if err != nil {
-			log.Debug("telegram_send_skip", "err", err.Error())
+			log.WithFields(logx.Pairs("err", err.Error())).Debug("Telegram：跳过发送（构造请求失败）")
 			return
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -81,7 +83,7 @@ func Notify(ctx context.Context, cfg *config.Config, st *store.Store, log *slog.
 		proxyUsed := false
 		if cfg != nil && cfg.HTTPPlatformProxy != "" {
 			if proxyURL, err := url.Parse(cfg.HTTPPlatformProxy); err == nil {
-				log.Info("telegram_using_proxy", "proxy", cfg.HTTPPlatformProxy)
+				log.WithFields(logx.Pairs("proxy", cfg.HTTPPlatformProxy)).Info("Telegram：使用代理发送")
 				hc = &http.Client{
 					Timeout: 14 * time.Second,
 					Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
@@ -90,19 +92,19 @@ func Notify(ctx context.Context, cfg *config.Config, st *store.Store, log *slog.
 			}
 		}
 		if hc == nil {
-			log.Info("telegram_no_proxy")
+			log.Info("Telegram：直连发送")
 			hc = &http.Client{Timeout: 14 * time.Second}
 		}
 		resp, err := hc.Do(req)
 		if err != nil {
-			log.Warn("telegram_send_failed", "err", err.Error(), "proxy_used", proxyUsed)
+			log.WithFields(logx.Pairs("err", err.Error(), "proxy_used", proxyUsed)).Warn("Telegram：发送失败")
 			return
 		}
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
-		log.Info("telegram_response", "status", resp.StatusCode, "body", string(body), "proxy_used", proxyUsed)
+		log.WithFields(logx.Pairs("status", resp.StatusCode, "body", string(body), "proxy_used", proxyUsed)).Info("Telegram：HTTP 响应")
 		if resp.StatusCode != 200 {
-			log.Warn("telegram_send_error", "status", resp.StatusCode, "response", string(body))
+			log.WithFields(logx.Pairs("status", resp.StatusCode, "response", string(body))).Warn("Telegram：非 200 响应")
 		}
 	}(t)
 }

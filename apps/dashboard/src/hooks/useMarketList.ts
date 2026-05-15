@@ -84,50 +84,31 @@ export function useMarketList(): MarketListState & { refresh: () => Promise<void
   useEffect(() => {
     let cancelled = false;
 
-    const tryHydrateFromREST = (afterErrorStillStopLoading: boolean) => {
-      getMarkets()
-        .then((data) => {
-          if (cancelled || snapshotReceived.current) return;
-          if (data.length > 0) {
-            snapshotReceived.current = true;
-            applyFullSnapshot(data);
-          }
-          setState(prev => ({ ...prev, loading: false }));
-        })
-        .catch((err) => {
-          if (!cancelled && afterErrorStillStopLoading) {
-            setState(prev => ({
-              ...prev,
-              loading: false,
-              error: err instanceof Error ? err.message : '加载市场失败',
-            }));
-          }
-        });
-    };
+    // 挂载时立即执行一次 REST 获取，确保报价最新
+    doFetchFromREST(false);
 
-    tryHydrateFromREST(false);
+    // 设置一个回退定时器，如果 3s 内 WS 没发 snapshot，强制再次拉取 REST (双保险)
+    fallbackTimerRef.current = setTimeout(() => {
+      if (!snapshotReceived.current && !cancelled) {
+        doFetchFromREST(true);
+      }
+    }, WS_SNAPSHOT_FALLBACK_MS);
 
     const offMarket = wsBus.onMarketLifecycle(handleMarketMessage);
     const offStatus = wsBus.onStatusChange(handleWsStatus);
 
-    fallbackTimerRef.current = setTimeout(() => {
-      if (!snapshotReceived.current) {
-        console.log('[useMarketList] WS snapshot timeout, falling back to REST');
-        tryHydrateFromREST(true);
-      }
-    }, WS_SNAPSHOT_FALLBACK_MS);
-
     return () => {
       cancelled = true;
-      if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
+      if (fallbackTimerRef.current) {
+        clearTimeout(fallbackTimerRef.current);
+      }
       offMarket();
       offStatus();
     };
-  }, [handleMarketMessage, handleWsStatus, applyFullSnapshot]);
+  }, [handleMarketMessage, handleWsStatus, doFetchFromREST]);
 
   const refresh = useCallback(async () => {
     setState(prev => ({ ...prev, loading: true, error: null }));
-    wsBus.clearMarketsCache();
     cacheRef.current.clear();
     snapshotReceived.current = false;
     try {

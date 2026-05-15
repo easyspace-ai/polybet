@@ -179,7 +179,7 @@ func (s *Store) ListBotConfig(ctx context.Context) ([]struct{ Key, Value string 
 
 func (s *Store) SeedDefaultConfig(ctx context.Context) error {
 	rows := []struct{ k, v string }{
-		{"pollingInterval", "30"},
+		{"pollingInterval", "60"},
 		{"maxTradeSize", "100"},
 		{"slippageTolerance", "0.05"},
 		{"orderBookLevels", "10"},

@@ -7,7 +7,8 @@ import (
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/debounce"
-	"github.com/easyspace-ai/polybet/internal/rediska"
+	"github.com/easyspace-ai/polybet/internal/memcache"
+	"github.com/easyspace-ai/polybet/internal/riskruntime"
 	"github.com/easyspace-ai/polybet/internal/service/initsvc"
 	"github.com/easyspace-ai/polybet/internal/service/logsvc"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
@@ -23,16 +24,18 @@ type Deps struct {
 	Store         *store.Store
 	Cache         *bookcache.Cache
 	Hub           *wsrelay.Hub
+	RiskHub       *wsrelay.Hub
 	Risk          *risksvc.Service
 	Debounce      *debounce.Debouncer
-	BalanceCache  *rediska.BalanceCache
-	RiskCache     *rediska.RiskCache
+	BalanceCache  *memcache.BalanceCache
+	RiskCache     *memcache.RiskCache
 	InitService   *initsvc.Service
 	LogService    *logsvc.Service
 	SportsCache   *mktSync.SportsCache
+	RiskRuntime   *riskruntime.Bus
 	App           interface {
 		InvalidateAndRebuildCache()
-		SyncAndBroadcastMarkets(ctx context.Context) error
+		SyncAndBroadcastMarkets(ctx context.Context, force bool) error
 		RequestRestart()
 	}
 }

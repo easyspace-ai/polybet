@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -60,7 +61,8 @@ func (s *Store) ListOpenRiskPositionsByToken(ctx context.Context, tokenID string
 	return s.listRiskPositionsWhere(ctx, `token_id = ? AND account_id = ? AND status = 'open'`, tokenID, accountID)
 }
 
-// ListOpenRiskPositionTokenIDs returns distinct token_ids for open risk positions.
+// ListOpenRiskPositionTokenIDs returns distinct token_ids for open risk positions
+// across all accounts (legacy; prefer ListOpenRiskPositionTokenIDsForAccount).
 func (s *Store) ListOpenRiskPositionTokenIDs(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT token_id FROM risk_positions WHERE status = 'open' AND token_id IS NOT NULL AND token_id != ''`)
 	if err != nil {
@@ -78,8 +80,52 @@ func (s *Store) ListOpenRiskPositionTokenIDs(ctx context.Context) ([]string, err
 	return ids, rows.Err()
 }
 
+// ListOpenRiskPositionTokenIDsForAccount returns distinct token_ids for open risk
+// positions for a single Polymarket account (active mobile stop-loss scope).
+func (s *Store) ListOpenRiskPositionTokenIDsForAccount(ctx context.Context, accountID string) ([]string, error) {
+	if strings.TrimSpace(accountID) == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT token_id FROM risk_positions WHERE status = 'open' AND account_id = ? AND token_id IS NOT NULL AND token_id != ''`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *Store) ListOpenRiskPositionsMinShares(ctx context.Context, minShares float64, accountID string) ([]RiskPosition, error) {
 	return s.listRiskPositionsWhere(ctx, `status = 'open' AND account_id = ? AND size_shares >= ?`, accountID, minShares)
+}
+
+// CountOpenRiskPositionsMinShares counts open positions at or above minShares for the account.
+func (s *Store) CountOpenRiskPositionsMinShares(ctx context.Context, minShares float64, accountID string) (int64, error) {
+	if strings.TrimSpace(accountID) == "" {
+		return 0, nil
+	}
+	var n int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM risk_positions WHERE status = 'open' AND account_id = ? AND size_shares >= ?`,
+		accountID, minShares,
+	).Scan(&n)
+	return n, err
+}
+
+func retryOnUniqueOpenRisk(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "idx_risk_positions_open_key") ||
+		strings.Contains(msg, "UNIQUE constraint failed")
 }
 
 func (s *Store) ListOpenOrClosingRiskPositions(ctx context.Context, accountID string) ([]RiskPosition, error) {
@@ -214,6 +260,11 @@ func (s *Store) UpdateRiskPositionStatusShares(ctx context.Context, id, status s
 }
 
 func (s *Store) CreateRiskPosition(ctx context.Context, p *RiskPosition) error {
+	return s.createRiskPositionOnce(ctx, p, true)
+}
+
+func (s *Store) createRiskPositionOnce(ctx context.Context, p *RiskPosition, retryOnUnique bool) error {
+	p.TokenID = NormalizeRiskCLOBTokenID(p.TokenID)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -221,11 +272,60 @@ func (s *Store) CreateRiskPosition(ctx context.Context, p *RiskPosition) error {
 	}
 	defer tx.Rollback()
 
+	var existingID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id FROM risk_positions
+		WHERE COALESCE(account_id,'') = COALESCE(?, '') AND token_id = ? AND side_label = ? AND status IN ('open','closing')
+		LIMIT 1`,
+		p.AccountID, p.TokenID, p.SideLabel).Scan(&existingID)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == nil {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE risk_positions SET
+				platform = ?, outcome_id = ?, title = ?, avg_entry_cents = ?, size_shares = ?, cost_usd = ?,
+				source = ?, status = ?, updated_at = ?
+			WHERE id = ?`,
+			p.Platform, sqlNullable(p.OutcomeID), p.Title, p.AvgEntryCents, p.SizeShares, p.CostUSD,
+			p.Source, p.Status, now, existingID)
+		if err != nil {
+			return err
+		}
+		var curHW float64
+		_ = tx.QueryRowContext(ctx, `
+			SELECT COALESCE(rpc.high_water_cents, rp.avg_entry_cents)
+			FROM risk_positions rp
+			LEFT JOIN risk_position_configs rpc ON rp.id = rpc.position_id
+			WHERE rp.id = ?`, existingID).Scan(&curHW)
+		newHW := p.HighWaterCents
+		if curHW > newHW {
+			newHW = curHW
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO risk_position_configs(position_id, high_water_cents, stop_loss_pct, created_at, updated_at)
+			VALUES(?,?,?,?,?)
+			ON CONFLICT(position_id) DO UPDATE SET
+				high_water_cents = MAX(risk_position_configs.high_water_cents, excluded.high_water_cents),
+				stop_loss_pct = excluded.stop_loss_pct,
+				updated_at = excluded.updated_at`,
+			existingID, newHW, p.StopLossPct, now, now)
+		if err != nil {
+			return err
+		}
+		p.ID = existingID
+		return tx.Commit()
+	}
+
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO risk_positions(id, platform, account_id, outcome_id, token_id, title, side_label, avg_entry_cents, size_shares, cost_usd, source, status, created_at, updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.ID, p.Platform, p.AccountID, sqlNullable(p.OutcomeID), p.TokenID, p.Title, p.SideLabel, p.AvgEntryCents, p.SizeShares, p.CostUSD, p.Source, p.Status, now, now)
 	if err != nil {
+		if retryOnUnique && retryOnUniqueOpenRisk(err) {
+			_ = tx.Rollback()
+			return s.createRiskPositionOnce(ctx, p, false)
+		}
 		return err
 	}
 
@@ -241,13 +341,14 @@ func (s *Store) CreateRiskPosition(ctx context.Context, p *RiskPosition) error {
 }
 
 func (s *Store) GetOpenRiskPositionByToken(ctx context.Context, tokenID, accountID string) (*RiskPosition, error) {
+	tokenID = NormalizeRiskCLOBTokenID(tokenID)
 	row := s.db.QueryRowContext(ctx, `SELECT rp.id, rp.platform, rp.outcome_id, rp.token_id, rp.title, rp.side_label, rp.avg_entry_cents, rp.size_shares, rp.cost_usd,
 		COALESCE(rpc.high_water_cents, rp.avg_entry_cents) as high_water_cents,
 		COALESCE(rpc.stop_loss_pct, 10) as stop_loss_pct,
 		rp.source, rp.status, rp.created_at, rp.updated_at
 	FROM risk_positions rp
 	LEFT JOIN risk_position_configs rpc ON rp.id = rpc.position_id
-	WHERE rp.token_id = ? AND rp.account_id = ? AND rp.status = 'open'`, tokenID, accountID)
+	WHERE rp.token_id = ? AND COALESCE(rp.account_id,'') = COALESCE(?, '') AND rp.status IN ('open','closing')`, tokenID, accountID)
 	var p RiskPosition
 	var oc sql.NullString
 	var ca, ua string

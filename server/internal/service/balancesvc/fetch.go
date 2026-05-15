@@ -94,9 +94,10 @@ func accountBalanceUSD(ctx context.Context, cfg *config.Config, acct *store.Poly
 }
 
 // Summary matches dashboard `BalanceSummary` / Node `fetchBalances`.
+// JSON tags must match HTTP handlers and WS `balance_update` payloads (camelCase).
 type Summary struct {
-	Polymarket         *float64
-	PolymarketAccounts []AccountRow
+	Polymarket         *float64     `json:"polymarket"`
+	PolymarketAccounts []AccountRow `json:"polymarketAccounts"`
 }
 
 type AccountRow struct {

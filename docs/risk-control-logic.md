@@ -21,6 +21,7 @@
 
 ### 2.1 仓位展示与去重
 - **逻辑**: 前后端均实现了基于 `tokenId` + `sideLabel` (Yes/No) 的去重。
+- **均价字段**: 展示用 `avgEntryCents` 来自 SQLite `risk_positions.avg_entry_cents`。该值在 `SyncPositionsFromDataAPI` 中由 Polymarket **Data API** `GET /positions` 写入：优先使用响应里的 `avgPrice`（0–1 概率价）；若新开仓阶段官方返回 `avgPrice` 为 0 但已有 `initialValue` 与 `size`，服务端会用 `initialValue / size` 推断等价均价（与成本口径一致），再乘以 100 得到「分」。
 - **修复说明**: 
     - 后端在 `ListRiskPositionsEnriched` 中增加了强校验，防止数据库中出现冗余记录时影响前端显示。
     - 前端优化了 `posMap` 的合并逻辑，并统一了 `tokenId` 的标准化处理。
@@ -62,3 +63,4 @@
 ## 5. 相关文档
 
 - [实时运行日志与看板设计](./runtime-observability.md) — 可观测性事件模型、后端 ring/总线、WS 传输与前端日志面板方案。
+- [数据层：SQLite、内存快照与同步](./data-layer.md) — SQLite 与进程内缓存边界、Gamma 同步间隔与 `force` 刷新、余额/仓位与 WS 的约定。

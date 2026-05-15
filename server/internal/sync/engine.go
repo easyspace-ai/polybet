@@ -17,12 +17,14 @@ package sync
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"strings"
 	syncstd "sync"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/config"
+	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/store"
 )
 
@@ -32,13 +34,13 @@ type Engine struct {
 	st          *store.Store
 	cache       *bookcache.Cache
 	sportsCache *SportsCache
-	logger      *slog.Logger
+	logger      *logrus.Logger
 	mu          syncstd.Mutex // avoid overlapping Once (matches Node marketSync running guard)
 }
 
-func NewEngine(cfg *config.Config, st *store.Store, cache *bookcache.Cache, sportsCache *SportsCache, logger *slog.Logger) *Engine {
+func NewEngine(cfg *config.Config, st *store.Store, cache *bookcache.Cache, sportsCache *SportsCache, logger *logrus.Logger) *Engine {
 	if logger == nil {
-		logger = slog.Default()
+		logger = logrus.StandardLogger()
 	}
 	return &Engine{cfg: cfg, st: st, cache: cache, sportsCache: sportsCache, logger: logger}
 }
@@ -56,34 +58,38 @@ func parseTagListJSON(raw string) []string {
 }
 
 // Once fetches configured leagues and upserts Polymarket moneyline (12) games.
-func (e *Engine) Once(ctx context.Context) error {
-	if !e.mu.TryLock() {
-		e.logger.Warn("market_sync_overlap_skip", "msg", "previous sync still running")
+// When force is true, waits for any in-flight sync instead of skipping (dashboard hard refresh).
+func (e *Engine) Once(ctx context.Context, force bool) error {
+	if force {
+		e.mu.Lock()
+	} else if !e.mu.TryLock() {
+		e.logger.WithFields(logx.Pairs("msg", "previous sync still running")).Warn("市场同步：上一次仍在运行，跳过")
 		return nil
 	}
 	defer e.mu.Unlock()
 
 	raw, _, err := e.st.GetBotConfig(ctx, "eventClassificationTags")
 	if err != nil {
-		e.logger.Error("market_sync_config", "key", "eventClassificationTags", "err", err)
+		e.logger.WithFields(logx.Pairs("key", "eventClassificationTags", "err", err)).Error("市场同步：读取配置失败")
 		return err
 	}
 	tags := parseTagListJSON(raw)
 	sports, err := e.sportsCache.Get(ctx)
 	if err != nil {
-		e.logger.Error("market_sync_sports_cache", "err", err)
+		e.logger.WithFields(logx.Pairs("err", err)).Error("市场同步：体育缓存不可用")
 		return err
 	}
 	leagues := leaguesFromTags(tags, sports)
-	e.logger.Info("market_sync_start",
+	e.logger.WithFields(logx.Pairs(
 		"tags_raw_len", len(strings.TrimSpace(raw)), "tags_parsed", tags, "leagues", len(leagues),
-		"gamma_api", gammaAPI, "http_proxy_set", strings.TrimSpace(e.cfg.HTTPPlatformProxy) != "")
+		"gamma_api", gammaAPI, "http_proxy_set", strings.TrimSpace(e.cfg.HTTPPlatformProxy) != "",
+	)).Info("市场同步：开始拉取 Gamma")
 	if len(leagues) > 0 {
 		leagueNames := make([]string, len(leagues))
 		for i, lg := range leagues {
 			leagueNames[i] = lg.League
 		}
-		e.logger.Info("market_sync_leagues_resolved", "leagues", leagueNames)
+		e.logger.WithFields(logx.Pairs("leagues", leagueNames)).Info("市场同步：联赛列表已解析")
 	}
 
 	totalEvents := 0
@@ -93,25 +99,25 @@ func (e *Engine) Once(ctx context.Context) error {
 	skippedUpsertErr := 0
 
 	for _, lg := range leagues {
-		e.logger.Info("market_sync_league_fetch", "league", lg.League, "series_id", lg.SeriesID, "sport", lg.Sport)
+		e.logger.WithFields(logx.Pairs("league", lg.League, "series_id", lg.SeriesID, "sport", lg.Sport)).Info("市场同步：拉取联赛页")
 		events, err := fetchGammaEvents(ctx, e.cfg.HTTPPlatformProxy, lg.SeriesID)
 		if err != nil {
-			e.logger.Error("market_sync_gamma_http", "league", lg.League, "series_id", lg.SeriesID, "err", err)
+			e.logger.WithFields(logx.Pairs("league", lg.League, "series_id", lg.SeriesID, "err", err)).Error("市场同步：Gamma HTTP 失败")
 			continue
 		}
 		totalEvents += len(events)
-		e.logger.Info("market_sync_gamma_page", "league", lg.League, "events", len(events))
+		e.logger.WithFields(logx.Pairs("league", lg.League, "events", len(events))).Info("市场同步：Gamma 返回事件数")
 
 		for _, ev := range events {
 			if stringsContainsGameLinesKeyword(ev.Title) {
 				skippedGameLines++
-				e.logger.Debug("market_sync_skip_submarket_title", "event_id", ev.ID, "title", ev.Title)
+				e.logger.WithFields(logx.Pairs("event_id", ev.ID, "title", ev.Title)).Debug("市场同步：跳过子市场标题")
 				continue
 			}
 			q, err := quoteFromMoneyline12(ev, lg)
 			if err != nil {
 				skippedQuote++
-				e.logger.Debug("market_sync_skip_quote", "event_id", ev.ID, "title", ev.Title, "reason", err.Error())
+				e.logger.WithFields(logx.Pairs("event_id", ev.ID, "title", ev.Title, "reason", err.Error())).Debug("市场同步：跳过报价解析")
 				continue
 			}
 			for _, oc := range q.Outcomes {
@@ -119,24 +125,25 @@ func (e *Engine) Once(ctx context.Context) error {
 			}
 			if err := e.st.UpsertPolyMarketQuote(ctx, q); err != nil {
 				skippedUpsertErr++
-				e.logger.Warn("market_sync_upsert_failed", "poly_event_id", ev.ID, "external_id", q.ExternalID, "err", err)
+				e.logger.WithFields(logx.Pairs("poly_event_id", ev.ID, "external_id", q.ExternalID, "err", err)).Warn("市场同步：写入数据库失败")
 				continue
 			}
 			upserted++
-			e.logger.Debug("market_sync_upsert_ok", "poly_event_id", ev.ID, "league", lg.League, "home", q.HomeTeam, "away", q.AwayTeam)
+			e.logger.WithFields(logx.Pairs("poly_event_id", ev.ID, "league", lg.League, "home", q.HomeTeam, "away", q.AwayTeam)).Debug("市场同步：报价已写入")
 		}
-		e.logger.Info("market_sync_league_done", "league", lg.League, "events_in_page", len(events))
+		e.logger.WithFields(logx.Pairs("league", lg.League, "events_in_page", len(events))).Info("市场同步：联赛页处理完成")
 	}
 
 	// DB row counts for operators (best-effort)
 	nMkt, _ := e.st.CountActiveMarkets(ctx)
 	nOut, _ := e.st.CountActiveOutcomes(ctx)
 
-	e.logger.Info("market_sync_done",
+	e.logger.WithFields(logx.Pairs(
 		"leagues", len(leagues), "gamma_events_total", totalEvents,
 		"quotes_upserted", upserted, "skipped_quote", skippedQuote, "skipped_game_lines_title", skippedGameLines,
 		"skipped_upsert_err", skippedUpsertErr,
-		"db_active_markets", nMkt, "db_active_outcomes", nOut)
+		"db_active_markets", nMkt, "db_active_outcomes", nOut,
+	)).Info("市场同步：本轮结束")
 	return nil
 }
 

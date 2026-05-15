@@ -50,11 +50,16 @@ func NewRouter(d Deps) *gin.Engine {
 		api.GET("/risk/positions", h.handleRiskPositions)
 		api.POST("/risk/refresh", h.handleRiskRefresh)
 		api.GET("/risk/tasks", h.handleRiskTasks)
+		api.POST("/risk/tasks/clear", h.handleRiskTasksClear)
+		api.GET("/risk/runtime-logs", h.handleRiskRuntimeLogs)
 		api.GET("/risk/stop-loss-history", h.handleStopLossHistory)
 		api.GET("/risk/trade-history", h.handleTradeHistory)
 		api.PATCH("/risk/positions/:id", h.handlePatchRiskPosition)
 		api.POST("/risk/positions/:id/close", h.handleClosePosition)
 		api.POST("/risk/close-all", h.handleCloseAll)
+		api.GET("/risk/hidden-positions", h.handleRiskHiddenList)
+		api.POST("/risk/hidden-positions", h.handleRiskHiddenPost)
+		api.DELETE("/risk/hidden-positions", h.handleRiskHiddenDelete)
 
 		// Stats
 		api.GET("/stats/markets", h.handleStatsMarkets)
@@ -79,6 +84,7 @@ func NewRouter(d Deps) *gin.Engine {
 	}
 
 	registerWS(r, d)
+	r.GET("/ws/risk", h.handleWSRisk)
 	webui.Mount(r)
 	return r
 }

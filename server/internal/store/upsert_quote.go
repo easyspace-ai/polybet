@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/easyspace-ai/polybet/internal/domain"
+	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/routercanon"
 )
 
@@ -71,10 +73,11 @@ func (s *Store) UpsertPolyMarketQuote(ctx context.Context, q *domain.MarketQuote
 	for _, oc := range q.Outcomes {
 		cr := routercanon.Canonicalize(oc.Label, q.BetType, q.HomeTeam, q.AwayTeam)
 		if cr.Parts == nil {
-			slog.Warn("outcome_canonicalize_skipped",
+			logrus.WithFields(logx.Pairs(
 				"poly_event_id", q.PolyEventID, "market_external_id", q.ExternalID,
 				"label", oc.Label, "bet_type", q.BetType, "home", q.HomeTeam, "away", q.AwayTeam,
-				"reason", cr.Reason)
+				"reason", cr.Reason,
+			)).Warn("市场入库：outcome 规范化跳过")
 			continue
 		}
 		canonID := "cb_" + eventID + "_" + cr.Parts.Key
