@@ -6,8 +6,8 @@ on:
 permissions:
   contents: read
 
-# Mirrors release desktop targets only: Apple Silicon DMG + Windows x64 NSIS.
-# (No Linux job — see `.github/workflows/release.yml` for rationale.)
+# Mirrors release desktop targets: mac arm64 (dmg + zip) and Windows x64
+# (NSIS + zip). No Linux job — see `.github/workflows/release.yml`.
 jobs:
   desktop:
     strategy:
@@ -17,11 +17,9 @@ jobs:
           - os: macos-14
             target: mac
             arch: arm64
-            artifact_glob: apps/desktop/dist/polybet-desktop-*-mac-arm64.dmg
           - os: windows-latest
             target: win
             arch: x64
-            artifact_glob: apps/desktop/dist/polybet-desktop-*-windows-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -62,9 +60,22 @@ jobs:
           POLYBET_ALLOW_GENERATED_DIRTY: "true"
         run: node scripts/package.mjs --${{ matrix.target }} --${{ matrix.arch }} --publish never
 
-      - name: Upload Desktop installer (${{ matrix.target }} ${{ matrix.arch }})
+      - name: Upload Desktop artifacts (mac arm64)
+        if: matrix.target == 'mac'
         uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.target }}-${{ matrix.arch }}
-          path: ${{ matrix.artifact_glob }}
+          path: |
+            apps/desktop/dist/polybet-desktop-*-mac-arm64.dmg
+            apps/desktop/dist/polybet-desktop-*-mac-arm64.zip
+          if-no-files-found: error
+
+      - name: Upload Desktop artifacts (win x64)
+        if: matrix.target == 'win'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}-${{ matrix.arch }}
+          path: |
+            apps/desktop/dist/polybet-desktop-*-windows-x64.exe
+            apps/desktop/dist/polybet-desktop-*-windows-x64.zip
           if-no-files-found: error

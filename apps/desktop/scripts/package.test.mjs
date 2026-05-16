@@ -158,6 +158,22 @@ describe("resolveBuildMatrix", () => {
       ),
     ).toThrow(/unsupported Desktop CLI architecture/);
   });
+
+  it("rejects Linux packaging", () => {
+    expect(() =>
+      resolveBuildMatrix(
+        {
+          allPlatforms: false,
+          sharedArgs: [],
+          platformTargets: { mac: [], win: [], linux: [] },
+          requestedPlatforms: ["linux"],
+          requestedArchs: ["x64"],
+        },
+        "linux",
+        "x64",
+      ),
+    ).toThrow(/Linux desktop packaging has been removed/);
+  });
 });
 
 describe("builderArgsForTarget", () => {
@@ -175,7 +191,6 @@ describe("builderArgsForTarget", () => {
         "1.2.3",
         {
           disableMacNotarize: true,
-          hostPlatform: "darwin",
           useScopedOutputDir: true,
         },
       ),
@@ -204,7 +219,7 @@ describe("builderArgsForTarget", () => {
           requestedArchs: ["x64"],
         },
         "1.2.3",
-        { hostPlatform: "win32", useScopedOutputDir: true },
+        { useScopedOutputDir: true },
       ),
     ).toEqual([
       "-c.extraMetadata.version=1.2.3",
@@ -214,30 +229,6 @@ describe("builderArgsForTarget", () => {
       "--publish",
       "always",
       "-c.directories.output=dist/win-x64",
-    ]);
-  });
-
-  it("defaults linux cross-builds to AppImage on non-Linux hosts", () => {
-    expect(
-      builderArgsForTarget(
-        { platform: "linux", arch: "x64" },
-        {
-          allPlatforms: false,
-          sharedArgs: ["--publish", "never"],
-          platformTargets: { mac: [], win: [], linux: [] },
-          requestedPlatforms: ["linux"],
-          requestedArchs: ["x64"],
-        },
-        "1.2.3",
-        { hostPlatform: "darwin" },
-      ),
-    ).toEqual([
-      "-c.extraMetadata.version=1.2.3",
-      "--linux",
-      "AppImage",
-      "--x64",
-      "--publish",
-      "never",
     ]);
   });
 });

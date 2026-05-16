@@ -62,7 +62,7 @@ const ARCH_FLAGS = new Map([
 ]);
 
 const SUPPORTED_CLI_ARCHS = new Set(["x64", "arm64"]);
-// Matches shipped CI artifacts: Apple Silicon DMG + Windows x64 NSIS only.
+// Matches shipped CI artifacts: mac arm64 + Windows x64 (see electron-builder.yml).
 const MAC_ALL_PLATFORM_TARGETS = [
   { platform: "mac", arch: "arm64" },
   { platform: "win", arch: "x64" },
@@ -250,7 +250,6 @@ function expandPlatformShorthand(token) {
   for (const char of token.slice(1)) {
     if (char === "m") expanded.push("mac");
     if (char === "w") expanded.push("win");
-    if (char === "l") expanded.push("linux");
   }
   return uniqueOrdered(expanded);
 }
@@ -346,6 +345,13 @@ export function resolveBuildMatrix(parsed, platform = process.platform, arch = p
     );
   }
 
+  if (platforms.includes("linux")) {
+    throw new Error(
+      "[package] Linux desktop packaging has been removed from this repo. " +
+        "Build macOS arm64 or Windows x64 only (see apps/desktop/electron-builder.yml).",
+    );
+  }
+
   return platforms.flatMap((targetPlatform) =>
     archs.map((targetArch) => ({
       platform: targetPlatform,
@@ -364,7 +370,6 @@ export function builderArgsForTarget(
   version,
   {
     disableMacNotarize = false,
-    hostPlatform = process.platform,
     useScopedOutputDir = false,
   } = {},
 ) {
@@ -373,18 +378,7 @@ export function builderArgsForTarget(
   if (disableMacNotarize) builderArgs.push("-c.mac.notarize=false");
   builderArgs.push(PLATFORM_CONFIG[target.platform].builderFlag);
   const requestedTargets = parsed.platformTargets[target.platform];
-  if (
-    target.platform === "linux" &&
-    hostPlatform !== "linux" &&
-    requestedTargets.length === 0
-  ) {
-    // electron-builder only guarantees AppImage/Snap when cross-building
-    // Linux from macOS/Windows. Keep `package:all` portable by defaulting
-    // to AppImage unless the caller explicitly requests Linux targets.
-    builderArgs.push("AppImage");
-  } else {
-    builderArgs.push(...requestedTargets);
-  }
+  builderArgs.push(...requestedTargets);
   builderArgs.push(`--${target.arch}`);
   builderArgs.push(...parsed.sharedArgs);
   if (useScopedOutputDir) {
@@ -489,7 +483,6 @@ function main() {
 
     const builderArgs = builderArgsForTarget(target, parsed, version, {
       disableMacNotarize,
-      hostPlatform: process.platform,
       useScopedOutputDir,
     });
 

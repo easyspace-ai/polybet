@@ -66,19 +66,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Build Desktop installers and attach to the same GitHub Release.
+  # Build Desktop artifacts and attach to the same GitHub Release.
   #
-  # Release assets are intentionally limited to:
-  #   - polybet-desktop-*-mac-arm64.dmg (Apple Silicon only; no Intel mac zip/dmg)
-  #   - polybet-desktop-*-windows-x64.exe (NSIS; no Windows arm64 / portable)
-  # Linux and other formats are dropped from CI to keep the release page small.
+  # Each matrix job uploads its native installers plus the update metadata
+  # file that job produced under `apps/desktop/dist/`, so electron-updater can
+  # resolve `latest.yml` (Windows x64) and `latest-mac.yml` (macOS arm64)
+  # without either job overwriting the other's primary metadata:
+  #   - Windows: `latest.yml` + NSIS `.exe` + portable `.zip`
+  #   - macOS:   `latest-mac.yml` + `.dmg` + `.zip` (zip is first in
+  #     `electron-builder.yml` so `latest-mac.yml` prefers the zip URL)
   #
-  # We use `electron-builder --publish never` and upload only those two files via
-  # `gh release upload` so blockmaps and latest-*.yml are not attached. Tradeoff:
-  # electron-updater cannot use this GitHub Release for update discovery unless
-  # you add those metadata files again or host updates elsewhere.
-  #
-  # Unsigned builds by default; code signing can be added via CSC_LINK, APPLE_ID, etc.
+  # Unsigned builds by default; enable signing/notarization via CSC_* / APPLE_*.
   desktop:
     needs: release
     strategy:
@@ -133,21 +131,54 @@ jobs:
           POLYBET_ALLOW_GENERATED_DIRTY: "true"
         run: node scripts/package.mjs --${{ matrix.target }} --${{ matrix.arch }} --publish never
 
-      - name: Upload desktop installer to GitHub Release
+      - name: Upload desktop artifacts to GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           shopt -s nullglob
+          dist="apps/desktop/dist"
           if [[ "${{ matrix.target }}" == "mac" ]]; then
-            files=(apps/desktop/dist/polybet-desktop-*-mac-arm64.dmg)
+            meta=("$dist/latest-mac.yml")
+            dmgs=("$dist"/polybet-desktop-*-mac-arm64.dmg)
+            zips=("$dist"/polybet-desktop-*-mac-arm64.zip)
+            if [[ "${#meta[@]}" -ne 1 || ! -f "${meta[0]}" ]]; then
+              echo "::error::Expected exactly one $dist/latest-mac.yml"
+              ls -la "$dist" || true
+              exit 1
+            fi
+            if [[ "${#dmgs[@]}" -ne 1 ]]; then
+              echo "::error::Expected exactly one mac arm64 DMG, got ${#dmgs[@]}: ${dmgs[*]}"
+              ls -la "$dist" || true
+              exit 1
+            fi
+            if [[ "${#zips[@]}" -ne 1 ]]; then
+              echo "::error::Expected exactly one mac arm64 zip, got ${#zips[@]}: ${zips[*]}"
+              ls -la "$dist" || true
+              exit 1
+            fi
+            echo "Uploading (mac): ${meta[0]} ${dmgs[0]} ${zips[0]}"
+            gh release upload "${GITHUB_REF_NAME}" "${meta[0]}" "${dmgs[0]}" "${zips[0]}" --clobber
           else
-            files=(apps/desktop/dist/polybet-desktop-*-windows-x64.exe)
+            meta=("$dist/latest.yml")
+            exes=("$dist"/polybet-desktop-*-windows-x64.exe)
+            zips=("$dist"/polybet-desktop-*-windows-x64.zip)
+            if [[ "${#meta[@]}" -ne 1 || ! -f "${meta[0]}" ]]; then
+              echo "::error::Expected exactly one $dist/latest.yml"
+              ls -la "$dist" || true
+              exit 1
+            fi
+            if [[ "${#exes[@]}" -ne 1 ]]; then
+              echo "::error::Expected exactly one Windows x64 NSIS exe, got ${#exes[@]}: ${exes[*]}"
+              ls -la "$dist" || true
+              exit 1
+            fi
+            if [[ "${#zips[@]}" -ne 1 ]]; then
+              echo "::error::Expected exactly one Windows x64 zip, got ${#zips[@]}: ${zips[*]}"
+              ls -la "$dist" || true
+              exit 1
+            fi
+            echo "Uploading (win): ${meta[0]} ${exes[0]} ${zips[0]}"
+            gh release upload "${GITHUB_REF_NAME}" "${meta[0]}" "${exes[0]}" "${zips[0]}" --clobber
           fi
-          if [[ "${#files[@]}" -ne 1 ]]; then
-            echo "::error::Expected exactly one installer for ${{ matrix.target }} ${{ matrix.arch }}, got ${#files[@]}: ${files[*]}"
-            ls -la apps/desktop/dist || true
-            exit 1
-          fi
-          gh release upload "${GITHUB_REF_NAME}" "${files[0]}" --clobber
