@@ -8,7 +8,7 @@ import {
   type RiskTaskRow,
 } from '@/lib/api';
 import { floorCents1, trailingStopCentsFromHW } from '@/lib/cents';
-import { riskWsBus, type BookLevel, type PositionUpdateMessage, type PolyBookFrame } from '@/lib/wsBus';
+import { riskWsBus, wsBus, type BookLevel, type PositionUpdateMessage, type PolyBookFrame, type RiskRuntimeLogMessage } from '@/lib/wsBus';
 import { getWSConfig } from '@/hooks/useWSConfig';
 import { getWSStatus } from '@/lib/api';
 
@@ -181,30 +181,86 @@ function updatePositionsFromBook() {
   }
 }
 
+function mergePositionRows(rows: RiskPositionRow[]): RiskPositionRow[] {
+  const posMap = new Map<string, RiskPositionRow>();
+  for (const pos of rows) {
+    if (!pos.tokenId) continue;
+    const tid = normalizeTokenId(pos.tokenId);
+    const key = `${tid}_${pos.sideLabel || 'default'}`;
+    const existing = posMap.get(key);
+    if (!existing || pos.id > existing.id) {
+      posMap.set(key, { ...pos, tokenId: tid });
+    }
+  }
+  return Array.from(posMap.values());
+}
+
+function applyPositionSnapshot(rows: RiskPositionRow[], meta?: RiskPositionsMeta | null) {
+  cache.positions = mergePositionRows(rows);
+  if (meta !== undefined) {
+    cache.meta = meta;
+  }
+  cache.lastRefresh = new Date();
+  cache.loading = false;
+  cache.error = null;
+  updatePositionsFromBook();
+  notifySubscribers();
+}
+
+function parsePositionRows(data: unknown): RiskPositionRow[] {
+  if (!Array.isArray(data)) return [];
+  return data.filter((row): row is RiskPositionRow => {
+    return row != null && typeof row === 'object' && typeof (row as RiskPositionRow).id === 'string';
+  });
+}
+
+let refreshPositionsTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleRefreshPositions(delayMs = 0) {
+  if (refreshPositionsTimer) clearTimeout(refreshPositionsTimer);
+  refreshPositionsTimer = setTimeout(() => {
+    refreshPositionsTimer = null;
+    void refreshPositions();
+  }, delayMs);
+}
+
 async function refreshPositions() {
   try {
     const p = await getRiskPositions();
     const rows = p.positions ?? [];
-    // 使用 tokenId + sideLabel 确保业务逻辑上的仓位唯一性，防止显示重复
-    const posMap = new Map<string, RiskPositionRow>();
-    for (const pos of rows) {
-      if (!pos.tokenId) continue;
-      // 必须标准化 Token ID，防止大小写或前缀不一致导致的重复
-      const tid = normalizeTokenId(pos.tokenId);
-      const key = `${tid}_${pos.sideLabel || 'default'}`;
-      const existing = posMap.get(key);
-      // 如果同一个 Token 有多个仓位记录，只保留最新的 (UUID 比较不可靠，但业务上不应有重复)
-      if (!existing || pos.id > existing.id) {
-        posMap.set(key, { ...pos, tokenId: tid });
-      }
+    if (p.stale && rows.length === 0 && cache.positions.length > 0) {
+      return;
     }
-    cache.positions = Array.from(posMap.values());
-    cache.meta = p.meta ?? null;
-    cache.lastRefresh = new Date();
-    updatePositionsFromBook();
-    notifySubscribers();
+    if (p.stale && rows.length === 0) {
+      cache.loading = true;
+      cache.error = null;
+      if (p.meta) cache.meta = p.meta;
+      notifySubscribers();
+      return;
+    }
+    applyPositionSnapshot(rows, p.meta ?? null);
   } catch (err) {
     console.error("Failed to refresh positions:", err);
+  }
+}
+
+function handlePositionUpdateMessage(msg: PositionUpdateMessage) {
+  const rows = parsePositionRows(msg.data);
+  if (rows.length > 0 || (Array.isArray(msg.data) && msg.data.length === 0)) {
+    applyPositionSnapshot(rows);
+  }
+  scheduleRefreshPositions(400);
+}
+
+function handleRiskRuntimePositionHint(msg: RiskRuntimeLogMessage) {
+  const ty = msg.data?.type ?? '';
+  if (
+    ty === 'order.execution_summary' ||
+    ty === 'position.snapshot_changed' ||
+    ty.includes('close_queued') ||
+    ty.includes('closed')
+  ) {
+    scheduleRefreshPositions(250);
   }
 }
 
@@ -217,26 +273,8 @@ function fetchRiskData(silent = false) {
 
   Promise.all([getRiskPositions(), getRiskTasks(50)])
     .then(([p, t]) => {
-      const posMap = new Map<string, RiskPositionRow>();
-      const positionRows = p.positions ?? [];
-      for (const pos of positionRows) {
-        if (!pos.tokenId) continue;
-        const tid = normalizeTokenId(pos.tokenId);
-        const key = `${tid}_${pos.sideLabel || 'default'}`;
-        const existing = posMap.get(key);
-        if (!existing || pos.id > existing.id) {
-          posMap.set(key, { ...pos, tokenId: tid });
-        }
-      }
-      cache.positions = Array.from(posMap.values());
-      cache.meta = p.meta ?? null;
+      applyPositionSnapshot(p.positions ?? [], p.meta ?? null);
       cache.tasks = Array.isArray(t.tasks) ? t.tasks : [];
-      cache.lastRefresh = new Date();
-      cache.loading = false;
-      cache.error = null;
-
-      // 用本地已缓存 of orderbook 填充 currentCents
-      updatePositionsFromBook();
     })
     .catch((err) => {
       cache.loading = false;
@@ -288,9 +326,9 @@ export function useRiskControlCache() {
 
   useEffect(() => {
     // 当收到仓位更新通知时，必须重新拉取数据，而不仅仅是刷新 UI
-    const unsubPos = riskWsBus.onPositionUpdate(() => {
-      void refreshPositions();
-    });
+    const unsubPosRisk = riskWsBus.onPositionUpdate(handlePositionUpdateMessage);
+    const unsubPosDash = wsBus.onPositionUpdate(handlePositionUpdateMessage);
+    const unsubRuntime = riskWsBus.onRuntimeLog(handleRiskRuntimePositionHint);
     const unsubStatus = riskWsBus.onPolyStatus((msg) => {
       if (msg.polyOrderbookConnected !== undefined) {
         cache.polyOrderbookConnected = msg.polyOrderbookConnected;
@@ -307,23 +345,23 @@ export function useRiskControlCache() {
 
     const sub = subscribe(() => setTick((t) => t + 1));
 
+    const pollSec = Math.min(getWSConfig().wsRiskPollIntervalSec, 8);
     const poll = setInterval(async () => {
       try {
         const st = await getWSStatus();
         if (st.polyOrderbookConnected !== undefined) cache.polyOrderbookConnected = st.polyOrderbookConnected;
         if (st.polyUserConnected !== undefined) cache.polyUserConnected = st.polyUserConnected;
-        const relayBad = riskWsBus.getConnectionState() !== "CONNECTED";
-        if (relayBad || !cache.polyOrderbookConnected || !cache.polyUserConnected) {
-          await refreshPositions();
-        }
+        await refreshPositions();
         setTick((t) => t + 1);
       } catch {
         /* ignore */
       }
-    }, getWSConfig().wsRiskPollIntervalSec * 1000);
+    }, pollSec * 1000);
 
     return () => {
-      unsubPos();
+      unsubPosRisk();
+      unsubPosDash();
+      unsubRuntime();
       unsubStatus();
       unsubDashStatus();
       sub();

@@ -314,7 +314,7 @@ export interface RiskTaskRow {
 }
 
 export const getRiskPositions = () =>
-  apiFetch<{ positions: RiskPositionRow[]; meta?: RiskPositionsMeta }>('/api/risk/positions');
+  apiFetch<{ positions: RiskPositionRow[]; meta?: RiskPositionsMeta; cached?: boolean; stale?: boolean }>('/api/risk/positions');
 
 export const getRiskTasks = (limit = 40) =>
   apiFetch<{ tasks: RiskTaskRow[] }>(`/api/risk/tasks?limit=${limit}`);
@@ -324,7 +324,7 @@ export const postRiskTasksClear = () =>
   apiFetch<{ ok: boolean; deleted: number }>('/api/risk/tasks/clear', { method: 'POST' });
 
 export const postRiskOfficialRefresh = () =>
-  apiFetch<{ ok: boolean; syncError?: string }>('/api/risk/refresh', { method: 'POST' });
+  apiFetch<{ ok: boolean; accepted?: boolean; alreadyRunning?: boolean; message?: string }>('/api/risk/refresh', { method: 'POST' });
 
 export const patchRiskPosition = (
   id: string,
