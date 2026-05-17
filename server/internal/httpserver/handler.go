@@ -1171,6 +1171,9 @@ func (h *Handler) handleRiskGate(c *gin.Context) {
 		out["killSwitch"] = gin.H{
 			"thresholdUsd":     snap.ThresholdUSD,
 			"unrealizedUsd":    snap.UnrealizedUSD,
+			"realizedUsd":      snap.RealizedUSD,
+			"totalPnlUsd":      snap.TotalPnLUSD,
+			"windowSec":        snap.WindowSec,
 			"openPositions":    snap.OpenPositions,
 			"bookCovered":      snap.BookCovered,
 			"bookMissing":      snap.BookMissing,

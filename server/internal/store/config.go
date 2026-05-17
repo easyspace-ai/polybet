@@ -201,6 +201,11 @@ func (s *Store) SeedDefaultConfig(ctx context.Context) error {
 		// so existing deployments are unaffected until operators opt in.
 		{"riskTradingHalted", "false"},
 		{"riskMaxDailyLossUSD", "0"},
+		// Window over which the kill switch counts realized PnL (closed
+		// positions). Default 86400 = 24h. Set to 0 to count only unrealized
+		// PnL (legacy behaviour). Closed positions whose realized_pnl_usd is
+		// NULL — dust closures, ghost-balance reconciles — are excluded.
+		{"riskKillSwitchWindowSec", "86400"},
 		{"riskMaxOpenPositions", "0"},
 		// Notional cost-basis exposure caps (USD). 0 disables. Cost-basis
 		// is conservative for an open-side cap because it ignores price
