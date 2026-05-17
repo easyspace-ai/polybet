@@ -1136,17 +1136,26 @@ func (h *Handler) handleRiskGate(c *gin.Context) {
 	last := h.risk.LastBookTickAt()
 	gateErr := h.risk.EnsureTradeAllowed(c, "")
 	out := gin.H{
-		"manualHalted":      manualHalted,
-		"autoHalted":        autoHalted,
-		"autoHaltReason":    autoReason,
-		"wsMarketDown":      wsDown,
-		"wsMarketReason":    wsReason,
-		"maxDailyLossUSD":   h.st.GetBotConfigFloat(c, "riskMaxDailyLossUSD", 0),
-		"maxOpenPositions":  h.st.GetBotConfigInt(c, "riskMaxOpenPositions", 0),
-		"bookMaxAgeMs":      h.st.GetBotConfigInt(c, "riskBookMaxAgeMs", 0),
-		"maxReconcileGapSec": h.st.GetBotConfigInt(c, "riskMaxReconcileGapSec", 0),
-		"stopLossAbsCents":  h.st.GetBotConfigFloat(c, "priceStopLossAbsCents", 0),
-		"openTradeAllowed":  gateErr == nil,
+		"manualHalted":           manualHalted,
+		"autoHalted":             autoHalted,
+		"autoHaltReason":         autoReason,
+		"wsMarketDown":           wsDown,
+		"wsMarketReason":         wsReason,
+		"maxDailyLossUSD":        h.st.GetBotConfigFloat(c, "riskMaxDailyLossUSD", 0),
+		"maxOpenPositions":       h.st.GetBotConfigInt(c, "riskMaxOpenPositions", 0),
+		"maxAccountExposureUSD":  h.st.GetBotConfigFloat(c, "riskMaxAccountExposureUSD", 0),
+		"maxMarketExposureUSD":   h.st.GetBotConfigFloat(c, "riskMaxMarketExposureUSD", 0),
+		"bookMaxAgeMs":           h.st.GetBotConfigInt(c, "riskBookMaxAgeMs", 0),
+		"maxReconcileGapSec":     h.st.GetBotConfigInt(c, "riskMaxReconcileGapSec", 0),
+		"stopLossAbsCents":       h.st.GetBotConfigFloat(c, "priceStopLossAbsCents", 0),
+		"openTradeAllowed":       gateErr == nil,
+	}
+	// Surface live exposure totals for the active account (best-effort;
+	// failure is silent so the gate snapshot endpoint still serves config).
+	if acct, _ := h.st.GetActivePolymarketAccount(c); acct != nil {
+		if v, err := h.st.AccountOpenExposureUSD(c, acct.ID); err == nil {
+			out["accountExposureUSD"] = v
+		}
 	}
 	if !last.IsZero() {
 		out["lastBookTickAt"] = last.Format(time.RFC3339)

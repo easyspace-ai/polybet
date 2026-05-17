@@ -12,6 +12,10 @@ import (
 	"github.com/easyspace-ai/polybet/internal/logx"
 )
 
+// sportsFeeRate is the legacy hardcoded taker-fee fallback used when the
+// upstream Gamma row does not carry a parseable feeRate / feeRateBps /
+// takerBaseFee. Operators on a league with a different blanket fee can
+// override via bot_config.syncDefaultTakerFeeRate.
 const sportsFeeRate = 0.03
 
 var shortTZOffsetRe = regexp.MustCompile(`([+-]\d{2})$`)
@@ -187,7 +191,31 @@ func outcomeIndexForTitleTeam(titleTeam string, labels []string) int {
 	return -1
 }
 
+// quoteFromMoneyline12 builds a MarketQuote from a Gamma event using the
+// resolved per-market taker fee for price adjustment. defaultFeeRate is
+// applied when the market itself doesn't carry a fee field; this is also
+// returned via the resolvedFeeRate output so the sync engine can push the
+// same value into bookcache.SetFeeRate without re-deriving it.
+func quoteFromMoneyline12WithFee(ev gammaEvent, lg League, defaultFeeRate float64) (*domain.MarketQuote, float64, error) {
+	q, err := quoteFromMoneyline12Internal(ev, lg, defaultFeeRate)
+	if err != nil {
+		return nil, defaultFeeRate, err
+	}
+	resolved := defaultFeeRate
+	if ml := findCombinedMoneylineMarket(ev.Markets); ml != nil {
+		if v, ok := marketFeeRate(ml); ok {
+			resolved = v
+		}
+	}
+	return q, resolved, nil
+}
+
 func quoteFromMoneyline12(ev gammaEvent, lg League) (*domain.MarketQuote, error) {
+	q, _, err := quoteFromMoneyline12WithFee(ev, lg, sportsFeeRate)
+	return q, err
+}
+
+func quoteFromMoneyline12Internal(ev gammaEvent, lg League, fee float64) (*domain.MarketQuote, error) {
 	homeTitle, awayTitle, ok := extractTeams(ev.Title, lg.TitleOrdering)
 	if !ok {
 		return nil, fmt.Errorf("bad title")
@@ -218,6 +246,14 @@ func quoteFromMoneyline12(ev gammaEvent, lg League) (*domain.MarketQuote, error)
 	priceA := pickPrice(prices, ai, 0.5)
 	liq := parseLiquidity(ml.Liquidity)
 
+	// Use the per-market fee when available, fall back to the supplied
+	// default (typically sportsFeeRate). Prevents a 3% blanket overstating
+	// the taker price on a market that's actually 0–2% in reality.
+	effectiveFee := fee
+	if v, ok := marketFeeRate(ml); ok {
+		effectiveFee = v
+	}
+
 	st := startTimeFromEvent(ev)
 	// HomeTeam/AwayTeam must equal outcome labels so routercanon "12" canonicalization succeeds.
 	name := homeLabel + " vs " + awayLabel
@@ -237,7 +273,7 @@ func quoteFromMoneyline12(ev gammaEvent, lg League) (*domain.MarketQuote, error)
 		Outcomes: []domain.OutcomeOdds{
 			{
 				Label:       homeLabel,
-				ImpliedOdds: applyFee(priceH, sportsFeeRate),
+				ImpliedOdds: applyFee(priceH, effectiveFee),
 				ExternalID:  tokenHome,
 				LiquidityDepth: domain.LiquidityDepth{
 					AvailableSize: liq / 2,
@@ -245,7 +281,7 @@ func quoteFromMoneyline12(ev gammaEvent, lg League) (*domain.MarketQuote, error)
 			},
 			{
 				Label:       awayLabel,
-				ImpliedOdds: applyFee(priceA, sportsFeeRate),
+				ImpliedOdds: applyFee(priceA, effectiveFee),
 				ExternalID:  tokenAway,
 				LiquidityDepth: domain.LiquidityDepth{
 					AvailableSize: liq / 2,

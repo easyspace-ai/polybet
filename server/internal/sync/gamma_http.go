@@ -19,17 +19,69 @@ import (
 const gammaAPI = "https://gamma-api.polymarket.com"
 
 type gammaMarket struct {
-	ConditionID     string  `json:"conditionId"`
-	Question        string  `json:"question"`
-	ClobTokenIDs    string  `json:"clobTokenIds"`
-	Outcomes        string  `json:"outcomes"`
-	OutcomePrices   string  `json:"outcomePrices"`
-	Active          bool    `json:"active"`
-	Closed          bool    `json:"closed"`
-	Liquidity       string  `json:"liquidity"`
-	SportsMarketType *string `json:"sportsMarketType"`
-	Line            *float64 `json:"line"`
-	GameStartTime   *string `json:"gameStartTime"`
+	ConditionID      string   `json:"conditionId"`
+	Question         string   `json:"question"`
+	ClobTokenIDs     string   `json:"clobTokenIds"`
+	Outcomes         string   `json:"outcomes"`
+	OutcomePrices    string   `json:"outcomePrices"`
+	Active           bool     `json:"active"`
+	Closed           bool     `json:"closed"`
+	Liquidity        string   `json:"liquidity"`
+	SportsMarketType *string  `json:"sportsMarketType"`
+	Line             *float64 `json:"line"`
+	GameStartTime    *string  `json:"gameStartTime"`
+
+	// Fee fields. Polymarket has shipped multiple shapes over time and Gamma
+	// is not always consistent with the CLOB new_market event. We accept any
+	// of the following and pick the first non-zero in marketFeeRate:
+	//
+	//   feeRateBps      decimal string in basis points ("200" → 0.02)
+	//   feeRate         decimal string as fraction ("0.02" → 0.02)
+	//   takerBaseFee    same shape as feeRate (legacy)
+	//
+	// The legacy hardcoded fallback (sportsFeeRate=0.03) is preserved when
+	// none of these decode, so behaviour is unchanged for unparseable rows.
+	FeeRateBps   *string `json:"feeRateBps,omitempty"`
+	FeeRate      *string `json:"feeRate,omitempty"`
+	TakerBaseFee *string `json:"takerBaseFee,omitempty"`
+}
+
+// marketFeeRate returns the per-market taker fee as a fraction (e.g. 0.02
+// for 2%). Returns ok=false when no field on the market decodes to a
+// finite, non-negative, plausible (< 1.0) value, in which case callers
+// should fall back to the league-wide default.
+func marketFeeRate(m *gammaMarket) (float64, bool) {
+	if m == nil {
+		return 0, false
+	}
+	parse := func(s *string, scale float64) (float64, bool) {
+		if s == nil {
+			return 0, false
+		}
+		t := strings.TrimSpace(*s)
+		if t == "" {
+			return 0, false
+		}
+		v, err := strconv.ParseFloat(t, 64)
+		if err != nil {
+			return 0, false
+		}
+		v *= scale
+		if v < 0 || v >= 1 {
+			return 0, false
+		}
+		return v, true
+	}
+	if v, ok := parse(m.FeeRateBps, 0.0001); ok {
+		return v, true
+	}
+	if v, ok := parse(m.FeeRate, 1); ok {
+		return v, true
+	}
+	if v, ok := parse(m.TakerBaseFee, 1); ok {
+		return v, true
+	}
+	return 0, false
 }
 
 type gammaEvent struct {

@@ -35,13 +35,15 @@ const (
 	// <= 0 disables.
 	botKeyMaxReconcileGapSec = "riskMaxReconcileGapSec"
 
-	// botKeyBlockOpenAfterStartSec refuses new opens when the market start
-	// time is more than this many seconds in the past (i.e. the underlying
-	// game has already kicked off). > 0 enables; <= 0 disables.
-	// Markets with unknown start_time (Gamma decode failure) are NOT
-	// blocked by this rule — the operator should harden the upstream sync
-	// or set a separate "unknown_start_time blocks open" toggle.
-	botKeyBlockOpenAfterStartSec = "riskBlockOpenAfterStartSec"
+	// botKeyMaxAccountExposureUSD caps the aggregate cost-basis of all open
+	// positions on the active account. <= 0 disables.
+	botKeyMaxAccountExposureUSD = "riskMaxAccountExposureUSD"
+
+	// botKeyMaxMarketExposureUSD caps the cost-basis on a single Gamma
+	// event (both YES and NO sides of the same game count together).
+	// <= 0 disables. Tokens that fail to resolve to an event slug skip
+	// this gate (sync issue, fail-open by design).
+	botKeyMaxMarketExposureUSD = "riskMaxMarketExposureUSD"
 )
 
 // degradedReason captures the most recent self-degradation cause.
@@ -195,17 +197,48 @@ func (s *Service) EnsureTradeAllowed(ctx context.Context, tokenID string) *Trade
 		}
 	}
 
-	// Per-account open-position cap.
-	if cap := s.st.GetBotConfigInt(ctx, botKeyMaxOpenPositions, 0); cap > 0 {
+	// Per-account open-position count cap and notional exposure cap. Both
+	// require knowing the active account; combined into a single lookup so
+	// the trade-gate hot path makes at most one GetActivePolymarketAccount
+	// call.
+	posCap := s.st.GetBotConfigInt(ctx, botKeyMaxOpenPositions, 0)
+	accountCap := s.st.GetBotConfigFloat(ctx, botKeyMaxAccountExposureUSD, 0)
+	marketCap := s.st.GetBotConfigFloat(ctx, botKeyMaxMarketExposureUSD, 0)
+	if posCap > 0 || accountCap > 0 || marketCap > 0 {
 		acct, err := s.st.GetActivePolymarketAccount(ctx)
 		if err == nil && acct != nil {
-			min := s.minShares(ctx)
-			n, cerr := s.st.CountOpenRiskPositionsMinShares(ctx, min, acct.ID)
-			if cerr == nil && int(n) >= cap {
-				return &TradeGateError{
-					Code:    "too_many_open_positions",
-					Message: "open position count exceeds riskMaxOpenPositions",
-					Detail:  map[string]any{"open": n, "cap": cap},
+			if posCap > 0 {
+				min := s.minShares(ctx)
+				n, cerr := s.st.CountOpenRiskPositionsMinShares(ctx, min, acct.ID)
+				if cerr == nil && int(n) >= posCap {
+					return &TradeGateError{
+						Code:    "too_many_open_positions",
+						Message: "open position count exceeds riskMaxOpenPositions",
+						Detail:  map[string]any{"open": n, "cap": posCap},
+					}
+				}
+			}
+			if accountCap > 0 {
+				exposure, eerr := s.st.AccountOpenExposureUSD(ctx, acct.ID)
+				if eerr == nil && exposure >= accountCap {
+					return &TradeGateError{
+						Code:    "account_exposure_cap",
+						Message: "open cost-basis exceeds riskMaxAccountExposureUSD",
+						Detail:  map[string]any{"exposureUsd": exposure, "capUsd": accountCap},
+					}
+				}
+			}
+			if marketCap > 0 && strings.TrimSpace(tokenID) != "" {
+				slug := s.st.PolyEventSlugForToken(ctx, tokenID)
+				if slug != "" {
+					exposure, merr := s.st.MarketOpenExposureUSD(ctx, acct.ID, slug)
+					if merr == nil && exposure >= marketCap {
+						return &TradeGateError{
+							Code:    "market_exposure_cap",
+							Message: "open cost-basis on this event exceeds riskMaxMarketExposureUSD",
+							Detail:  map[string]any{"exposureUsd": exposure, "capUsd": marketCap, "polySlug": slug},
+						}
+					}
 				}
 			}
 		}
