@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -29,7 +28,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/service/marketsvc"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
 	"github.com/easyspace-ai/polybet/internal/stoplossengine"
-	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/easyspace-ai/polybet/internal/storage"
 	marketsync "github.com/easyspace-ai/polybet/internal/sync"
 	"github.com/easyspace-ai/polybet/internal/tg"
 	"github.com/easyspace-ai/polybet/internal/workqueue"
@@ -40,7 +39,7 @@ import (
 // shutdownHTTPTimeout is how long http.Server.Shutdown waits for idle connections.
 // shutdownWorkerDrain caps WaitGroup after HTTP stops; in-flight Gamma sync and
 // HTTP clients should abort when the root ctx is cancelled (usually a few seconds).
-// A stuck SQLite lock or blocking syscall can use the full drain window.
+// A stuck storage lock or blocking syscall can use the full drain window.
 const (
 	shutdownHTTPTimeout = 10 * time.Second
 	shutdownWorkerDrain = 8 * time.Second
@@ -48,8 +47,7 @@ const (
 
 type App struct {
 	Cfg          *config.Config
-	DB           *sql.DB
-	Store        *store.Store
+	Store        *storage.Backend
 	Cache        *bookcache.Cache
 	Hub          *wsrelay.Hub
 	RiskHub      *wsrelay.Hub
@@ -80,12 +78,14 @@ func (a *App) RequestRestart() {
 	}
 }
 
-func New(cfg *config.Config, db *sql.DB, log *logrus.Logger) *App {
+func New(cfg *config.Config, be *storage.Backend, log *logrus.Logger) *App {
 	if log == nil {
 		log = logrus.StandardLogger()
 	}
-	st := store.New(db)
-	topN := st.GetBotConfigInt(context.Background(), "orderBookLevels", 10)
+	if be == nil {
+		log.Fatal("storage backend is nil")
+	}
+	topN := be.GetBotConfigInt(context.Background(), "orderBookLevels", 10)
 	cache := bookcache.New(topN)
 	hub := wsrelay.NewHub()
 	riskHub := wsrelay.NewHub()
@@ -105,25 +105,25 @@ func New(cfg *config.Config, db *sql.DB, log *logrus.Logger) *App {
 			log.WithFields(logx.Pairs("path", p)).Info("风控运行时事件将追加写入磁盘")
 		}
 	}
-	risk := risksvc.New(cfg, st, cache, dataClient, log, riskRuntime)
+	risk := risksvc.New(cfg, be, cache, dataClient, log, riskRuntime)
 	sportsCache := marketsync.NewSportsCache(cfg.HTTPPlatformProxy, time.Hour)
-	syncEng := marketsync.NewEngine(cfg, st, cache, sportsCache, log)
+	syncEng := marketsync.NewEngine(cfg, be, cache, sportsCache, log)
 
-	balanceCache := memcache.NewBalanceCache(st, cfg, log)
+	balanceCache := memcache.NewBalanceCache(be, cfg, log)
 	riskCache := memcache.NewRiskCache(log)
 	log.Info("进程内缓存(memcache)：余额与风控快照已初始化")
-	initSvc := initsvc.New(cfg, st, hub, risk, log)
+	initSvc := initsvc.New(cfg, be, hub, risk, log)
 	logSvc := logsvc.New()
 
 	a := &App{
-		Cfg: cfg, DB: db, Store: st, Cache: cache, Hub: hub, RiskHub: riskHub, RiskRuntime: riskRuntime, Risk: risk,
+		Cfg: cfg, Store: be, Cache: cache, Hub: hub, RiskHub: riskHub, RiskRuntime: riskRuntime, Risk: risk,
 		SyncEngine: syncEng, SportsCache: sportsCache, Debounce: debounce.New(120 * time.Millisecond), Log: log,
 		BalanceCache: balanceCache, RiskCache: riskCache, InitService: initSvc,
 		LogService: logSvc,
 		restartCh:  make(chan struct{}, 1),
 		jobs:       workqueue.New(),
 	}
-	a.StopLoss = stoplossengine.New(cfg, st, cache, risk, a.Debounce, hub, riskHub, riskRuntime, log,
+	a.StopLoss = stoplossengine.New(cfg, be, cache, risk, a.Debounce, hub, riskHub, riskRuntime, log,
 		func() { a.rebuildAndBroadcastCache() },
 		func() { a.broadcastPolyStatus() },
 	)
@@ -131,6 +131,7 @@ func New(cfg *config.Config, db *sql.DB, log *logrus.Logger) *App {
 }
 
 func (a *App) Run(ctx context.Context) error {
+	defer storage.CloseBadger(a.Store)
 	if err := a.Store.SeedDefaultConfig(ctx); err != nil {
 		return err
 	}
@@ -146,7 +147,7 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	deps := httpserver.Deps{
-		Cfg: a.Cfg, DB: a.DB, Store: a.Store, Cache: a.Cache, Hub: a.Hub, RiskHub: a.RiskHub, Risk: a.Risk, Debounce: a.Debounce,
+		Cfg: a.Cfg, Store: a.Store, Cache: a.Cache, Hub: a.Hub, RiskHub: a.RiskHub, Risk: a.Risk, Debounce: a.Debounce,
 		BalanceCache: a.BalanceCache, RiskCache: a.RiskCache, InitService: a.InitService, LogService: a.LogService,
 		SportsCache: a.SportsCache, RiskRuntime: a.RiskRuntime,
 		App: a,
@@ -378,7 +379,7 @@ func (a *App) syncTicker(ctx context.Context) {
 	defer a.wg.Done()
 	for {
 		// pollingInterval is stored in bot_config as **minutes** (not seconds).
-		iv := a.Store.GetBotConfigInt(context.Background(), "pollingInterval", 60)
+		iv := a.Store.GetBotConfigInt(context.Background(), "pollingInterval", config.DefaultMarketsSyncIntervalMin)
 		if iv < 1 {
 			iv = 1
 		}

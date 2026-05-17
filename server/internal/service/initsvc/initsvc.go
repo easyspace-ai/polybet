@@ -17,29 +17,29 @@ import (
 	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/service/balancesvc"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
-	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/easyspace-ai/polybet/internal/storage"
 	"github.com/easyspace-ai/polybet/internal/wsrelay"
 )
 
 type StepStatus struct {
-	Status   string      `json:"status"`
-	Error    string      `json:"error,omitempty"`
-	Details  interface{} `json:"details,omitempty"`
+	Status  string      `json:"status"`
+	Error   string      `json:"error,omitempty"`
+	Details interface{} `json:"details,omitempty"`
 }
 
 type InitStatus struct {
-	ConfigCheck    StepStatus `json:"configCheck"`
-	ProxyCheck     StepStatus `json:"proxyCheck"`
-	BalanceCache   StepStatus `json:"balanceCache"`
-	PositionCache  StepStatus `json:"positionCache"`
-	Complete       bool       `json:"complete"`
+	ConfigCheck   StepStatus `json:"configCheck"`
+	ProxyCheck    StepStatus `json:"proxyCheck"`
+	BalanceCache  StepStatus `json:"balanceCache"`
+	PositionCache StepStatus `json:"positionCache"`
+	Complete      bool       `json:"complete"`
 }
 
 type ProxyDetails struct {
-	Blocked  bool   `json:"blocked"`
-	IP       string `json:"ip,omitempty"`
-	Country  string `json:"country,omitempty"`
-	Region   string `json:"region,omitempty"`
+	Blocked bool   `json:"blocked"`
+	IP      string `json:"ip,omitempty"`
+	Country string `json:"country,omitempty"`
+	Region  string `json:"region,omitempty"`
 }
 
 type CacheDetails struct {
@@ -48,7 +48,7 @@ type CacheDetails struct {
 
 type Service struct {
 	cfg  *config.Config
-	st   *store.Store
+	st   *storage.Backend
 	hub  *wsrelay.Hub
 	log  *logrus.Logger
 	risk *risksvc.Service
@@ -57,7 +57,7 @@ type Service struct {
 	status InitStatus
 }
 
-func New(cfg *config.Config, st *store.Store, hub *wsrelay.Hub, risk *risksvc.Service, log *logrus.Logger) *Service {
+func New(cfg *config.Config, st *storage.Backend, hub *wsrelay.Hub, risk *risksvc.Service, log *logrus.Logger) *Service {
 	if log == nil {
 		log = logrus.StandardLogger()
 	}
@@ -142,9 +142,9 @@ func (s *Service) checkConfig(ctx context.Context) error {
 	if cfg.PolymarketAPIURL == "" {
 		hasError = true
 		errMsg = "POLYMARKET_API_URL not configured"
-	} else if cfg.DatabaseURL == "" {
+	} else if strings.TrimSpace(cfg.BadgerDir) == "" {
 		hasError = true
-		errMsg = "DATABASE_URL not configured"
+		errMsg = "POLYBET_BADGER_DIR not configured"
 	}
 
 	if hasError {
@@ -205,8 +205,8 @@ func (s *Service) checkProxy(ctx context.Context) error {
 	}
 
 	s.updateStatus("proxy", StepStatus{
-		Status:   "done",
-		Details:  result,
+		Status:  "done",
+		Details: result,
 	})
 	s.log.WithFields(logx.Pairs("blocked", result.Blocked, "country", result.Country)).Info("初始化：代理检测完成")
 	return nil

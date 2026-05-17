@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/easyspace-ai/polybet/internal/storage"
 )
 
 // FileName is the basename under ~/.polybet/ holding a JSON object of
@@ -31,7 +31,7 @@ func FilePath() (string, error) {
 // ApplyFromFile reads the home settings file (if present) and upserts each
 // entry into bot_config. Values in the file win over existing DB rows for
 // those keys. Missing file is not an error.
-func ApplyFromFile(ctx context.Context, st *store.Store) error {
+func ApplyFromFile(ctx context.Context, st *storage.Backend) error {
 	if st == nil {
 		return errors.New("nil store")
 	}
@@ -67,7 +67,7 @@ func ApplyFromFile(ctx context.Context, st *store.Store) error {
 
 // SnapshotToFile writes the full bot_config table to ~/.polybet/bot-settings.json
 // with mode 0600. Creates ~/.polybet when missing.
-func SnapshotToFile(ctx context.Context, st *store.Store) error {
+func SnapshotToFile(ctx context.Context, st *storage.Backend) error {
 	if st == nil {
 		return errors.New("nil store")
 	}

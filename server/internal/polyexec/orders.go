@@ -36,19 +36,19 @@ type FOKSellReport struct {
 
 // FOKBuyReport captures FOK buy telemetry (hedge path and trades).
 type FOKBuyReport struct {
-	AtRFC3339Nano        string               `json:"at"`
-	CLOBTokenID          string               `json:"clobTokenId,omitempty"`
-	TickSize             string               `json:"tickSize,omitempty"`
-	ExtraTicks           int                  `json:"extraTicks"`
-	BestBid              float64              `json:"bestBid,omitempty"`
-	BestAsk              float64              `json:"bestAsk,omitempty"`
-	LimitPrice           float64              `json:"limitPrice,omitempty"`
-	LimitPriceDecimal    string               `json:"limitPriceDecimal,omitempty"`
-	SizeUSDC             float64              `json:"sizeUSDC,omitempty"`
-	ExpectedOdds         float64              `json:"expectedOdds,omitempty"`
-	OrderID              string               `json:"orderId,omitempty"`
-	ErrorStep            string               `json:"errorStep,omitempty"` // token_id | orderbook | build | create_order
-	SubmitRefresh        *SubmitRefreshReport `json:"submitRefresh,omitempty"`
+	AtRFC3339Nano     string               `json:"at"`
+	CLOBTokenID       string               `json:"clobTokenId,omitempty"`
+	TickSize          string               `json:"tickSize,omitempty"`
+	ExtraTicks        int                  `json:"extraTicks"`
+	BestBid           float64              `json:"bestBid,omitempty"`
+	BestAsk           float64              `json:"bestAsk,omitempty"`
+	LimitPrice        float64              `json:"limitPrice,omitempty"`
+	LimitPriceDecimal string               `json:"limitPriceDecimal,omitempty"`
+	SizeUSDC          float64              `json:"sizeUSDC,omitempty"`
+	ExpectedOdds      float64              `json:"expectedOdds,omitempty"`
+	OrderID           string               `json:"orderId,omitempty"`
+	ErrorStep         string               `json:"errorStep,omitempty"` // token_id | orderbook | build | create_order
+	SubmitRefresh     *SubmitRefreshReport `json:"submitRefresh,omitempty"`
 }
 
 func ConditionalBalanceShares(balanceStr string) float64 {
@@ -422,12 +422,12 @@ func ExecuteFOKBuyWithOpts(ctx context.Context, client clob.Client, signer auth.
 // available collateral to fund the full hedge — the operator may want to
 // cover the gap with another wallet or accept a partial hedge.
 type HedgeSizingResult struct {
-	SizeUSDC             float64 `json:"sizeUSDC"`
-	ExpectedOdds         float64 `json:"expectedOdds"`
-	RequestedUSDC        float64 `json:"requestedUSDC,omitempty"`
-	AvailableCollateral  float64 `json:"availableCollateral,omitempty"`
-	ReserveUSDC          float64 `json:"reserveUSDC,omitempty"`
-	CollateralClamped    bool    `json:"collateralClamped,omitempty"`
+	SizeUSDC            float64 `json:"sizeUSDC"`
+	ExpectedOdds        float64 `json:"expectedOdds"`
+	RequestedUSDC       float64 `json:"requestedUSDC,omitempty"`
+	AvailableCollateral float64 `json:"availableCollateral,omitempty"`
+	ReserveUSDC         float64 `json:"reserveUSDC,omitempty"`
+	CollateralClamped   bool    `json:"collateralClamped,omitempty"`
 }
 
 // HedgeFOKBuySizing computes USDC budget and expected odds (0–1) for hedge_fok_buy on the opponent outcome token.

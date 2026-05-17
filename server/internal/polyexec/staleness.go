@@ -12,10 +12,10 @@ import (
 // SubmitRefreshReport summarises a pre-submit book refresh. Embedded in the
 // per-order report so operators can see whether the safeguard fired.
 type SubmitRefreshReport struct {
-	Refreshed       bool   `json:"refreshed"`
-	ElapsedMs       int64  `json:"elapsedMs,omitempty"`
-	BidMoveDownTicks int   `json:"bidMoveDownTicks,omitempty"`
-	AskMoveUpTicks   int   `json:"askMoveUpTicks,omitempty"`
+	Refreshed        bool   `json:"refreshed"`
+	ElapsedMs        int64  `json:"elapsedMs,omitempty"`
+	BidMoveDownTicks int    `json:"bidMoveDownTicks,omitempty"`
+	AskMoveUpTicks   int    `json:"askMoveUpTicks,omitempty"`
 	Err              string `json:"err,omitempty"`
 }
 

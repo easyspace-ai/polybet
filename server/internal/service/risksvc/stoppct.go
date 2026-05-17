@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/easyspace-ai/polybet/internal/storage"
 	"github.com/easyspace-ai/polybet/internal/store"
 )
 
@@ -24,7 +25,7 @@ const defaultStopPct = store.DefaultStopLossPct
 // See TrailingStopCentsFromHWWithAbs for semantics.
 const botKeyStopLossAbsCents = "priceStopLossAbsCents"
 
-func resolveStopLossPct(ctx context.Context, st *store.Store, entryCents float64) float64 {
+func resolveStopLossPct(ctx context.Context, st *storage.Backend, entryCents float64) float64 {
 	raw, ok, err := st.GetBotConfig(ctx, "priceStopLossRanges")
 	if err != nil || !ok || raw == "" {
 		return defaultStopPct
@@ -43,7 +44,7 @@ func resolveStopLossPct(ctx context.Context, st *store.Store, entryCents float64
 
 // stopLossAbsCents reads the configured absolute cent-trail floor (0 disables).
 // Returns 0 on parse error so the legacy percent-only path is preserved.
-func stopLossAbsCents(ctx context.Context, st *store.Store) float64 {
+func stopLossAbsCents(ctx context.Context, st *storage.Backend) float64 {
 	if st == nil {
 		return 0
 	}

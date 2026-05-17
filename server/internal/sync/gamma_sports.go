@@ -19,21 +19,21 @@ import (
 // GammaSport is a single entry from https://gamma-api.polymarket.com/sports
 type GammaSport struct {
 	ID         int    `json:"id"`
-	Sport      string `json:"sport"`      // slug, e.g. "nba"
+	Sport      string `json:"sport"` // slug, e.g. "nba"
 	Image      string `json:"image"`
 	Resolution string `json:"resolution"`
-	Ordering   string `json:"ordering"`   // "home" | "away"
-	Tags       string `json:"tags"`       // comma-separated tag ids
+	Ordering   string `json:"ordering"`      // "home" | "away"
+	Tags       string `json:"tags"`          // comma-separated tag ids
 	SeriesID   int    `json:"series,string"` // polymarket returns "series" as string
 	CreatedAt  string `json:"createdAt"`
 }
 
 // SportsCache holds the Gamma /sports list with a TTL.
 type SportsCache struct {
-	mu       sync.RWMutex
-	items    []GammaSport
-	expires  int64
-	ttlSec   int64
+	mu        sync.RWMutex
+	items     []GammaSport
+	expires   int64
+	ttlSec    int64
 	httpProxy string
 }
 

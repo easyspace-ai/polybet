@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
@@ -109,6 +110,21 @@ func (cf *configFile) list() []struct{ Key, Value string } {
 	return out
 }
 
+func (cf *configFile) snapshotStringMap() map[string]string {
+	cf.mu.RLock()
+	defer cf.mu.RUnlock()
+	out := make(map[string]string, len(cf.data))
+	for k, v := range cf.data {
+		out[k] = v
+	}
+	return out
+}
+
+// BotConfigStringMap returns an in-memory copy of bot-settings keys (for Badger import).
+func BotConfigStringMap() map[string]string {
+	return globalConfigFile.snapshotStringMap()
+}
+
 func configFilePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -134,6 +150,17 @@ func init() {
 }
 
 func (s *Store) GetBotConfig(ctx context.Context, key string) (string, bool, error) {
+	if s != nil && s.kv() != nil {
+		m, err := s.kv().ReadBotConfigMap(ctx)
+		if err != nil {
+			return "", false, err
+		}
+		if m != nil {
+			if v, ok := m[key]; ok {
+				return v, true, nil
+			}
+		}
+	}
 	v, ok := globalConfigFile.get(key)
 	return v, ok, nil
 }
@@ -163,18 +190,61 @@ func (s *Store) GetBotConfigInt(ctx context.Context, key string, def int) int {
 }
 
 func (s *Store) UpsertBotConfig(ctx context.Context, key, value string) error {
-	return globalConfigFile.set(key, value)
+	if err := globalConfigFile.set(key, value); err != nil {
+		return err
+	}
+	if s == nil || s.kv() == nil {
+		return nil
+	}
+	m, err := s.kv().ReadBotConfigMap(ctx)
+	if err != nil {
+		return err
+	}
+	if m == nil {
+		m = map[string]string{}
+	}
+	m[key] = value
+	return s.kv().WriteBotConfigMap(ctx, m)
 }
 
 func (s *Store) InsertBotConfigDefault(ctx context.Context, key, value string) error {
 	if _, ok := globalConfigFile.get(key); ok {
 		return nil
 	}
-	return globalConfigFile.set(key, value)
+	if s != nil && s.kv() != nil {
+		m, err := s.kv().ReadBotConfigMap(ctx)
+		if err != nil {
+			return err
+		}
+		if m != nil {
+			if _, has := m[key]; has {
+				return nil
+			}
+		}
+	}
+	return s.UpsertBotConfig(ctx, key, value)
 }
 
 func (s *Store) ListBotConfig(ctx context.Context) ([]struct{ Key, Value string }, error) {
-	return globalConfigFile.list(), nil
+	merged := map[string]string{}
+	for _, e := range globalConfigFile.list() {
+		merged[e.Key] = e.Value
+	}
+	if s != nil && s.kv() != nil {
+		m, err := s.kv().ReadBotConfigMap(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range m {
+			merged[k] = v
+		}
+	}
+	out := make([]struct{ Key, Value string }, 0, len(merged))
+	for k, v := range merged {
+		out = append(out, struct{ Key, Value string }{Key: k, Value: v})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
 }
 
 func (s *Store) SeedDefaultConfig(ctx context.Context) error {

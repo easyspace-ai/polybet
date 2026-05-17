@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/easyspace-ai/polybet/internal/storage"
 )
 
 const (
@@ -22,7 +22,7 @@ const (
 // errPartialFillRemaining is returned when a FAK sell filled partially and the YES row should stay open for retry.
 var errPartialFillRemaining = errors.New("partial_fill_remaining")
 
-func effectiveRiskCloseExecutionMode(ctx context.Context, st *store.Store) string {
+func effectiveRiskCloseExecutionMode(ctx context.Context, st *storage.Backend) string {
 	v, _, _ := st.GetBotConfig(ctx, botKeyRiskCloseExecutionMode)
 	switch strings.TrimSpace(strings.ToLower(v)) {
 	case riskCloseModeFAKSell:
@@ -36,7 +36,7 @@ func effectiveRiskCloseExecutionMode(ctx context.Context, st *store.Store) strin
 	}
 }
 
-func effectiveRiskHedgeBuySizing(ctx context.Context, st *store.Store) string {
+func effectiveRiskHedgeBuySizing(ctx context.Context, st *storage.Backend) string {
 	v, _, _ := st.GetBotConfig(ctx, botKeyRiskHedgeBuySizing)
 	if strings.TrimSpace(strings.ToLower(v)) == "shares" {
 		return "shares"
@@ -44,7 +44,7 @@ func effectiveRiskHedgeBuySizing(ctx context.Context, st *store.Store) string {
 	return "notional"
 }
 
-func riskHedgeAutoHideDefaultTrue(ctx context.Context, st *store.Store) bool {
+func riskHedgeAutoHideDefaultTrue(ctx context.Context, st *storage.Backend) bool {
 	v, ok, _ := st.GetBotConfig(ctx, botKeyRiskHedgeAutoHide)
 	if !ok {
 		return true

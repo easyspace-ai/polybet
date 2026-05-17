@@ -21,6 +21,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/polywiring"
 	"github.com/easyspace-ai/polybet/internal/riskruntime"
 	"github.com/easyspace-ai/polybet/internal/service/polysession"
+	"github.com/easyspace-ai/polybet/internal/storage"
 	"github.com/easyspace-ai/polybet/internal/store"
 	"github.com/easyspace-ai/polybet/internal/tg"
 	"github.com/google/uuid"
@@ -35,7 +36,7 @@ const botKeyOrderSubmitMaxAgeMs = "orderSubmitMaxAgeMs"
 
 type Service struct {
 	cfg        *config.Config
-	st         *store.Store
+	st         *storage.Backend
 	cache      *bookcache.Cache
 	dataClient data.Client
 	log        *logrus.Logger
@@ -94,7 +95,7 @@ func (s *Service) now() time.Time {
 	return s.nowFn()
 }
 
-func New(cfg *config.Config, st *store.Store, cache *bookcache.Cache, dataClient data.Client, log *logrus.Logger, rt *riskruntime.Bus) *Service {
+func New(cfg *config.Config, st *storage.Backend, cache *bookcache.Cache, dataClient data.Client, log *logrus.Logger, rt *riskruntime.Bus) *Service {
 	if log == nil {
 		log = logrus.StandardLogger()
 	}

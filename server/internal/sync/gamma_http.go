@@ -18,6 +18,52 @@ import (
 
 const gammaAPI = "https://gamma-api.polymarket.com"
 
+// optionalFee unmarshals Gamma fee fields that may be JSON strings or numbers
+// (API responses are not consistent across leagues / versions).
+type optionalFee struct {
+	s *string
+}
+
+func (o *optionalFee) UnmarshalJSON(data []byte) error {
+	if o == nil {
+		return fmt.Errorf("optionalFee: nil receiver")
+	}
+	o.s = nil
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	switch data[0] {
+	case '"':
+		var str string
+		if err := json.Unmarshal(data, &str); err != nil {
+			return err
+		}
+		str = strings.TrimSpace(str)
+		if str != "" {
+			o.s = &str
+		}
+	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		var n json.Number
+		if err := json.Unmarshal(data, &n); err != nil {
+			return err
+		}
+		str := strings.TrimSpace(string(n))
+		if str != "" {
+			o.s = &str
+		}
+	default:
+		return fmt.Errorf("optionalFee: unsupported JSON %s", string(data))
+	}
+	return nil
+}
+
+func optionalFeeString(o *optionalFee) *string {
+	if o == nil {
+		return nil
+	}
+	return o.s
+}
+
 type gammaMarket struct {
 	ConditionID      string   `json:"conditionId"`
 	Question         string   `json:"question"`
@@ -41,9 +87,9 @@ type gammaMarket struct {
 	//
 	// The legacy hardcoded fallback (sportsFeeRate=0.03) is preserved when
 	// none of these decode, so behaviour is unchanged for unparseable rows.
-	FeeRateBps   *string `json:"feeRateBps,omitempty"`
-	FeeRate      *string `json:"feeRate,omitempty"`
-	TakerBaseFee *string `json:"takerBaseFee,omitempty"`
+	FeeRateBps   *optionalFee `json:"feeRateBps,omitempty"`
+	FeeRate      *optionalFee `json:"feeRate,omitempty"`
+	TakerBaseFee *optionalFee `json:"takerBaseFee,omitempty"`
 }
 
 // marketFeeRate returns the per-market taker fee as a fraction (e.g. 0.02
@@ -72,13 +118,13 @@ func marketFeeRate(m *gammaMarket) (float64, bool) {
 		}
 		return v, true
 	}
-	if v, ok := parse(m.FeeRateBps, 0.0001); ok {
+	if v, ok := parse(optionalFeeString(m.FeeRateBps), 0.0001); ok {
 		return v, true
 	}
-	if v, ok := parse(m.FeeRate, 1); ok {
+	if v, ok := parse(optionalFeeString(m.FeeRate), 1); ok {
 		return v, true
 	}
-	if v, ok := parse(m.TakerBaseFee, 1); ok {
+	if v, ok := parse(optionalFeeString(m.TakerBaseFee), 1); ok {
 		return v, true
 	}
 	return 0, false

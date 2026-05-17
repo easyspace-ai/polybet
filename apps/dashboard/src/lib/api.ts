@@ -435,6 +435,15 @@ export const postCacheRefresh = () =>
 export const postMarketsRefresh = () =>
   apiFetch<{ ok: boolean; message: string }>('/api/markets/refresh?force=1', { method: 'POST' });
 
+export const postMarketsRefreshFull = () =>
+  apiFetch<{
+    ok: boolean;
+    accepted?: boolean;
+    alreadyRunning?: boolean;
+    message?: string;
+    cache?: string;
+  }>('/api/markets/refresh-full', { method: 'POST' });
+
 export interface GammaSport {
   id: number;
   sport: string;

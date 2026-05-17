@@ -11,7 +11,7 @@ func TestApplyHomePolybetProjectJSONFillsOnlyEmpty(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Chdir(home)
 
-	_ = os.Unsetenv("DATABASE_URL")
+	_ = os.Unsetenv("POLYBET_BADGER_DIR")
 	_ = os.Unsetenv("HOST")
 	_ = os.Unsetenv("PORT")
 	_ = os.Unsetenv("HTTP_PLATFORM_PROXY_URL")
@@ -24,7 +24,7 @@ func TestApplyHomePolybetProjectJSONFillsOnlyEmpty(t *testing.T) {
 	}
 	raw := `{
   "schemaVersion": 1,
-  "databaseUrl": "file:./db?_pragma=foreign_keys(1)",
+  "badgerDir": "/tmp/polybet-badger-test",
   "host": "127.0.0.1",
   "port": 7644,
   "outboundProxyUrl": "http://127.0.0.1:1",
@@ -37,8 +37,8 @@ func TestApplyHomePolybetProjectJSONFillsOnlyEmpty(t *testing.T) {
 
 	ApplyHomePolybetProjectJSON()
 
-	if got := os.Getenv("DATABASE_URL"); got != "file:./db?_pragma=foreign_keys(1)" {
-		t.Fatalf("DATABASE_URL: got %q", got)
+	if got := os.Getenv("POLYBET_BADGER_DIR"); got != "/tmp/polybet-badger-test" {
+		t.Fatalf("POLYBET_BADGER_DIR: got %q", got)
 	}
 	if got := os.Getenv("HOST"); got != "127.0.0.1" {
 		t.Fatalf("HOST: got %q", got)
@@ -56,9 +56,9 @@ func TestApplyHomePolybetProjectJSONFillsOnlyEmpty(t *testing.T) {
 		t.Fatalf("LOG_LEVEL: got %q", got)
 	}
 
-	_ = os.Setenv("DATABASE_URL", "preset")
+	_ = os.Setenv("POLYBET_BADGER_DIR", "preset")
 	ApplyHomePolybetProjectJSON()
-	if got := os.Getenv("DATABASE_URL"); got != "preset" {
-		t.Fatalf("DATABASE_URL should stay preset, got %q", got)
+	if got := os.Getenv("POLYBET_BADGER_DIR"); got != "preset" {
+		t.Fatalf("POLYBET_BADGER_DIR should stay preset, got %q", got)
 	}
 }

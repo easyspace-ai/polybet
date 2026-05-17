@@ -17,6 +17,10 @@ func NewRouter(d Deps) *gin.Engine {
 
 	h := NewHandler(d)
 
+	if d.Cfg != nil && d.Cfg.EnablePprof {
+		registerPprof(r)
+	}
+
 	r.GET("/api/health", h.handleHealth)
 
 	api := r.Group("/api")
@@ -25,6 +29,7 @@ func NewRouter(d Deps) *gin.Engine {
 		api.GET("/markets", h.handleMarkets)
 		api.GET("/sports", h.handleSports)
 		api.POST("/markets/refresh", h.handleMarketsRefresh)
+		api.POST("/markets/refresh-full", h.handleMarketsRefreshFull)
 
 		// Trades
 		api.GET("/trade/orderbook", h.handleOrderbook)

@@ -11,6 +11,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/polyprov"
 	"github.com/easyspace-ai/polybet/internal/polywiring"
+	"github.com/easyspace-ai/polybet/internal/storage"
 	"github.com/easyspace-ai/polybet/internal/store"
 )
 
@@ -22,7 +23,7 @@ var (
 
 // ResolveAuthedCLOB returns an authenticated CLOB (active DB account, else sole DB account,
 // else env L2 triple + key, else provision from POLYMARKET_PRIVATE_KEY).
-func ResolveAuthedCLOB(ctx context.Context, cfg *config.Config, st *store.Store) (*polywiring.AuthedCLOB, error) {
+func ResolveAuthedCLOB(ctx context.Context, cfg *config.Config, st *storage.Backend) (*polywiring.AuthedCLOB, error) {
 	acct, err := st.GetActivePolymarketAccount(ctx)
 	if err != nil {
 		return nil, err

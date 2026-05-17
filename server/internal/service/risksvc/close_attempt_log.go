@@ -66,7 +66,7 @@ type closeAttemptSnapshot struct {
 	PositionShares       float64 `json:"positionSharesRequested,omitempty"`
 	OnChainBalanceShares float64 `json:"onChainBalanceShares,omitempty"`
 	SizeUSDC             float64 `json:"sizeUSDC,omitempty"`
-	ExpectedOdds       float64 `json:"expectedOdds,omitempty"`
+	ExpectedOdds         float64 `json:"expectedOdds,omitempty"`
 	OrderType            string  `json:"orderType,omitempty"`
 	WorstPriceConfigured float64 `json:"worstPriceConfigured,omitempty"`
 	OrderID              string  `json:"orderId,omitempty"`

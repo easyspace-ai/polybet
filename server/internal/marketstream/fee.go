@@ -13,8 +13,8 @@ import (
 // helper picks the most authoritative non-zero value:
 //
 //  1. fee_schedule.rate    — string fraction ("0.0150" → 0.015) or bps
-//                            ("150" → 0.0150). Heuristic: values >= 1 are
-//                            interpreted as bps and divided by 10000.
+//     ("150" → 0.0150). Heuristic: values >= 1 are
+//     interpreted as bps and divided by 10000.
 //  2. taker_base_fee       — string fraction or bps under the same rule.
 //
 // Returns ok=false when fees_enabled is false, or no field decodes to a

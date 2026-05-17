@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/easyspace-ai/polybet/internal/logx"
+	"github.com/easyspace-ai/polybet/internal/storage"
 	"github.com/easyspace-ai/polybet/internal/store"
 )
 
@@ -64,15 +65,15 @@ type degradedReason struct {
 // degradedState holds runtime gating signals that do not belong in bot config
 // (transient: WS health, last book tick).
 type degradedState struct {
-	mu              sync.RWMutex
-	wsMarketDown    bool   // true when market WS reached fatal state
-	wsMarketReason  string // last error surface from MarketStream
-	manualHalted    atomic.Bool
-	autoHalted      atomic.Bool
-	autoHaltReason  string
-	autoHaltMu      sync.Mutex
-	lastBookTickMs  atomic.Int64
-	lastReason      degradedReason
+	mu             sync.RWMutex
+	wsMarketDown   bool   // true when market WS reached fatal state
+	wsMarketReason string // last error surface from MarketStream
+	manualHalted   atomic.Bool
+	autoHalted     atomic.Bool
+	autoHaltReason string
+	autoHaltMu     sync.Mutex
+	lastBookTickMs atomic.Int64
+	lastReason     degradedReason
 }
 
 func newDegradedState() *degradedState { return &degradedState{} }
@@ -283,10 +284,10 @@ func (s *Service) EnsureTradeAllowed(ctx context.Context, tokenID string) *Trade
 					Code:    "post_kickoff",
 					Message: "market started more than riskBlockOpenAfterStartSec seconds ago",
 					Detail: map[string]any{
-						"tokenId":     tokenID,
-						"startTime":   startTime.UTC().Format(time.RFC3339),
-						"elapsedSec":  int(elapsed.Seconds()),
-						"cutoffSec":   cutoffSec,
+						"tokenId":    tokenID,
+						"startTime":  startTime.UTC().Format(time.RFC3339),
+						"elapsedSec": int(elapsed.Seconds()),
+						"cutoffSec":  cutoffSec,
 					},
 				}
 			}
@@ -317,7 +318,7 @@ func (s *Service) EnsureTradeAllowed(ctx context.Context, tokenID string) *Trade
 	return nil
 }
 
-func isBotConfigTruthy(ctx context.Context, st *store.Store, key string) bool {
+func isBotConfigTruthy(ctx context.Context, st *storage.Backend, key string) bool {
 	v, ok, err := st.GetBotConfig(ctx, key)
 	if err != nil || !ok {
 		return false

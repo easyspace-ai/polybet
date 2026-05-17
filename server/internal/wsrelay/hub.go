@@ -141,6 +141,9 @@ func (h *Hub) BroadcastJSON(v any) {
 	h.mu.Unlock()
 	if typ == "polyBookUpdate" {
 		logrus.WithFields(logx.Pairs("type", typ, "clients", n, "bytes", len(b), "dropped", len(dead))).Debug("WebSocket Hub：广播")
+	} else if typ == "risk_runtime_log" {
+		// High-frequency observability stream: avoid INFO log storms (see riskruntime.Bus).
+		logrus.WithFields(logx.Pairs("type", typ, "clients", n, "bytes", len(b), "dropped", len(dead))).Debug("WebSocket Hub：广播")
 	} else if typ == "marketsSnapshot" {
 		markets := 0
 		if m, ok := v.(map[string]any); ok {
