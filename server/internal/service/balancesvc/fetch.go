@@ -52,6 +52,13 @@ func fetchCLOBCollateralUSD(ctx context.Context, cl *polywiring.AuthedCLOB) (flo
 	return ParseCollateralMicro(resp.Balance)
 }
 
+// FetchCLOBCollateralUSD is the exported form of fetchCLOBCollateralUSD.
+// Used by the hedge-close path to size BUY orders within the account's
+// available collateral before submitting to CLOB.
+func FetchCLOBCollateralUSD(ctx context.Context, cl *polywiring.AuthedCLOB) (float64, error) {
+	return fetchCLOBCollateralUSD(ctx, cl)
+}
+
 func readPUSDOnChain(ctx context.Context, rpcURL, ownerHex string) (float64, error) {
 	client, err := ethclient.DialContext(ctx, rpcURL)
 	if err != nil {
