@@ -69,6 +69,7 @@ func NewRouter(d Deps) *gin.Engine {
 		// Execution-quality / slippage telemetry
 		api.GET("/trade-quality/recent", h.handleTradeQualityRecent)
 		api.GET("/trade-quality/aggregate", h.handleTradeQualityAggregate)
+		api.GET("/risk/realized-pnl-by-event", h.handleRealizedPnLByEvent)
 
 		// Stats
 		api.GET("/stats/markets", h.handleStatsMarkets)

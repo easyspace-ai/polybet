@@ -1244,6 +1244,45 @@ func (h *Handler) handleTradeQualityAggregate(c *gin.Context) {
 	})
 }
 
+// handleRealizedPnLByEvent groups SELL fills by Polymarket event slug so
+// operators can see at a glance which games cost them the most today.
+// Defaults to the last 24h; override with ?windowSec=N. Limit caps at 200.
+func (h *Handler) handleRealizedPnLByEvent(c *gin.Context) {
+	windowSec, _ := strconv.Atoi(c.DefaultQuery("windowSec", "86400"))
+	if windowSec <= 0 {
+		windowSec = 86400
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	accountID := ""
+	if acct, _ := h.st.GetActivePolymarketAccount(c); acct != nil {
+		accountID = acct.ID
+	}
+	if accountID == "" {
+		c.JSON(200, gin.H{"rows": []any{}, "windowSec": windowSec, "accountId": ""})
+		return
+	}
+	since := time.Now().UTC().Add(-time.Duration(windowSec) * time.Second)
+	rows, err := h.st.RealizedPnLByEvent(c, accountID, since, limit)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "realized_pnl_by_event", "message": err.Error()})
+		return
+	}
+	totalPnL := 0.0
+	totalFills := 0
+	for _, r := range rows {
+		totalPnL += r.RealizedPnLUSD
+		totalFills += r.Fills
+	}
+	c.JSON(200, gin.H{
+		"windowSec":         windowSec,
+		"since":             since.Format(time.RFC3339),
+		"accountId":         accountID,
+		"rows":              rows,
+		"totalRealizedUsd":  totalPnL,
+		"totalFills":        totalFills,
+	})
+}
+
 // handleRiskKillSwitchClear clears the auto-halt flag (manual halt via bot
 // config is unaffected).
 func (h *Handler) handleRiskKillSwitchClear(c *gin.Context) {

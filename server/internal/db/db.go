@@ -109,6 +109,12 @@ func Migrate(ctx context.Context, conn *sql.DB) error {
 		{7, "migrations/007_risk_position_poly_slugs.sql"},
 		{8, "migrations/008_risk_tasks_last_attempt.sql"},
 		{9, "migrations/009_trade_quality.sql"},
+		// Migration 10 adds trade_quality.realized_pnl_usd for the
+		// per-event PnL aggregator. NOTE: PR #7 and PR #8 also number
+		// migrations at 10 (different schemas). Whichever lands second
+		// must bump its number to 11 (one-line edit). This branch is the
+		// "convergence" PR and assumes the others already merged.
+		{10, "migrations/010_trade_quality_realized_pnl.sql"},
 	}
 	for _, step := range steps {
 		if v >= step.version {
