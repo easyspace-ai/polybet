@@ -209,6 +209,35 @@ func closeRetryMs(attempts int) int {
 	return v
 }
 
+// closeRetryMsForLadder returns a backoff that knows which ladder tier the
+// task is currently on. The default closeRetryMs caps at 60s and keeps
+// firing every minute even when the bot has reached the hedge tier — a
+// busy loop on a market that genuinely can't be sold (no buyers) and is
+// already hedged. Returning a longer floor for the hedge tier:
+//
+//   - Avoids spamming CLOB with hedge BUY attempts that succeed once and
+//     then have nothing left to do (the original position is auto-hidden
+//     after a successful hedge per riskHedgeAutoHidePosition).
+//   - Frees up the close-task concurrency budget for positions that
+//     actually have a chance of selling.
+//
+// tierType is the ladder tier label ("hedge_fok_buy" gets the long
+// floor; everything else falls through to closeRetryMs).
+func closeRetryMsForLadder(attempts int, tierType string) int {
+	if tierType == riskCloseModeHedgeFOKBuy {
+		// 30s base, double each retry, cap at 5 minutes. Empirically the
+		// useful retry window for a stuck hedge is "every few minutes"
+		// not "every second".
+		n := max(1, attempts)
+		v := 30000 * int(math.Pow(2, float64(minInt(n-1, 4))))
+		if v > 300000 {
+			return 300000
+		}
+		return v
+	}
+	return closeRetryMs(attempts)
+}
+
 func defaultBackoffMs(attempts int) int {
 	v := 2000 * int(math.Pow(2, float64(minInt(attempts, 5))))
 	if v > 60000 {
@@ -478,12 +507,16 @@ func (s *Service) ProcessRiskTasksOnce(ctx context.Context) error {
 				return
 			}
 			att := t.Attempts + 1
-			delay := closeRetryMs(att)
+			// Pick the backoff floor that matches whichever tier the next
+			// attempt will dispatch to. A hedge tier that's already locked
+			// in losses doesn't need 1Hz retry pressure.
+			tierType := s.activeCloseTierType(ctx, att)
+			delay := closeRetryMsForLadder(att, tierType)
 			msg := runErr.Error()
 			if len(msg) > 2000 {
 				msg = msg[:2000]
 			}
-			s.log.WithFields(logx.Pairs("task_id", t.ID, "type", t.Type, "next_attempt", att, "retry_delay_ms", delay, "err", msg)).Warn("风控：任务失败将重试")
+			s.log.WithFields(logx.Pairs("task_id", t.ID, "type", t.Type, "next_attempt", att, "retry_delay_ms", delay, "tier_type", tierType, "err", msg)).Warn("风控：任务失败将重试")
 			_ = s.st.SetRiskTaskFailed(ctx, t.ID, att, msg, time.Now().UTC().Add(time.Duration(delay)*time.Millisecond))
 			mu.Lock()
 			failed++
