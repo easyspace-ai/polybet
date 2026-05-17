@@ -44,6 +44,14 @@ const (
 	// <= 0 disables. Tokens that fail to resolve to an event slug skip
 	// this gate (sync issue, fail-open by design).
 	botKeyMaxMarketExposureUSD = "riskMaxMarketExposureUSD"
+
+	// botKeyBlockOpenAfterStartSec refuses new opens when the market start
+	// time is more than this many seconds in the past (i.e. the underlying
+	// game has already kicked off). > 0 enables; <= 0 disables.
+	// Markets with unknown start_time (Gamma decode failure) are NOT
+	// blocked by this rule — the operator should harden the upstream sync
+	// or set a separate "unknown_start_time blocks open" toggle.
+	botKeyBlockOpenAfterStartSec = "riskBlockOpenAfterStartSec"
 )
 
 // degradedReason captures the most recent self-degradation cause.
@@ -259,6 +267,28 @@ func (s *Service) EnsureTradeAllowed(ctx context.Context, tokenID string) *Trade
 				Code:    "ws_market_stale",
 				Message: "market WS has not delivered a tick within riskMaxReconcileGapSec",
 				Detail:  map[string]any{"lastTickAt": last.Format(time.RFC3339), "maxGapSec": gapSec},
+			}
+		}
+	}
+
+	// Post-kickoff guard: refuse opens on markets whose game started more
+	// than the configured cutoff ago. Helps avoid opening a position into
+	// the live event uncertainty (referee timeouts, in-play news flow that
+	// the bot has no model for).
+	if cutoffSec := s.st.GetBotConfigInt(ctx, botKeyBlockOpenAfterStartSec, 0); cutoffSec > 0 && strings.TrimSpace(tokenID) != "" {
+		if startTime, ok := s.st.MarketStartTimeForToken(ctx, tokenID); ok {
+			elapsed := time.Since(startTime)
+			if elapsed > time.Duration(cutoffSec)*time.Second {
+				return &TradeGateError{
+					Code:    "post_kickoff",
+					Message: "market started more than riskBlockOpenAfterStartSec seconds ago",
+					Detail: map[string]any{
+						"tokenId":     tokenID,
+						"startTime":   startTime.UTC().Format(time.RFC3339),
+						"elapsedSec":  int(elapsed.Seconds()),
+						"cutoffSec":   cutoffSec,
+					},
+				}
 			}
 		}
 	}

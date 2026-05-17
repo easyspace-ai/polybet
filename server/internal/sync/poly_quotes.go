@@ -61,6 +61,14 @@ func parseGammaTime(raw string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// startTimeFromEvent returns the parsed market start time, or the zero
+// value when no field on the event can be decoded.
+//
+// The legacy implementation fell back to time.Now() which made "unknown
+// start time" indistinguishable from "starts now", silently bypassing
+// any downstream check that relies on start_time (e.g. the post-kickoff
+// open-block gate). Returning zero forces consumers to handle the
+// "unknown" case explicitly via IsKnownStartTime.
 func startTimeFromEvent(ev gammaEvent) time.Time {
 	for _, m := range ev.Markets {
 		if m.GameStartTime != nil && strings.TrimSpace(*m.GameStartTime) != "" {
@@ -82,8 +90,8 @@ func startTimeFromEvent(ev gammaEvent) time.Time {
 		}
 		logrus.WithFields(logx.Pairs("event_id", ev.ID, "raw", ev.StartDate)).Debug("市场同步：解析 StartDate 失败")
 	}
-	logrus.WithFields(logx.Pairs("event_id", ev.ID)).Warn("市场同步：开赛时间回退为当前时间")
-	return time.Now().UTC()
+	logrus.WithFields(logx.Pairs("event_id", ev.ID)).Warn("市场同步：开赛时间未知（保留 zero time，下游需识别）")
+	return time.Time{}
 }
 
 var titleStripRe = regexp.MustCompile(`(?i)^[^:]+:\s*`)
