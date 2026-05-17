@@ -230,6 +230,26 @@ func (s *Store) SeedDefaultConfig(ctx context.Context) error {
 		// loose (10% of 95¢ = 9.5¢ drop). 0 disables, preserving legacy
 		// percent-only behaviour.
 		{"priceStopLossAbsCents", "0"},
+		// High-water ratchet model:
+		//   riskHwUseMicroPrice (true/false): use depth-weighted micro-price
+		//     instead of max(bid,ask) so a single thin ask flicker cannot
+		//     inflate HW. Default false preserves legacy behaviour.
+		//   riskHwMinDepthUsd (USD float, 0 disables): suppress HW ratchet
+		//     when neither side of the top-of-book has at least this much
+		//     USD depth. Filters microstructure noise on illiquid books.
+		{"riskHwUseMicroPrice", "false"},
+		{"riskHwMinDepthUsd", "0"},
+		// Pre-submit /book freshness check. When > 0 and elapsed since the
+		// initial fetch exceeds this many ms, polyexec refetches /book and
+		// recomputes the limit price before signing. Catches build-then-
+		// submit races where bestBid moves down between fetch and signing.
+		// 0 disables; suggested production value: 1500.
+		{"orderSubmitMaxAgeMs", "0"},
+		// Close ladder tiers (per-attempt close strategy) used when
+		// riskCloseExecutionMode = "ladder". The default progression is
+		// gentle FOK → aggressive FAK → deeper FAK → hedge to lock losses.
+		// Operators can override via a JSON array; see risk_close_ladder.go.
+		{"riskCloseLadderTiers", `[{"type":"fok_sell","extraTicks":2},{"type":"fak_sell","extraTicks":5},{"type":"fak_sell","extraTicks":15},{"type":"hedge_fok_buy"}]`},
 	}
 	for _, r := range append(rows, wsConfigSeedRows()...) {
 		if err := s.InsertBotConfigDefault(ctx, r.k, r.v); err != nil {

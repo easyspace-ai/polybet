@@ -1182,6 +1182,68 @@ func (h *Handler) handleRiskGate(c *gin.Context) {
 	c.JSON(200, out)
 }
 
+// handleTradeQualityRecent returns the most recent fills (newest first) for
+// the active account. Useful for spot-checking slippage.
+func (h *Handler) handleTradeQualityRecent(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	accountID := ""
+	if acct, _ := h.st.GetActivePolymarketAccount(c); acct != nil {
+		accountID = acct.ID
+	}
+	rows, err := h.st.ListRecentTradeQuality(c, accountID, limit)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "trade_quality_list", "message": err.Error()})
+		return
+	}
+	out := make([]gin.H, 0, len(rows))
+	for _, t := range rows {
+		out = append(out, gin.H{
+			"id":             t.ID,
+			"createdAt":      t.CreatedAt.UTC().Format(time.RFC3339Nano),
+			"side":           t.Side,
+			"orderType":      t.OrderType,
+			"tokenId":        t.TokenID,
+			"expectedOdds":   t.ExpectedOdds,
+			"fillOdds":       t.FillOdds,
+			"limitOdds":      t.LimitOdds,
+			"bestBid":        t.BestBid,
+			"bestAsk":        t.BestAsk,
+			"slippageBps":    t.SlippageBps,
+			"size":           t.Size,
+			"submitLatencyMs": t.SubmitLatencyMs,
+			"tradeId":        t.TradeID,
+			"riskTaskId":     t.RiskTaskID,
+			"notes":          t.Notes,
+		})
+	}
+	c.JSON(200, gin.H{"rows": out, "count": len(out)})
+}
+
+// handleTradeQualityAggregate returns aggregate slippage stats over a window.
+// Defaults to the last 24h. Use ?windowSec=N to override.
+func (h *Handler) handleTradeQualityAggregate(c *gin.Context) {
+	windowSec, _ := strconv.Atoi(c.DefaultQuery("windowSec", "86400"))
+	if windowSec <= 0 {
+		windowSec = 86400
+	}
+	accountID := ""
+	if acct, _ := h.st.GetActivePolymarketAccount(c); acct != nil {
+		accountID = acct.ID
+	}
+	since := time.Now().UTC().Add(-time.Duration(windowSec) * time.Second)
+	agg, err := h.st.AggregateTradeQuality(c, accountID, since)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "trade_quality_aggregate", "message": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{
+		"windowSec":  windowSec,
+		"since":      since.Format(time.RFC3339),
+		"accountId":  accountID,
+		"aggregate":  agg,
+	})
+}
+
 // handleRiskKillSwitchClear clears the auto-halt flag (manual halt via bot
 // config is unaffected).
 func (h *Handler) handleRiskKillSwitchClear(c *gin.Context) {
