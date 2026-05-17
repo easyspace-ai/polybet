@@ -202,6 +202,11 @@ func (s *Store) SeedDefaultConfig(ctx context.Context) error {
 		{"riskTradingHalted", "false"},
 		{"riskMaxDailyLossUSD", "0"},
 		{"riskMaxOpenPositions", "0"},
+		// Notional cost-basis exposure caps (USD). 0 disables. Cost-basis
+		// is conservative for an open-side cap because it ignores price
+		// drift (mark-to-market would inflate winners and shrink losers).
+		{"riskMaxAccountExposureUSD", "0"},
+		{"riskMaxMarketExposureUSD", "0"},
 		// 0 disables per-token book-staleness gating; setting to e.g. 5000
 		// (= 5 s) refuses opens when WS+REST cache is older than that window.
 		{"riskBookMaxAgeMs", "0"},
