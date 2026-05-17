@@ -284,6 +284,11 @@ func (a *App) riskTicker(ctx context.Context) {
 	defer a.wg.Done()
 	t := time.NewTicker(3 * time.Second)
 	defer t.Stop()
+	// killSwitchEvery throttles the unrealized-PnL evaluator so we don't hit
+	// REST /book on every 3s tick when the WS cache is cold. 15s strikes a
+	// balance between catching a fast-moving drawdown and bandwidth budget.
+	const killSwitchEvery = 15 * time.Second
+	lastKill := time.Now().Add(-killSwitchEvery)
 	for {
 		select {
 		case <-ctx.Done():
@@ -295,6 +300,13 @@ func (a *App) riskTicker(ctx context.Context) {
 			_ = callCtx(ctx, func() error {
 				return a.Risk.ProcessRiskTasksOnce(ctx)
 			})
+			if time.Since(lastKill) >= killSwitchEvery {
+				lastKill = time.Now()
+				_ = callCtx(ctx, func() error {
+					_, err := a.Risk.EvaluateKillSwitch(ctx)
+					return err
+				})
+			}
 		}
 	}
 }

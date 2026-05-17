@@ -183,7 +183,7 @@ func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 			}
 		} else {
 			hw = FloorCents1(p.HighWaterCents)
-			trail = TrailingStopCentsFromHW(hw, p.StopLossPct)
+			trail = s.trailingStopCents(ctx, hw, p.StopLossPct)
 		}
 		var valUsd, pnl *float64
 		if curPtr != nil {
