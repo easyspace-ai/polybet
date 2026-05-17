@@ -263,6 +263,28 @@ func (s *Service) EnsureTradeAllowed(ctx context.Context, tokenID string) *Trade
 		}
 	}
 
+	// Post-kickoff guard: refuse opens on markets whose game started more
+	// than the configured cutoff ago. Helps avoid opening a position into
+	// the live event uncertainty (referee timeouts, in-play news flow that
+	// the bot has no model for).
+	if cutoffSec := s.st.GetBotConfigInt(ctx, botKeyBlockOpenAfterStartSec, 0); cutoffSec > 0 && strings.TrimSpace(tokenID) != "" {
+		if startTime, ok := s.st.MarketStartTimeForToken(ctx, tokenID); ok {
+			elapsed := time.Since(startTime)
+			if elapsed > time.Duration(cutoffSec)*time.Second {
+				return &TradeGateError{
+					Code:    "post_kickoff",
+					Message: "market started more than riskBlockOpenAfterStartSec seconds ago",
+					Detail: map[string]any{
+						"tokenId":     tokenID,
+						"startTime":   startTime.UTC().Format(time.RFC3339),
+						"elapsedSec":  int(elapsed.Seconds()),
+						"cutoffSec":   cutoffSec,
+					},
+				}
+			}
+		}
+	}
+
 	// Per-token book staleness (only when caller knows the token).
 	if maxAgeMs := s.st.GetBotConfigInt(ctx, botKeyBookMaxAgeMs, 0); maxAgeMs > 0 && strings.TrimSpace(tokenID) != "" {
 		tid := store.NormalizeRiskCLOBTokenID(tokenID)

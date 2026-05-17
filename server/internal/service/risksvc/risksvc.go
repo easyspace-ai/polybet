@@ -26,6 +26,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// botKeyOrderSubmitMaxAgeMs is the freshness window for the cached
+// /book snapshot before signing. When > 0 and the elapsed time between
+// the initial fetch and the build step exceeds this many ms, polyexec
+// refreshes /book and recomputes the limit price (SELL) or pads (BUY)
+// before submitting. <= 0 disables (legacy behaviour).
+const botKeyOrderSubmitMaxAgeMs = "orderSubmitMaxAgeMs"
+
 type Service struct {
 	cfg        *config.Config
 	st         *store.Store
@@ -34,7 +41,7 @@ type Service struct {
 	log        *logrus.Logger
 	rt         *riskruntime.Bus
 	closeMu    sync.Mutex
-	closeLocks sync.Map // map[string]*sync.Mutex per-position locks for ensureCloseTask
+	closeLocks sync.Map // map[string]*closeLockMeta per-position locks (GC'd by RunGC)
 
 	userWSConnected   atomic.Bool
 	userWSConnecting  atomic.Bool
@@ -253,12 +260,16 @@ func stopTriggerReferenceCents(bidCents, askCents float64) float64 {
 	return maxCentsRatchet(bidCents, askCents)
 }
 
-// UpdateHighWaterAndMaybeQueueStop ratchets high-water using max(bid, ask) so it tracks the
-// top of the quoted range since open; stop-loss compares triggerCents (best bid, or mark if bid empty) to trail.
+// UpdateHighWaterAndMaybeQueueStop ratchets high-water using a configurable
+// reference (max(bid,ask) by default; depth-weighted micro-price when
+// riskHwUseMicroPrice is enabled) and gates ratcheting on top-of-book depth
+// when riskHwMinDepthUsd > 0. Stop-loss still compares triggerCents (best
+// bid, or mark if bid empty) to the trail.
 func (s *Service) UpdateHighWaterAndMaybeQueueStop(ctx context.Context, p store.RiskPosition, bidCents, askCents float64) (hw float64, trail float64, cur *float64, err error) {
 	hw = FloorCents1(p.HighWaterCents)
-	mark := FloorCents1(maxCentsRatchet(bidCents, askCents))
-	if mark > hw {
+	rawMark, allowed := s.ratchetMarkCents(ctx, p.TokenID, bidCents, askCents)
+	mark := FloorCents1(rawMark)
+	if allowed && mark > hw {
 		hw = mark
 		if err := s.st.UpdateRiskPositionHighWater(ctx, p.ID, hw); err != nil {
 			return 0, 0, nil, err
@@ -298,10 +309,10 @@ func (s *Service) EnqueueClosePosition(ctx context.Context, positionID string) e
 
 // queueReason: "manual" | "stop_loss" | "" (silent, e.g. batch from close_all).
 func (s *Service) ensureCloseTask(ctx context.Context, positionID, queueReason string) error {
-	lockI, _ := s.closeLocks.LoadOrStore(positionID, &sync.Mutex{})
-	lock := lockI.(*sync.Mutex)
-	lock.Lock()
-	defer lock.Unlock()
+	meta := s.loadOrStoreCloseLock(positionID)
+	meta.mu.Lock()
+	defer meta.mu.Unlock()
+	s.touchCloseLock(positionID)
 
 	has, err := s.st.FindPendingCloseTask(ctx, positionID)
 	if err != nil {
@@ -624,6 +635,8 @@ func (s *Service) runClosePosition(ctx context.Context, cl *polywiring.AuthedCLO
 		return s.runCloseHedgeFOKBuy(ctx, cl, task, pos, taskID, positionID, queueReason, sellExtra, evalBidCents, evalAskCents, trailCents, modeExtra)
 	case riskCloseModeFAKSell:
 		return s.runCloseFAKSell(ctx, cl, task, pos, taskID, positionID, queueReason, sellExtra, evalBidCents, evalAskCents, trailCents, modeExtra)
+	case riskCloseModeLadder:
+		return s.runCloseLadder(ctx, cl, task, pos, taskID, positionID, queueReason, evalBidCents, evalAskCents, trailCents, modeExtra)
 	default:
 		return s.runCloseFOKSell(ctx, cl, task, pos, taskID, positionID, queueReason, sellExtra, evalBidCents, evalAskCents, trailCents, modeExtra)
 	}

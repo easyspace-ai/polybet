@@ -220,12 +220,36 @@ func (s *Store) SeedDefaultConfig(ctx context.Context) error {
 		// market message has been observed across all subscriptions for that
 		// long, even if the per-token cache happens to look fresh.
 		{"riskMaxReconcileGapSec", "0"},
+		// > 0 refuses new opens when the market start_time is more than
+		// this many seconds in the past (post-kickoff guard). Tokens with
+		// unknown start_time are NOT blocked. 0 disables.
+		{"riskBlockOpenAfterStartSec", "0"},
 		// Absolute cent-drop ceiling combined with the price-band percent
 		// table. Effective trigger = max(percent_trail, hw - priceStopLossAbsCents).
 		// Useful for high-price favourites where 10% percent trail is far too
 		// loose (10% of 95¢ = 9.5¢ drop). 0 disables, preserving legacy
 		// percent-only behaviour.
 		{"priceStopLossAbsCents", "0"},
+		// High-water ratchet model:
+		//   riskHwUseMicroPrice (true/false): use depth-weighted micro-price
+		//     instead of max(bid,ask) so a single thin ask flicker cannot
+		//     inflate HW. Default false preserves legacy behaviour.
+		//   riskHwMinDepthUsd (USD float, 0 disables): suppress HW ratchet
+		//     when neither side of the top-of-book has at least this much
+		//     USD depth. Filters microstructure noise on illiquid books.
+		{"riskHwUseMicroPrice", "false"},
+		{"riskHwMinDepthUsd", "0"},
+		// Pre-submit /book freshness check. When > 0 and elapsed since the
+		// initial fetch exceeds this many ms, polyexec refetches /book and
+		// recomputes the limit price before signing. Catches build-then-
+		// submit races where bestBid moves down between fetch and signing.
+		// 0 disables; suggested production value: 1500.
+		{"orderSubmitMaxAgeMs", "0"},
+		// Close ladder tiers (per-attempt close strategy) used when
+		// riskCloseExecutionMode = "ladder". The default progression is
+		// gentle FOK → aggressive FAK → deeper FAK → hedge to lock losses.
+		// Operators can override via a JSON array; see risk_close_ladder.go.
+		{"riskCloseLadderTiers", `[{"type":"fok_sell","extraTicks":2},{"type":"fak_sell","extraTicks":5},{"type":"fak_sell","extraTicks":15},{"type":"hedge_fok_buy"}]`},
 	}
 	for _, r := range append(rows, wsConfigSeedRows()...) {
 		if err := s.InsertBotConfigDefault(ctx, r.k, r.v); err != nil {

@@ -66,6 +66,10 @@ func NewRouter(d Deps) *gin.Engine {
 		api.GET("/risk/gate", h.handleRiskGate)
 		api.POST("/risk/kill-switch/clear", h.handleRiskKillSwitchClear)
 
+		// Execution-quality / slippage telemetry
+		api.GET("/trade-quality/recent", h.handleTradeQualityRecent)
+		api.GET("/trade-quality/aggregate", h.handleTradeQualityAggregate)
+
 		// Stats
 		api.GET("/stats/markets", h.handleStatsMarkets)
 

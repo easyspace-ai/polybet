@@ -14,6 +14,8 @@ type closeAttemptExtras struct {
 	HedgeTokenID  string
 	HedgeSizing   string // notional | shares
 	BuyRep        *polyexec.FOKBuyReport
+	LadderTier    string // populated by ladder mode: which tier executed this attempt
+	LadderAttempt int    // 0-based attempt index that selected the tier
 }
 
 // closeAttemptSnapshot is stored in risk_tasks.last_attempt_detail and returned to the API for replay.
@@ -28,6 +30,8 @@ type closeAttemptSnapshot struct {
 	ExecutionMode        string  `json:"executionMode,omitempty"`
 	HedgeTokenID         string  `json:"hedgeTokenId,omitempty"`
 	HedgeSizing          string  `json:"hedgeSizing,omitempty"`
+	LadderTier           string  `json:"ladderTier,omitempty"`
+	LadderAttempt        int     `json:"ladderAttempt,omitempty"`
 	Side                 string  `json:"side,omitempty"` // SELL | BUY
 	CLOBTokenID          string  `json:"clobTokenId,omitempty"`
 	TickSize             string  `json:"tickSize,omitempty"`
@@ -87,6 +91,8 @@ func marshalCloseAttemptSnapshot(
 		snap.ExecutionMode = extras.ExecutionMode
 		snap.HedgeTokenID = extras.HedgeTokenID
 		snap.HedgeSizing = extras.HedgeSizing
+		snap.LadderTier = extras.LadderTier
+		snap.LadderAttempt = extras.LadderAttempt
 	}
 	if sellRep != nil {
 		snap.Side = "SELL"
