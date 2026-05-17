@@ -55,11 +55,11 @@ type Config struct {
 	ReadTimeout  time.Duration
 
 	// Exponential backoff (ReconnectDelay kept for compat; BackoffBase preferred).
-	BackoffBase        time.Duration
-	BackoffMax         time.Duration
-	BackoffJitterPct   int // 0-100
-	ReconnectStable    time.Duration
-	SleepThreshold     time.Duration
+	BackoffBase      time.Duration
+	BackoffMax       time.Duration
+	BackoffJitterPct int // 0-100
+	ReconnectStable  time.Duration
+	SleepThreshold   time.Duration
 
 	// OnReconnectScheduled is optional; called before sleeping for reconnect.
 	OnReconnectScheduled func(attempt int, nextRetryAt time.Time)

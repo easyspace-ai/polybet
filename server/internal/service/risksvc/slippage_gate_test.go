@@ -8,10 +8,10 @@ import (
 func TestProjectedSellSlippageBps(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name             string
-		evalBidCents     float64
-		sellExtraTicks   int
-		wantBpsApprox    float64 // tolerance ±0.5
+		name           string
+		evalBidCents   float64
+		sellExtraTicks int
+		wantBpsApprox  float64 // tolerance ±0.5
 	}{
 		// 70¢ contract, 5 ticks (=5¢) deeper → 5/70*10000 ≈ 714 bps
 		{"high_price_5_ticks", 70, 5, 714},

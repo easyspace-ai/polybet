@@ -2,7 +2,6 @@ package httpserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	badger "github.com/dgraph-io/badger/v4"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
@@ -32,6 +32,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
 	"github.com/easyspace-ai/polybet/internal/service/routersvc"
 	"github.com/easyspace-ai/polybet/internal/service/tradesvc"
+	"github.com/easyspace-ai/polybet/internal/storage"
 	"github.com/easyspace-ai/polybet/internal/store"
 	mktSync "github.com/easyspace-ai/polybet/internal/sync"
 	"github.com/easyspace-ai/polybet/internal/tg"
@@ -40,8 +41,7 @@ import (
 
 type Handler struct {
 	cfg          *config.Config
-	db           *sql.DB
-	st           *store.Store
+	st           *storage.Backend
 	cache        *bookcache.Cache
 	hub          *wsrelay.Hub
 	riskHub      *wsrelay.Hub
@@ -56,6 +56,7 @@ type Handler struct {
 	app          interface {
 		ScheduleInvalidateAndRebuildCache()
 		ScheduleRiskOfficialRefresh() bool
+		ScheduleMarketsFullRefresh() bool
 		ScheduleMarketsRefresh(force bool) bool
 		RequestRestart()
 		ForceWSReconnect(channel string)
@@ -144,7 +145,6 @@ func validateBotConfigUpdate(key, value string) error {
 func NewHandler(d Deps) *Handler {
 	return &Handler{
 		cfg:          d.Cfg,
-		db:           d.DB,
 		st:           d.Store,
 		cache:        d.Cache,
 		hub:          d.Hub,
@@ -237,11 +237,15 @@ func tradeResultsLog(rs []tradesvc.TradeResult) string {
 }
 
 func (h *Handler) handleHealth(c *gin.Context) {
-	if err := h.db.PingContext(c); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "db": "unreachable", "message": err.Error()})
+	if h.st == nil || h.st.Badger == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "storage": "unconfigured"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "db": "connected"})
+	if err := h.st.Badger.Inner().View(func(_ *badger.Txn) error { return nil }); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "storage": "unreachable", "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "storage": "badger"})
 }
 
 func (h *Handler) handleRestart(c *gin.Context) {
@@ -498,6 +502,30 @@ func (h *Handler) handleMarketsRefresh(c *gin.Context) {
 	}
 	started := h.app.ScheduleMarketsRefresh(force)
 	body := gin.H{"ok": true, "accepted": true, "message": "markets_refresh_scheduled"}
+	if !started {
+		body["alreadyRunning"] = true
+	}
+	c.JSON(202, body)
+}
+
+func (h *Handler) handleMarketsRefreshFull(c *gin.Context) {
+	rid := c.GetString("request_id")
+	if h.cfg.ReadOnlyMode {
+		logrus.WithFields(logx.Pairs("request_id", rid)).Warn("市场全量刷新：只读模式已阻止")
+		c.JSON(403, gin.H{"error": "read_only"})
+		return
+	}
+	logrus.WithFields(logx.Pairs("request_id", rid)).Info("市场全量刷新：收到请求")
+	if h.logService != nil {
+		h.logService.Info("市场同步", "用户触发全量刷新（缓存重建 + Gamma 同步）")
+	}
+	started := h.app.ScheduleMarketsFullRefresh()
+	body := gin.H{
+		"ok":       true,
+		"accepted": true,
+		"message":  "markets_full_refresh_scheduled",
+		"cache":    "refresh_scheduled",
+	}
 	if !started {
 		body["alreadyRunning"] = true
 	}
@@ -832,14 +860,6 @@ func (h *Handler) handleDeleteAccount(c *gin.Context) {
 	n, err := h.st.DeletePolymarketAccount(c, id)
 	if err != nil {
 		logrus.WithError(err).WithField("account_id", id).Error("delete polymarket account failed")
-		if isSQLiteForeignKeyViolation(err) {
-			c.JSON(500, gin.H{
-				"error":   "foreign_key_blocked",
-				"message": "该账号仍存在关联数据（交易记录、风控持仓等），无法删除。请先清理关联数据后再试。",
-				"detail":  "仍有关联表（如 trades、risk_positions、risk_applied_clob_trades）引用此账号，需先清理或迁移后再删除。",
-			})
-			return
-		}
 		c.JSON(500, gin.H{
 			"error":   "delete_failed",
 			"message": "删除账号失败，请稍后重试。",
@@ -1123,19 +1143,19 @@ func (h *Handler) handleRiskGate(c *gin.Context) {
 	last := h.risk.LastBookTickAt()
 	gateErr := h.risk.EnsureTradeAllowed(c, "")
 	out := gin.H{
-		"manualHalted":           manualHalted,
-		"autoHalted":             autoHalted,
-		"autoHaltReason":         autoReason,
-		"wsMarketDown":           wsDown,
-		"wsMarketReason":         wsReason,
-		"maxDailyLossUSD":        h.st.GetBotConfigFloat(c, "riskMaxDailyLossUSD", 0),
-		"maxOpenPositions":       h.st.GetBotConfigInt(c, "riskMaxOpenPositions", 0),
-		"maxAccountExposureUSD":  h.st.GetBotConfigFloat(c, "riskMaxAccountExposureUSD", 0),
-		"maxMarketExposureUSD":   h.st.GetBotConfigFloat(c, "riskMaxMarketExposureUSD", 0),
-		"bookMaxAgeMs":           h.st.GetBotConfigInt(c, "riskBookMaxAgeMs", 0),
-		"maxReconcileGapSec":     h.st.GetBotConfigInt(c, "riskMaxReconcileGapSec", 0),
-		"stopLossAbsCents":       h.st.GetBotConfigFloat(c, "priceStopLossAbsCents", 0),
-		"openTradeAllowed":       gateErr == nil,
+		"manualHalted":          manualHalted,
+		"autoHalted":            autoHalted,
+		"autoHaltReason":        autoReason,
+		"wsMarketDown":          wsDown,
+		"wsMarketReason":        wsReason,
+		"maxDailyLossUSD":       h.st.GetBotConfigFloat(c, "riskMaxDailyLossUSD", 0),
+		"maxOpenPositions":      h.st.GetBotConfigInt(c, "riskMaxOpenPositions", 0),
+		"maxAccountExposureUSD": h.st.GetBotConfigFloat(c, "riskMaxAccountExposureUSD", 0),
+		"maxMarketExposureUSD":  h.st.GetBotConfigFloat(c, "riskMaxMarketExposureUSD", 0),
+		"bookMaxAgeMs":          h.st.GetBotConfigInt(c, "riskBookMaxAgeMs", 0),
+		"maxReconcileGapSec":    h.st.GetBotConfigInt(c, "riskMaxReconcileGapSec", 0),
+		"stopLossAbsCents":      h.st.GetBotConfigFloat(c, "priceStopLossAbsCents", 0),
+		"openTradeAllowed":      gateErr == nil,
 	}
 	// Surface live exposure totals for the active account (best-effort;
 	// failure is silent so the gate snapshot endpoint still serves config).
@@ -1188,22 +1208,22 @@ func (h *Handler) handleTradeQualityRecent(c *gin.Context) {
 	out := make([]gin.H, 0, len(rows))
 	for _, t := range rows {
 		out = append(out, gin.H{
-			"id":             t.ID,
-			"createdAt":      t.CreatedAt.UTC().Format(time.RFC3339Nano),
-			"side":           t.Side,
-			"orderType":      t.OrderType,
-			"tokenId":        t.TokenID,
-			"expectedOdds":   t.ExpectedOdds,
-			"fillOdds":       t.FillOdds,
-			"limitOdds":      t.LimitOdds,
-			"bestBid":        t.BestBid,
-			"bestAsk":        t.BestAsk,
-			"slippageBps":    t.SlippageBps,
-			"size":           t.Size,
+			"id":              t.ID,
+			"createdAt":       t.CreatedAt.UTC().Format(time.RFC3339Nano),
+			"side":            t.Side,
+			"orderType":       t.OrderType,
+			"tokenId":         t.TokenID,
+			"expectedOdds":    t.ExpectedOdds,
+			"fillOdds":        t.FillOdds,
+			"limitOdds":       t.LimitOdds,
+			"bestBid":         t.BestBid,
+			"bestAsk":         t.BestAsk,
+			"slippageBps":     t.SlippageBps,
+			"size":            t.Size,
 			"submitLatencyMs": t.SubmitLatencyMs,
-			"tradeId":        t.TradeID,
-			"riskTaskId":     t.RiskTaskID,
-			"notes":          t.Notes,
+			"tradeId":         t.TradeID,
+			"riskTaskId":      t.RiskTaskID,
+			"notes":           t.Notes,
 		})
 	}
 	c.JSON(200, gin.H{"rows": out, "count": len(out)})
@@ -1227,10 +1247,10 @@ func (h *Handler) handleTradeQualityAggregate(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{
-		"windowSec":  windowSec,
-		"since":      since.Format(time.RFC3339),
-		"accountId":  accountID,
-		"aggregate":  agg,
+		"windowSec": windowSec,
+		"since":     since.Format(time.RFC3339),
+		"accountId": accountID,
+		"aggregate": agg,
 	})
 }
 
@@ -1264,12 +1284,12 @@ func (h *Handler) handleRealizedPnLByEvent(c *gin.Context) {
 		totalFills += r.Fills
 	}
 	c.JSON(200, gin.H{
-		"windowSec":         windowSec,
-		"since":             since.Format(time.RFC3339),
-		"accountId":         accountID,
-		"rows":              rows,
-		"totalRealizedUsd":  totalPnL,
-		"totalFills":        totalFills,
+		"windowSec":        windowSec,
+		"since":            since.Format(time.RFC3339),
+		"accountId":        accountID,
+		"rows":             rows,
+		"totalRealizedUsd": totalPnL,
+		"totalFills":       totalFills,
 	})
 }
 

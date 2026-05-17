@@ -27,7 +27,7 @@ func requestID() gin.HandlerFunc {
 func requestStartLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
-		if strings.HasPrefix(path, "/api/risk/") || path == "/api/cache/refresh" || path == "/api/markets/refresh" {
+		if strings.HasPrefix(path, "/api/risk/") || path == "/api/cache/refresh" || path == "/api/markets/refresh" || path == "/api/markets/refresh-full" {
 			logrus.WithFields(logx.Pairs(
 				"request_id", c.GetString("request_id"),
 				"method", c.Request.Method,

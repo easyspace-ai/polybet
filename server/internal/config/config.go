@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -24,9 +25,12 @@ func OutboundProxyURL() string {
 	return ""
 }
 
+// DefaultMarketsSyncIntervalMin is the Gamma/event-list sync interval when
+// bot_config pollingInterval is unset (60 minutes = 1 hour).
+const DefaultMarketsSyncIntervalMin = 60
+
 // Config holds process configuration (env + defaults).
 type Config struct {
-	DatabaseURL       string
 	Host              string
 	Port              string
 	PublicPort        string
@@ -45,13 +49,13 @@ type Config struct {
 	PolyAPISecret     string
 	PolyAPIPassphrase string
 	PolyFunderAddress string
+	BadgerDir         string
+	BadgerSyncWrites  bool
+	// EnablePprof exposes /debug/pprof on the main HTTP server (POLYBET_ENABLE_PPROF=true).
+	EnablePprof bool
 }
 
 func Load() (*Config, error) {
-	dbURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
-	if dbURL == "" {
-		return nil, fmt.Errorf("DATABASE_URL is required")
-	}
 	host := strings.TrimSpace(os.Getenv("HOST"))
 	if host == "" {
 		host = "127.0.0.1"
@@ -67,6 +71,11 @@ func Load() (*Config, error) {
 		}
 	}
 	readOnly := strings.EqualFold(strings.TrimSpace(os.Getenv("READ_ONLY_MODE")), "true")
+	logLevel := strings.TrimSpace(os.Getenv("LOG_LEVEL"))
+	if logLevel == "" {
+		// Quieter default: fewer console/disk lines; set LOG_LEVEL=info or debug for verbose ops.
+		logLevel = "warn"
+	}
 	cors := strings.TrimSpace(os.Getenv("CORS_ORIGINS"))
 	var origins []string
 	if cors != "" {
@@ -86,18 +95,31 @@ func Load() (*Config, error) {
 	if rpc == "" {
 		rpc = "https://polygon-rpc.com"
 	}
+	badgerDir := strings.TrimSpace(os.Getenv("POLYBET_BADGER_DIR"))
+	if badgerDir == "" {
+		if h, err := os.UserHomeDir(); err == nil && h != "" {
+			badgerDir = filepath.Join(h, ".polybet", "badger")
+		}
+	}
+	if badgerDir == "" {
+		return nil, fmt.Errorf("POLYBET_BADGER_DIR is required (or a writable home directory for default ~/.polybet/badger)")
+	}
+	badgerSyncWrites := true
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("POLYBET_BADGER_SYNC_WRITES"))); v == "false" || v == "0" {
+		badgerSyncWrites = false
+	}
+	enablePprof := strings.EqualFold(strings.TrimSpace(os.Getenv("POLYBET_ENABLE_PPROF")), "true")
 	return &Config{
 		PolyPrivateKey:    strings.TrimSpace(os.Getenv("POLYMARKET_PRIVATE_KEY")),
 		PolyAPIKey:        strings.TrimSpace(os.Getenv("POLYMARKET_API_KEY")),
 		PolyAPISecret:     strings.TrimSpace(os.Getenv("POLYMARKET_SECRET")),
 		PolyAPIPassphrase: strings.TrimSpace(os.Getenv("POLYMARKET_PASSPHRASE")),
 		PolyFunderAddress: strings.TrimSpace(os.Getenv("POLYMARKET_FUNDER_ADDRESS")),
-		DatabaseURL:       dbURL,
 		Host:              host,
 		Port:              port,
 		PublicPort:        strings.TrimSpace(os.Getenv("PUBLIC_PORT")),
 		ReadOnlyMode:      readOnly,
-		LogLevel:          strings.TrimSpace(os.Getenv("LOG_LEVEL")),
+		LogLevel:          logLevel,
 		CORSOrigins:       origins,
 		PolygonRPCURL:     rpc,
 		PolymarketAPIURL:  polyAPI,
@@ -106,5 +128,8 @@ func Load() (*Config, error) {
 		TelegramBotToken:  strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
 		TelegramChatID:    strings.TrimSpace(os.Getenv("TELEGRAM_AUTHORIZED_CHAT_ID")),
 		ChainID:           chainID,
+		BadgerDir:         badgerDir,
+		BadgerSyncWrites:  badgerSyncWrites,
+		EnablePprof:       enablePprof,
 	}, nil
 }

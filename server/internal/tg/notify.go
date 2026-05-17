@@ -13,14 +13,14 @@ import (
 
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/logx"
-	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/easyspace-ai/polybet/internal/storage"
 )
 
 const maxTelegramMessageRunes = 3500
 
 // ResolveTelegramCreds returns bot token and chat id. Non-empty env (cfg) wins per
 // field; otherwise values come from bot_config (dashboard / TELEGRAM_* parity with Node).
-func ResolveTelegramCreds(ctx context.Context, cfg *config.Config, st *store.Store) (token, chat string) {
+func ResolveTelegramCreds(ctx context.Context, cfg *config.Config, st *storage.Backend) (token, chat string) {
 	if cfg != nil {
 		token = strings.TrimSpace(cfg.TelegramBotToken)
 		chat = strings.TrimSpace(cfg.TelegramChatID)
@@ -43,7 +43,7 @@ func ResolveTelegramCreds(ctx context.Context, cfg *config.Config, st *store.Sto
 
 // Notify sends a plain-text Telegram message if bot token and chat id are configured
 // (env or store). It is best-effort, non-blocking, and ignores empty text.
-func Notify(ctx context.Context, cfg *config.Config, st *store.Store, log *logrus.Logger, text string) {
+func Notify(ctx context.Context, cfg *config.Config, st *storage.Backend, log *logrus.Logger, text string) {
 	if log == nil {
 		log = logrus.StandardLogger()
 	}
@@ -85,7 +85,7 @@ func Notify(ctx context.Context, cfg *config.Config, st *store.Store, log *logru
 			if proxyURL, err := url.Parse(cfg.HTTPPlatformProxy); err == nil {
 				log.WithFields(logx.Pairs("proxy", cfg.HTTPPlatformProxy)).Info("Telegram：使用代理发送")
 				hc = &http.Client{
-					Timeout: 14 * time.Second,
+					Timeout:   14 * time.Second,
 					Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
 				}
 				proxyUsed = true

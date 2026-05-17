@@ -6,33 +6,36 @@ import (
 	"time"
 
 	"github.com/easyspace-ai/polybet/internal/marketstream"
-	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/easyspace-ai/polybet/internal/storage"
 )
+
+// Markets sync interval is bot_config key pollingInterval (minutes, default 60 =
+// 1 hour). It is not part of Settings; see config.DefaultMarketsSyncIntervalMin.
 
 // Settings holds all WS-related bot config (durations in seconds unless noted).
 type Settings struct {
-	ClobPingIntervalSec       int
-	ClobPongTimeoutSec        int
-	ClobBackoffBaseSec          int
-	ClobBackoffMaxSec           int
-	ClobBackoffJitterPct        int
-	ClobReconnectStableSec      int
-	ClobMaxReconnectAttempts    int
-	ClobSleepThresholdSec       int
-	HealthCheckIntervalSec     int
-	BookStaleThresholdSec       int
-	PositionsReconcileOpenSec   int
-	PositionsReconcileIdleSec   int
-	RestTradesIntervalSec       int
-	StoplossReconcileSec        int
-	DashPingIntervalSec         int
-	DashPongTimeoutSec          int
-	DashBackoffBaseSec          int
-	DashBackoffMaxSec           int
-	DashBackoffJitterPct        int
-	DashSleepThresholdSec       int
-	RiskPollIntervalSec         int
-	AutoReconnectOnDisconnect   bool
+	ClobPingIntervalSec          int
+	ClobPongTimeoutSec           int
+	ClobBackoffBaseSec           int
+	ClobBackoffMaxSec            int
+	ClobBackoffJitterPct         int
+	ClobReconnectStableSec       int
+	ClobMaxReconnectAttempts     int
+	ClobSleepThresholdSec        int
+	HealthCheckIntervalSec       int
+	BookStaleThresholdSec        int
+	PositionsReconcileOpenSec    int
+	PositionsReconcileIdleSec    int
+	RestTradesIntervalSec        int
+	StoplossReconcileSec         int
+	DashPingIntervalSec          int
+	DashPongTimeoutSec           int
+	DashBackoffBaseSec           int
+	DashBackoffMaxSec            int
+	DashBackoffJitterPct         int
+	DashSleepThresholdSec        int
+	RiskPollIntervalSec          int
+	AutoReconnectOnDisconnect    bool
 	AutoRequestUpstreamReconnect bool
 }
 
@@ -40,7 +43,7 @@ const (
 	defaultClobPingIntervalSec       = 20
 	defaultClobPongTimeoutSec        = 60
 	defaultClobBackoffBaseSec        = 1
-	defaultClobBackoffMaxSec          = 60
+	defaultClobBackoffMaxSec         = 60
 	defaultClobBackoffJitterPct      = 30
 	defaultClobReconnectStableSec    = 120
 	defaultClobMaxReconnectAttempts  = 0
@@ -61,7 +64,7 @@ const (
 )
 
 // Load reads WS settings from the store with validated defaults.
-func Load(ctx context.Context, st *store.Store) Settings {
+func Load(ctx context.Context, st *storage.Backend) Settings {
 	s := Settings{
 		ClobPingIntervalSec:          st.GetBotConfigInt(ctx, "wsClobPingIntervalSec", defaultClobPingIntervalSec),
 		ClobPongTimeoutSec:           st.GetBotConfigInt(ctx, "wsClobPongTimeoutSec", defaultClobPongTimeoutSec),
@@ -90,7 +93,7 @@ func Load(ctx context.Context, st *store.Store) Settings {
 	return s.Validate()
 }
 
-func botConfigBool(st *store.Store, ctx context.Context, key string, def bool) bool {
+func botConfigBool(st *storage.Backend, ctx context.Context, key string, def bool) bool {
 	v, ok, _ := st.GetBotConfig(ctx, key)
 	if !ok {
 		return def

@@ -4,12 +4,15 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/easyspace-ai/polybet/internal/app"
 	"github.com/easyspace-ai/polybet/internal/config"
-	"github.com/easyspace-ai/polybet/internal/db"
 	"github.com/easyspace-ai/polybet/internal/logx"
+	"github.com/easyspace-ai/polybet/internal/storage"
+	"github.com/easyspace-ai/polybet/internal/storage/badgerdb"
 	"github.com/sirupsen/logrus"
 )
 
@@ -20,8 +23,23 @@ var (
 	date    = ""
 )
 
+func expandBadgerDir(dir string) (string, error) {
+	d := strings.TrimSpace(dir)
+	if d == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(d, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		d = filepath.Join(home, strings.TrimPrefix(d, "~/"))
+	}
+	return filepath.Abs(d)
+}
+
 func main() {
-	logx.Configure("info")
+	logx.Configure("warn")
 	config.LoadEnvFile()
 	config.ApplyHomePolybetProjectJSON()
 
@@ -44,12 +62,30 @@ func main() {
 	}
 	defer logx.ClosePersistentLog()
 
-	sqlDB, err := db.Open(cfg.DatabaseURL)
+	badgerDir, err := expandBadgerDir(cfg.BadgerDir)
 	if err != nil {
-		logrus.WithFields(logx.Pairs("err", err)).Error("打开数据库失败")
+		logrus.WithFields(logx.Pairs("err", err)).Error("解析 Badger 目录失败")
 		os.Exit(1)
 	}
-	defer sqlDB.Close()
+	if badgerDir == "" {
+		logrus.Error("Badger 数据目录为空（请设置 POLYBET_BADGER_DIR）")
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(badgerDir, 0o700); err != nil {
+		logrus.WithFields(logx.Pairs("err", err)).Error("创建 Badger 目录失败")
+		os.Exit(1)
+	}
+
+	kv, err := badgerdb.Open(badgerDir, cfg.BadgerSyncWrites)
+	if err != nil {
+		logrus.WithFields(logx.Pairs("err", err)).Error("打开 Badger 失败")
+		os.Exit(1)
+	}
+	be := storage.NewBackend(kv)
+	if err := storage.InitBadger(context.Background(), cfg, be, logrus.StandardLogger()); err != nil {
+		logrus.WithFields(logx.Pairs("err", err)).Error("Badger 初始化失败")
+		os.Exit(1)
+	}
 
 	logrus.WithFields(logx.Pairs(
 		"version", version,
@@ -57,7 +93,7 @@ func main() {
 		"date", date,
 	)).Info("Polybet 服务进程已启动")
 
-	a := app.New(cfg, sqlDB, logrus.StandardLogger())
+	a := app.New(cfg, be, logrus.StandardLogger())
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

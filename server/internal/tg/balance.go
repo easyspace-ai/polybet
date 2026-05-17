@@ -11,7 +11,7 @@ import (
 
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/service/balancesvc"
-	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/easyspace-ai/polybet/internal/storage"
 )
 
 const collateralEpsilonUSD = 0.015
@@ -25,7 +25,7 @@ var (
 // MaybeNotifyCollateralChanged fetches CLOB collateral (active / env funder) and notifies
 // when the value moves by more than collateralEpsilonUSD. The first successful read
 // only seeds the baseline (no message) to avoid noise on startup.
-func MaybeNotifyCollateralChanged(cfg *config.Config, log *logrus.Logger, st *store.Store) {
+func MaybeNotifyCollateralChanged(cfg *config.Config, log *logrus.Logger, st *storage.Backend) {
 	if cfg == nil || st == nil {
 		return
 	}

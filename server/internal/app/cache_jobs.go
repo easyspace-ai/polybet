@@ -166,6 +166,18 @@ func (a *App) broadcastPositionSnapshotFast() {
 	a.RiskHub.BroadcastJSONAsync(payload)
 }
 
+// ScheduleMarketsFullRefresh invalidates risk/balance memcache and schedules a
+// forced Gamma sync (same semantics as POST /api/cache/refresh then
+// POST /api/markets/refresh?force=1). Cache rebuild is debounced; market sync
+// runs on a separate worker. Returns false when a market refresh is already running.
+func (a *App) ScheduleMarketsFullRefresh() bool {
+	if a == nil {
+		return true
+	}
+	a.ScheduleInvalidateAndRebuildCache()
+	return a.ScheduleMarketsRefresh(true)
+}
+
 // ScheduleMarketsRefresh runs Gamma sync in the background. Returns false when
 // another market refresh is already in flight.
 func (a *App) ScheduleMarketsRefresh(force bool) bool {

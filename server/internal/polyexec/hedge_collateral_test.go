@@ -37,10 +37,10 @@ func applyCollateralCap(requested, available, reservePct, minHedge float64) (siz
 func TestApplyCollateralCap(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name                                 string
-		requested, available, reserve, min   float64
-		wantSize                             float64
-		wantClamped, wantOK                  bool
+		name                               string
+		requested, available, reserve, min float64
+		wantSize                           float64
+		wantClamped, wantOK                bool
 	}{
 		// Plenty of collateral: pass through unchanged.
 		{"no_clamp", 10, 100, 0.05, 1, 10, false, true},

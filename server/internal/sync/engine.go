@@ -25,20 +25,20 @@ import (
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/logx"
-	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/easyspace-ai/polybet/internal/storage"
 )
 
 // Engine runs periodic Polymarket Gamma sync.
 type Engine struct {
 	cfg         *config.Config
-	st          *store.Store
+	st          *storage.Backend
 	cache       *bookcache.Cache
 	sportsCache *SportsCache
 	logger      *logrus.Logger
 	mu          syncstd.Mutex // avoid overlapping Once (matches Node marketSync running guard)
 }
 
-func NewEngine(cfg *config.Config, st *store.Store, cache *bookcache.Cache, sportsCache *SportsCache, logger *logrus.Logger) *Engine {
+func NewEngine(cfg *config.Config, st *storage.Backend, cache *bookcache.Cache, sportsCache *SportsCache, logger *logrus.Logger) *Engine {
 	if logger == nil {
 		logger = logrus.StandardLogger()
 	}

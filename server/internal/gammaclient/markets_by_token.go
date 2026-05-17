@@ -31,16 +31,16 @@ type TokenMarketDisplay struct {
 }
 
 type gammaMarketJSON struct {
-	Question      string          `json:"question"`
-	Slug          string          `json:"slug"`
-	ConditionID   string          `json:"conditionId"`
-	Image         string          `json:"image"`
-	Icon          string          `json:"icon"`
-	Category      string          `json:"category"`
-	Active        bool            `json:"active"`
-	Closed        bool            `json:"closed"`
-	ClobTokenIDs  json.RawMessage `json:"clobTokenIds"`
-	Events        json.RawMessage `json:"events"`
+	Question     string          `json:"question"`
+	Slug         string          `json:"slug"`
+	ConditionID  string          `json:"conditionId"`
+	Image        string          `json:"image"`
+	Icon         string          `json:"icon"`
+	Category     string          `json:"category"`
+	Active       bool            `json:"active"`
+	Closed       bool            `json:"closed"`
+	ClobTokenIDs json.RawMessage `json:"clobTokenIds"`
+	Events       json.RawMessage `json:"events"`
 }
 
 type gammaEventMini struct {

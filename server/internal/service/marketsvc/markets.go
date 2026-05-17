@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/easyspace-ai/polybet/internal/bookcache"
+	"github.com/easyspace-ai/polybet/internal/storage"
 	"github.com/easyspace-ai/polybet/internal/store"
 	mktSync "github.com/easyspace-ai/polybet/internal/sync"
 )
@@ -21,7 +22,7 @@ func BuildSportIconMap(sports []mktSync.GammaSport) map[string]string {
 	return m
 }
 
-func BuildMarketsPayload(ctx context.Context, st *store.Store, cache *bookcache.Cache, sportIcons map[string]string) ([]map[string]any, error) {
+func BuildMarketsPayload(ctx context.Context, st *storage.Backend, cache *bookcache.Cache, sportIcons map[string]string) ([]map[string]any, error) {
 	mrows, orows, err := st.ListActiveMarketsFlat(ctx)
 	if err != nil {
 		return nil, err
@@ -70,7 +71,7 @@ func BuildMarketsPayload(ctx context.Context, st *store.Store, cache *bookcache.
 			"id": m.ID, "eventId": m.EventID, "platform": m.Platform, "externalId": m.ExternalID,
 			"sport": m.Sport, "league": m.League,
 			"homeTeam": m.HomeTeam, "awayTeam": m.AwayTeam,
-			"name": m.HomeTeam + " vs " + m.AwayTeam,
+			"name":      m.HomeTeam + " vs " + m.AwayTeam,
 			"startTime": m.StartTime,
 			"status":    m.Status,
 			"betType":   m.BetType,

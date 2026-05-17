@@ -13,7 +13,7 @@ import (
 )
 
 // ApplyHomePolybetProjectJSON reads ~/.polybet/polybet-project.json and sets
-// DATABASE_URL, HOST, PORT, HTTP_PLATFORM_PROXY_URL, READ_ONLY_MODE, and
+// POLYBET_BADGER_DIR, HOST, PORT, HTTP_PLATFORM_PROXY_URL, READ_ONLY_MODE, and
 // LOG_LEVEL only when each env var is still empty (Electron / godotenv wins).
 func ApplyHomePolybetProjectJSON() {
 	home, err := os.UserHomeDir()
@@ -39,9 +39,9 @@ func ApplyHomePolybetProjectJSON() {
 	}
 
 	var s string
-	if raw, ok := root["databaseUrl"]; ok {
+	if raw, ok := root["badgerDir"]; ok {
 		if json.Unmarshal(raw, &s) == nil {
-			setIfEmpty("DATABASE_URL", strings.TrimSpace(s))
+			setIfEmpty("POLYBET_BADGER_DIR", strings.TrimSpace(s))
 		}
 	}
 	if raw, ok := root["host"]; ok {

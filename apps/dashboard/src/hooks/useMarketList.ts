@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { getMarkets, postMarketsRefresh, type Market } from '@/lib/api';
+import { getMarkets, postMarketsRefreshFull, type Market } from '@/lib/api';
 import { wsBus, type MarketLifecycleMessage } from '@/lib/wsBus';
 
 const WS_SNAPSHOT_FALLBACK_MS = 3_000;
@@ -113,7 +113,7 @@ export function useMarketList(): MarketListState & { refresh: () => Promise<void
     cacheRef.current.clear();
     snapshotReceived.current = false;
     try {
-      await postMarketsRefresh();
+      await postMarketsRefreshFull();
     } catch (err) {
       console.warn('[useMarketList] backend refresh failed, falling back to REST', err);
     }

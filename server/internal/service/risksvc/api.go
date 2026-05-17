@@ -30,8 +30,8 @@ type Meta struct {
 	OrderbookWsConnecting   bool    `json:"orderbookWsConnecting"`
 	// Global stop-loss close execution (bot_config); per-position override is not supported.
 	RiskCloseExecutionMode string  `json:"riskCloseExecutionMode"`
-	RiskCloseFakWorstPrice  float64 `json:"riskCloseFakWorstPrice"`
-	RiskHedgeBuySizing      string  `json:"riskHedgeBuySizing"`
+	RiskCloseFakWorstPrice float64 `json:"riskCloseFakWorstPrice"`
+	RiskHedgeBuySizing     string  `json:"riskHedgeBuySizing"`
 }
 
 func isBenignListContextErr(readOnly bool, err error) bool {
@@ -264,7 +264,7 @@ func (s *Service) listRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 		m := map[string]any{
 			"id": p.ID, "title": p.Title, "sideLabel": p.SideLabel,
 			"displayTitle": displayTitle, "sport": sport,
-			"polySlug":     polySlug,
+			"polySlug":    polySlug,
 			"officialUrl": eventURL, "officialSearchUrl": searchURL,
 			"imageUrl":      image,
 			"iconUrl":       icon,
@@ -441,17 +441,17 @@ func (s *Service) ListOfficialTrades(ctx context.Context, limit int) ([]map[stri
 		)
 		polySlug := normalizePolySlug(firstNonEmpty(t.EventSlug, t.Slug))
 		out = append(out, map[string]any{
-			"id":           t.TransactionHash.Hex(),
-			"side":         strings.ToLower(string(t.Side)),
-			"title":        t.Title,
-			"outcome":      t.Outcome,
-			"size":         size,
-			"price":        price,
-			"priceCents":   price * 100,
-			"timestamp":    time.Unix(t.Timestamp, 0).UTC().Format(time.RFC3339),
-			"icon":         t.Icon,
-			"polySlug":     polySlug,
-			"officialUrl":  eventURL,
+			"id":          t.TransactionHash.Hex(),
+			"side":        strings.ToLower(string(t.Side)),
+			"title":       t.Title,
+			"outcome":     t.Outcome,
+			"size":        size,
+			"price":       price,
+			"priceCents":  price * 100,
+			"timestamp":   time.Unix(t.Timestamp, 0).UTC().Format(time.RFC3339),
+			"icon":        t.Icon,
+			"polySlug":    polySlug,
+			"officialUrl": eventURL,
 		})
 	}
 	return out, nil

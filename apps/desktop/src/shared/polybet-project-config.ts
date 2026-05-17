@@ -4,6 +4,7 @@
  * whole local stack (DB URL, listen addr, outbound proxy, etc.).
  */
 
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -277,6 +278,7 @@ export function applyPolybetProjectConfigToEnv(
   cfg: PolybetProjectConfig,
 ): NodeJS.ProcessEnv {
   const env = { ...base };
+  env.POLYBET_BADGER_DIR = join(homedir(), ".polybet", "badger");
   env.DATABASE_URL = cfg.databaseUrl;
   env.HOST = cfg.host;
   env.PORT = cfg.port;

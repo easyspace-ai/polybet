@@ -13,7 +13,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/service/balancesvc"
-	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/easyspace-ai/polybet/internal/storage"
 )
 
 const balanceCacheTTL = 1 * time.Hour
@@ -21,7 +21,7 @@ const balanceCacheTTL = 1 * time.Hour
 // BalanceCache stores the last balancesvc.Summary in process memory with TTL.
 // UpdatedAt is set whenever a non-nil summary is stored (for observability / API).
 type BalanceCache struct {
-	st  *store.Store
+	st  *storage.Backend
 	cfg *config.Config
 	log *logrus.Logger
 
@@ -39,7 +39,7 @@ type BalanceCache struct {
 	refreshMu sync.Mutex
 }
 
-func NewBalanceCache(st *store.Store, cfg *config.Config, log *logrus.Logger) *BalanceCache {
+func NewBalanceCache(st *storage.Backend, cfg *config.Config, log *logrus.Logger) *BalanceCache {
 	if log == nil {
 		log = logrus.StandardLogger()
 	}

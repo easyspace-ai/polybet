@@ -21,7 +21,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/polyexec"
 	"github.com/easyspace-ai/polybet/internal/riskruntime"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
-	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/easyspace-ai/polybet/internal/storage"
 	"github.com/easyspace-ai/polybet/internal/wsconfig"
 	"github.com/easyspace-ai/polybet/internal/wsrelay"
 )
@@ -32,7 +32,7 @@ const maxClobSubscribeBatch = 50
 // active Polymarket account.
 type Engine struct {
 	cfg      *config.Config
-	st       *store.Store
+	st       *storage.Backend
 	cache    *bookcache.Cache
 	risk     *risksvc.Service
 	debounce *debounce.Debouncer
@@ -55,7 +55,7 @@ type Engine struct {
 }
 
 // New constructs an engine. onAfterRiskEval may be nil.
-func New(cfg *config.Config, st *store.Store, cache *bookcache.Cache, risk *risksvc.Service, deb *debounce.Debouncer, hub, riskHub *wsrelay.Hub, rt *riskruntime.Bus, log *logrus.Logger, onAfterRiskEval func(), broadcastPolyStatus func()) *Engine {
+func New(cfg *config.Config, st *storage.Backend, cache *bookcache.Cache, risk *risksvc.Service, deb *debounce.Debouncer, hub, riskHub *wsrelay.Hub, rt *riskruntime.Bus, log *logrus.Logger, onAfterRiskEval func(), broadcastPolyStatus func()) *Engine {
 	if log == nil {
 		log = logrus.StandardLogger()
 	}

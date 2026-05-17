@@ -315,4 +315,3 @@ func positionsStructurallyEqual(a, b []map[string]any) bool {
 	}
 	return buildKey(a) == buildKey(b)
 }
-

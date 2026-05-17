@@ -7,6 +7,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -141,18 +143,37 @@ func (b *Bus) Publish(category, severity, eventType string, accountID, marketID,
 		b.diskMu.Unlock()
 	}
 
-	b.hub.BroadcastJSON(map[string]any{
+	// Async fan-out: order book / risk hot paths must not block on WS writes + logging.
+	b.hub.BroadcastJSONAsync(map[string]any{
 		"type": "risk_runtime_log",
 		"data": env,
 	})
 }
 
+// summaryTickMinGap returns throttle duration from POLYBET_RUNTIME_BOOK_SUMMARY_MIN_GAP_MS (default 3000).
+func summaryTickMinGap() time.Duration {
+	const defaultMS = 3000
+	s := strings.TrimSpace(os.Getenv("POLYBET_RUNTIME_BOOK_SUMMARY_MIN_GAP_MS"))
+	if s == "" {
+		return defaultMS * time.Millisecond
+	}
+	ms, err := strconv.Atoi(s)
+	if err != nil || ms < 100 {
+		return defaultMS * time.Millisecond
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
 // MaybePublishMarketBookSummary emits market.book.summary_tick throttled per token (time + epsilon on bid/ask cents).
+// Set POLYBET_RUNTIME_BOOK_SUMMARY_DISABLE=true to skip entirely (reduces risk_runtime_log volume).
 func (b *Bus) MaybePublishMarketBookSummary(tokenID string, accountID string, bestBidCents, bestAskCents float64) {
 	if b == nil || b.hub == nil || tokenID == "" {
 		return
 	}
-	const minGap = 600 * time.Millisecond
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("POLYBET_RUNTIME_BOOK_SUMMARY_DISABLE")), "true") {
+		return
+	}
+	minGap := summaryTickMinGap()
 	const eps = 0.5 // half cent
 
 	now := time.Now()

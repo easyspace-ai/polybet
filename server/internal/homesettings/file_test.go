@@ -3,11 +3,10 @@ package homesettings
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"testing"
 
-	"github.com/easyspace-ai/polybet/internal/db"
-	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/easyspace-ai/polybet/internal/storage"
+	"github.com/easyspace-ai/polybet/internal/storage/badgerdb"
 )
 
 func TestApplyAndSnapshotRoundTrip(t *testing.T) {
@@ -15,12 +14,13 @@ func TestApplyAndSnapshotRoundTrip(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	ctx := context.Background()
-	sqlDB, err := db.Open("file:" + filepath.Join(t.TempDir(), "s.db") + "?mode=rwc&cache=shared")
+	dir := t.TempDir()
+	kv, err := badgerdb.Open(dir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sqlDB.Close() })
-	st := store.New(sqlDB)
+	t.Cleanup(func() { _ = kv.Close() })
+	st := storage.NewBackend(kv)
 	if err := st.SeedDefaultConfig(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +45,6 @@ func TestApplyAndSnapshotRoundTrip(t *testing.T) {
 	}
 	v, ok, err := st.GetBotConfig(ctx, "maxTradeSize")
 	if err != nil || !ok || v != "123" {
-		t.Fatalf("file should override db: got %q ok=%v err=%v", v, ok, err)
+		t.Fatalf("file should override persisted config: got %q ok=%v err=%v", v, ok, err)
 	}
 }

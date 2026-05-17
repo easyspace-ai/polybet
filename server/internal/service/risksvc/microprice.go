@@ -133,4 +133,3 @@ func (s *Service) ratchetMarkCents(ctx context.Context, tokenID string, bidCents
 	}
 	return maxCentsRatchet(bidCents, askCents), true
 }
-

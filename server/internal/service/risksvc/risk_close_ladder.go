@@ -7,6 +7,7 @@ import (
 
 	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/polywiring"
+	"github.com/easyspace-ai/polybet/internal/storage"
 	"github.com/easyspace-ai/polybet/internal/store"
 )
 
@@ -23,9 +24,9 @@ const botKeyRiskCloseLadderTiers = "riskCloseLadderTiers"
 // Type:
 //   - "fok_sell"      → call runCloseFOKSell with sellExtraTicks=ExtraTicks
 //   - "fak_sell"      → call runCloseFAKSell with worstPrice derived from
-//                       ExtraTicks (= bestBid - ExtraTicks*tick) when > 0,
-//                       otherwise from WorstPriceAbs (0–1 absolute floor),
-//                       otherwise the global riskCloseFakWorstPrice config.
+//     ExtraTicks (= bestBid - ExtraTicks*tick) when > 0,
+//     otherwise from WorstPriceAbs (0–1 absolute floor),
+//     otherwise the global riskCloseFakWorstPrice config.
 //   - "hedge_fok_buy" → call runCloseHedgeFOKBuy (extra_ticks/worst_price ignored)
 //
 // Tier indexing: Tiers[i] applies to RiskTask.Attempts == i. When Attempts
@@ -57,7 +58,7 @@ func defaultLadderTiers() []ladderTier {
 // resolveLadderTiers reads operator overrides; falls back to defaults on any
 // parse error or empty list. Invalid types in the JSON are dropped silently
 // (operator typo should not break the ladder; logged at debug).
-func resolveLadderTiers(ctx context.Context, st *store.Store) []ladderTier {
+func resolveLadderTiers(ctx context.Context, st *storage.Backend) []ladderTier {
 	raw, ok, err := st.GetBotConfig(ctx, botKeyRiskCloseLadderTiers)
 	if err != nil || !ok || strings.TrimSpace(raw) == "" {
 		return defaultLadderTiers()

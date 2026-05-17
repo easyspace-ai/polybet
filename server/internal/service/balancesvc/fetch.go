@@ -15,6 +15,7 @@ import (
 
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/polywiring"
+	"github.com/easyspace-ai/polybet/internal/storage"
 	"github.com/easyspace-ai/polybet/internal/store"
 )
 
@@ -116,7 +117,7 @@ type AccountRow struct {
 
 // Fetch returns per-account CLOB collateral (fallback on-chain pUSD), then sets top-level
 // `polymarket` from the active account or env funder when no DB accounts.
-func Fetch(ctx context.Context, cfg *config.Config, st *store.Store) (*Summary, error) {
+func Fetch(ctx context.Context, cfg *config.Config, st *storage.Backend) (*Summary, error) {
 	accts, err := st.ListPolymarketAccounts(ctx)
 	if err != nil {
 		return nil, err

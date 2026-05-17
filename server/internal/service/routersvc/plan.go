@@ -7,7 +7,7 @@ import (
 	"math"
 
 	"github.com/easyspace-ai/polybet/internal/bookcache"
-	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/easyspace-ai/polybet/internal/storage"
 )
 
 type LiquidityLevel struct {
@@ -16,13 +16,13 @@ type LiquidityLevel struct {
 }
 
 type Allocation struct {
-	Platform            string  `json:"platform"`
-	OutcomeID           string  `json:"outcomeId"`
-	ExternalMarketID    string  `json:"externalMarketId"`
-	ExternalOutcomeID   string  `json:"externalOutcomeId"`
-	Size                float64 `json:"size"`
-	ExpectedOdds        float64 `json:"expectedOdds"`
-	EstimatedSlippage   float64 `json:"estimatedSlippage"`
+	Platform          string  `json:"platform"`
+	OutcomeID         string  `json:"outcomeId"`
+	ExternalMarketID  string  `json:"externalMarketId"`
+	ExternalOutcomeID string  `json:"externalOutcomeId"`
+	Size              float64 `json:"size"`
+	ExpectedOdds      float64 `json:"expectedOdds"`
+	EstimatedSlippage float64 `json:"estimatedSlippage"`
 }
 
 type AllocationPlan struct {
@@ -33,9 +33,9 @@ type AllocationPlan struct {
 }
 
 type RouterError struct {
-	Code    string  `json:"code"`
-	Message string  `json:"message"`
-	Detail  any     `json:"detail,omitempty"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Detail  any    `json:"detail,omitempty"`
 }
 
 type RouterResult struct {
@@ -67,7 +67,7 @@ func liveLevels(cache *bookcache.Cache, extID sql.NullString, levelsJSON sql.Nul
 	return nil
 }
 
-func BuildAllocationPlan(ctx context.Context, st *store.Store, cache *bookcache.Cache, primaryOutcomeID string, side string, size float64) RouterResult {
+func BuildAllocationPlan(ctx context.Context, st *storage.Backend, cache *bookcache.Cache, primaryOutcomeID string, side string, size float64) RouterResult {
 	_ = side
 	maxTrade := st.GetBotConfigFloat(ctx, "maxTradeSize", 100)
 	slipTol := st.GetBotConfigFloat(ctx, "slippageTolerance", 0.05)

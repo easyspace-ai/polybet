@@ -15,6 +15,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/service/polysession"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
 	"github.com/easyspace-ai/polybet/internal/service/routersvc"
+	"github.com/easyspace-ai/polybet/internal/storage"
 	"github.com/easyspace-ai/polybet/internal/store"
 	"github.com/easyspace-ai/polybet/internal/tg"
 )
@@ -35,7 +36,7 @@ type TradeResponse struct {
 }
 
 // ExecutePlan runs allocations sequentially (Polymarket FOK buy only, matching Node).
-func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache *bookcache.Cache, risk *risksvc.Service, plan *routersvc.AllocationPlan, side string) (*TradeResponse, int, error) {
+func ExecutePlan(ctx context.Context, cfg *config.Config, st *storage.Backend, cache *bookcache.Cache, risk *risksvc.Service, plan *routersvc.AllocationPlan, side string) (*TradeResponse, int, error) {
 	cl, err := polysession.ResolveAuthedCLOB(ctx, cfg, st)
 	if err != nil {
 		return nil, 0, err

@@ -13,12 +13,12 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/easyspace-ai/polybet/internal/config"
-	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/easyspace-ai/polybet/internal/storage"
 )
 
 // Run long-polls Telegram when credentials are set (env or bot_config). If unset,
 // it sleeps and retries so dashboard saves apply without restarting the process.
-func Run(ctx context.Context, cfg *config.Config, st *store.Store, log *logrus.Logger) {
+func Run(ctx context.Context, cfg *config.Config, st *storage.Backend, log *logrus.Logger) {
 	if log == nil {
 		log = logrus.StandardLogger()
 	}
@@ -98,7 +98,7 @@ func Run(ctx context.Context, cfg *config.Config, st *store.Store, log *logrus.L
 	}
 }
 
-func sendStatus(ctx context.Context, hc *http.Client, token, chatID string, st *store.Store) {
+func sendStatus(ctx context.Context, hc *http.Client, token, chatID string, st *storage.Backend) {
 	t, err := st.GetLastTradeSummary(context.Background())
 	msg := "*Sports Prediction Market Router Status*\n"
 	if err != nil || t == nil {
