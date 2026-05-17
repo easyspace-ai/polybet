@@ -109,6 +109,24 @@ func TestParseGammaTimeNoTimezoneAssumesUTC(t *testing.T) {
 	}
 }
 
+func TestStartTimeFromEventReturnsZeroWhenNoFieldDecodes(t *testing.T) {
+	// All time fields missing or unparseable → return zero, NOT time.Now().
+	// The post-kickoff open-block gate relies on this so it can detect the
+	// unknown case via IsKnownStartTime instead of being silently bypassed.
+	bad := "not-a-timestamp"
+	ev := gammaEvent{
+		ID:        "bad-time",
+		Title:     "X vs Y",
+		StartDate: "",
+		EndDate:   "",
+		Markets:   []gammaMarket{{GameStartTime: &bad}},
+	}
+	got := startTimeFromEvent(ev)
+	if !got.IsZero() {
+		t.Fatalf("expected zero time when no field decodes, got %s", got.Format(time.RFC3339))
+	}
+}
+
 func TestStartTimeFromEventFallsBackToEndDateViaParseGammaTime(t *testing.T) {
 	// EndDate with short offset — parseGammaTime handles it, bare time.Parse(RFC3339) would fail.
 	gameStart := ""
