@@ -3,6 +3,7 @@ package risksvc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -31,6 +32,13 @@ type Meta struct {
 	RiskCloseExecutionMode string  `json:"riskCloseExecutionMode"`
 	RiskCloseFakWorstPrice  float64 `json:"riskCloseFakWorstPrice"`
 	RiskHedgeBuySizing      string  `json:"riskHedgeBuySizing"`
+}
+
+func isBenignListContextErr(readOnly bool, err error) bool {
+	if !readOnly || err == nil {
+		return false
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func firstNonEmpty(vals ...string) string {
@@ -128,8 +136,20 @@ func polymarketLinks(dm store.RiskDisplayMeta, gm gammaclient.TokenMarketDisplay
 }
 
 func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, accountID string) ([]map[string]any, Meta, error) {
+	return s.listRiskPositionsEnriched(ctx, meta, accountID, false)
+}
+
+// ListRiskPositionsEnrichedReadOnly serves HTTP GET paths: no DB writes, no REST
+// orderbook fallback, no stop-task enqueue. Ratcheting runs in background workers.
+func (s *Service) ListRiskPositionsEnrichedReadOnly(ctx context.Context, meta Meta, accountID string) ([]map[string]any, Meta, error) {
+	return s.listRiskPositionsEnriched(ctx, meta, accountID, true)
+}
+
+func (s *Service) listRiskPositionsEnriched(ctx context.Context, meta Meta, accountID string, readOnly bool) ([]map[string]any, Meta, error) {
 	meta = s.fillMeta(ctx, meta)
-	_ = s.st.NormalizeDustRisk(ctx, 1e-9)
+	if !readOnly {
+		_ = s.st.NormalizeDustRisk(ctx, 1e-9)
+	}
 	min := s.minShares(ctx)
 	rows, err := s.st.ListOpenOrClosingRiskPositions(ctx, accountID)
 	if err != nil {
@@ -142,14 +162,18 @@ func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 		}
 	}
 	disp, derr := s.st.RiskDisplayMetaForPositions(ctx, rows)
-	if derr != nil {
+	if derr != nil && !isBenignListContextErr(readOnly, derr) {
 		s.log.WithFields(logx.Pairs("err", derr.Error())).Warn("风控：展示元数据加载失败")
+	}
+	if derr != nil {
 		disp = map[string]store.RiskDisplayMeta{}
 	}
 	gammaByTok := s.gammaMetaBatch(ctx, tokens)
 	hiddenKeys, herr := s.st.ListRiskHiddenCompositeKeys(ctx, accountID)
-	if herr != nil {
+	if herr != nil && !isBenignListContextErr(readOnly, herr) {
 		s.log.WithFields(logx.Pairs("err", herr.Error())).Warn("风控：隐藏持仓键加载失败")
+	}
+	if herr != nil {
 		hiddenKeys = map[string]struct{}{}
 	}
 	out := make([]map[string]any, 0, len(rows))
@@ -170,20 +194,35 @@ func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 		}
 		seen[key] = p.ID
 
-		bid, ask, ok := s.BestBidAskCents(ctx, tid)
+		var bid, ask float64
+		var ok bool
+		if readOnly {
+			bid, ask, ok = s.BestBidAskCentsFromCache(tid)
+		} else {
+			bid, ask, ok = s.BestBidAskCents(ctx, tid)
+		}
 		var hw, trail float64
 		var curPtr *float64
-		var err error
-		if ok {
+		if readOnly || !ok {
+			hw = FloorCents1(p.HighWaterCents)
+			trail = s.trailingStopCents(ctx, hw, p.StopLossPct)
+			if ok {
+				curVal := bid
+				if curVal <= 0 && ask > 0 {
+					curVal = ask
+				}
+				if curVal > 0 {
+					curPtr = &curVal
+				}
+			}
+		} else {
+			var err error
 			hw, trail, curPtr, err = s.UpdateHighWaterAndMaybeQueueStop(ctx, p, bid, ask)
 			if err != nil {
 				fields := logx.Pairs("err", err, "position_id", p.ID)
 				s.log.WithFields(fields).Warn("风控：更新高点/止损队列失败")
 				logx.StopLoss().WithFields(fields).Warn("风控：更新高点/止损队列失败")
 			}
-		} else {
-			hw = FloorCents1(p.HighWaterCents)
-			trail = s.trailingStopCents(ctx, hw, p.StopLossPct)
 		}
 		var valUsd, pnl *float64
 		if curPtr != nil {

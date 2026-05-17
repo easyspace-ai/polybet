@@ -286,6 +286,15 @@ func (s *Service) BestBidCents(ctx context.Context, tokenID string) (float64, bo
 	return bid, ok && bid > 0
 }
 
+// BestBidAskCentsFromCache returns top-of-book from the in-memory cache only.
+// Used on HTTP read paths to avoid blocking on REST /book when WS is cold.
+func (s *Service) BestBidAskCentsFromCache(tokenID string) (bidCents, askCents float64, ok bool) {
+	tid := store.NormalizeRiskCLOBTokenID(tokenID)
+	bb, ba, topOk := s.cache.TopOfBook(tid)
+	bidCents, askCents = bb*100, ba*100
+	return bidCents, askCents, topOk && (bidCents > 0 || askCents > 0)
+}
+
 // BestBidAskCents returns best bid and ask in cents from the in-memory book cache, or REST /book.
 func (s *Service) BestBidAskCents(ctx context.Context, tokenID string) (bidCents, askCents float64, ok bool) {
 	tid := store.NormalizeRiskCLOBTokenID(tokenID)

@@ -11,7 +11,6 @@ import (
 	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/marketstream"
 	"github.com/easyspace-ai/polybet/internal/memcache"
-	"github.com/easyspace-ai/polybet/internal/service/balancesvc"
 	"github.com/easyspace-ai/polybet/internal/service/polysession"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
 	"github.com/easyspace-ai/polybet/internal/wsconfig"
@@ -246,6 +245,9 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 }
 
 func (a *App) rebuildAndBroadcastCache() {
+	if a == nil {
+		return
+	}
 	meta := risksvc.Meta{OutboundProxyConfigured: a.Cfg.HTTPPlatformProxy != ""}
 	acct, _ := a.Store.GetActivePolymarketAccount(context.Background())
 	accountID := ""
@@ -310,35 +312,3 @@ func positionsStructurallyEqual(a, b []map[string]any) bool {
 	return buildKey(a) == buildKey(b)
 }
 
-func (a *App) InvalidateAndRebuildCache() {
-	meta := risksvc.Meta{OutboundProxyConfigured: a.Cfg.HTTPPlatformProxy != ""}
-	acct, _ := a.Store.GetActivePolymarketAccount(context.Background())
-	accountID := ""
-	if acct != nil {
-		accountID = acct.ID
-	}
-
-	a.BalanceCache.Invalidate(context.Background())
-	a.RiskCache.Invalidate(context.Background())
-
-	rows, enrichedMeta, err := a.Risk.ListRiskPositionsEnriched(context.Background(), meta, accountID)
-	if err == nil {
-		_ = a.RiskCache.Set(context.Background(), memcache.RiskFetchResult{Positions: rows, Meta: memcache.RiskMeta{
-			UserWsConnected:         enrichedMeta.UserWsConnected,
-			UserWsConnecting:        enrichedMeta.UserWsConnecting,
-			OutboundProxyConfigured: enrichedMeta.OutboundProxyConfigured,
-			MinOpenRiskShares:       enrichedMeta.MinOpenRiskShares,
-			RiskCloseExecutionMode:  enrichedMeta.RiskCloseExecutionMode,
-			RiskCloseFakWorstPrice:  enrichedMeta.RiskCloseFakWorstPrice,
-			RiskHedgeBuySizing:      enrichedMeta.RiskHedgeBuySizing,
-		}})
-		a.Hub.BroadcastJSON(map[string]any{"type": "position_update", "data": rows})
-	}
-
-	if summary, err := balancesvc.Fetch(context.Background(), a.Cfg, a.Store); err == nil {
-		_ = a.BalanceCache.Set(context.Background(), summary)
-		a.broadcastBalanceUpdateIfChanged(context.Background(), summary)
-	} else {
-		a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("缓存重建：拉取余额失败")
-	}
-}

@@ -1,0 +1,134 @@
+package app
+
+import (
+	"context"
+	"time"
+
+	"github.com/easyspace-ai/polybet/internal/logx"
+	"github.com/easyspace-ai/polybet/internal/memcache"
+	"github.com/easyspace-ai/polybet/internal/service/balancesvc"
+	"github.com/easyspace-ai/polybet/internal/service/risksvc"
+	"github.com/easyspace-ai/polybet/internal/workqueue"
+)
+
+func (a *App) initWorkQueue() {
+	if a == nil {
+		return
+	}
+	if a.jobs == nil {
+		a.jobs = workqueue.New()
+	}
+}
+
+// ScheduleInvalidateAndRebuildCache invalidates caches and rebuilds them on a
+// debounced background goroutine so HTTP handlers return immediately.
+func (a *App) ScheduleInvalidateAndRebuildCache() {
+	if a == nil {
+		return
+	}
+	a.initWorkQueue()
+	a.BalanceCache.Invalidate(context.Background())
+	a.RiskCache.Invalidate(context.Background())
+	a.Debounce.Trigger("risk_cache_rebuild", func() {
+		a.jobs.Run("risk_cache_rebuild", func(ctx context.Context) error {
+			a.rebuildCachesSync(ctx)
+			return nil
+		})
+	})
+}
+
+// InvalidateAndRebuildCache is kept for compatibility; it schedules async work.
+func (a *App) InvalidateAndRebuildCache() {
+	a.ScheduleInvalidateAndRebuildCache()
+}
+
+func (a *App) rebuildCachesSync(ctx context.Context) {
+	if a == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+
+	meta := risksvc.Meta{OutboundProxyConfigured: a.Cfg.HTTPPlatformProxy != ""}
+	acct, _ := a.Store.GetActivePolymarketAccount(runCtx)
+	accountID := ""
+	if acct != nil {
+		accountID = acct.ID
+	}
+
+	rows, enrichedMeta, err := a.Risk.ListRiskPositionsEnriched(runCtx, meta, accountID)
+	if err == nil {
+		oldRows, _, found, _ := a.RiskCache.Get(runCtx)
+		shouldBroadcast := !found || !positionsStructurallyEqual(oldRows, rows)
+		_ = a.RiskCache.Set(runCtx, memcache.RiskFetchResult{Positions: rows, Meta: memcache.RiskMeta{
+			UserWsConnected:         enrichedMeta.UserWsConnected,
+			UserWsConnecting:        enrichedMeta.UserWsConnecting,
+			OutboundProxyConfigured: enrichedMeta.OutboundProxyConfigured,
+			MinOpenRiskShares:       enrichedMeta.MinOpenRiskShares,
+			RiskCloseExecutionMode:  enrichedMeta.RiskCloseExecutionMode,
+			RiskCloseFakWorstPrice:  enrichedMeta.RiskCloseFakWorstPrice,
+			RiskHedgeBuySizing:      enrichedMeta.RiskHedgeBuySizing,
+		}})
+		if shouldBroadcast {
+			a.Hub.BroadcastJSON(map[string]any{"type": "position_update", "data": rows})
+			a.RiskHub.BroadcastJSON(map[string]any{"type": "position_update", "data": rows})
+		}
+	} else {
+		a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("缓存重建：风控列表失败")
+	}
+
+	if summary, err := balancesvc.Fetch(runCtx, a.Cfg, a.Store); err == nil {
+		_ = a.BalanceCache.Set(runCtx, summary)
+		a.broadcastBalanceUpdateIfChanged(runCtx, summary)
+	} else {
+		a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("缓存重建：拉取余额失败")
+	}
+}
+
+// ScheduleRiskOfficialRefresh pulls official positions and rebuilds caches in the
+// background. Returns false when a refresh is already running.
+func (a *App) ScheduleRiskOfficialRefresh() bool {
+	if a == nil {
+		return true
+	}
+	a.initWorkQueue()
+	return a.jobs.Run("risk_official_refresh", func(ctx context.Context) error {
+		runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		a.Log.Info("风控刷新：后台官方同步开始")
+		if err := a.Risk.SyncRiskFromRESTTrades(runCtx); err != nil {
+			a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("风控刷新：后台官方同步失败")
+		} else {
+			a.Log.Info("风控刷新：后台官方同步完成")
+		}
+		a.rebuildCachesSync(runCtx)
+		return nil
+	})
+}
+
+// ScheduleMarketsRefresh runs Gamma sync in the background. Returns false when
+// another market refresh is already in flight.
+func (a *App) ScheduleMarketsRefresh(force bool) bool {
+	if a == nil {
+		return true
+	}
+	a.initWorkQueue()
+	key := "markets_refresh"
+	if force {
+		key = "markets_refresh_force"
+	}
+	return a.jobs.Run(key, func(ctx context.Context) error {
+		runCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		a.Log.Info("市场刷新：后台同步开始")
+		if err := a.SyncAndBroadcastMarkets(runCtx, force); err != nil {
+			a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("市场刷新：后台同步失败")
+			return err
+		}
+		a.Log.Info("市场刷新：后台同步完成")
+		return nil
+	})
+}

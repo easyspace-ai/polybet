@@ -34,8 +34,9 @@ type Deps struct {
 	SportsCache   *mktSync.SportsCache
 	RiskRuntime   *riskruntime.Bus
 	App           interface {
-		InvalidateAndRebuildCache()
-		SyncAndBroadcastMarkets(ctx context.Context, force bool) error
+		ScheduleInvalidateAndRebuildCache()
+		ScheduleRiskOfficialRefresh() bool
+		ScheduleMarketsRefresh(force bool) bool
 		RequestRestart()
 		ForceWSReconnect(channel string)
 		EnsureOrderbookToken(tokenID string)

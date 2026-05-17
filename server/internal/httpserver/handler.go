@@ -54,8 +54,9 @@ type Handler struct {
 	sportsCache  *mktSync.SportsCache
 	riskRuntime  *riskruntime.Bus
 	app          interface {
-		InvalidateAndRebuildCache()
-		SyncAndBroadcastMarkets(ctx context.Context, force bool) error
+		ScheduleInvalidateAndRebuildCache()
+		ScheduleRiskOfficialRefresh() bool
+		ScheduleMarketsRefresh(force bool) bool
 		RequestRestart()
 		ForceWSReconnect(channel string)
 		EnsureOrderbookToken(tokenID string)
@@ -86,8 +87,13 @@ func riskPositionsFetchResult(ctx context.Context, requestID string, risk *risks
 			},
 		}, nil
 	}
-	ctxBase := context.WithoutCancel(ctx)
-	rows, m, err := risk.ListRiskPositionsEnriched(ctxBase, meta, accountID)
+	ctxBase := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctxBase, cancel = context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+	}
+	rows, m, err := risk.ListRiskPositionsEnrichedReadOnly(ctxBase, meta, accountID)
 	if err != nil {
 		fields := logx.Pairs("request_id", requestID, "err", err.Error())
 		logrus.WithFields(fields).Warn("风控持仓：列举失败，返回空列表")
@@ -446,9 +452,9 @@ func (h *Handler) handleLogClear(c *gin.Context) {
 
 func (h *Handler) handleCacheRefresh(c *gin.Context) {
 	if h.app != nil {
-		h.app.InvalidateAndRebuildCache()
+		h.app.ScheduleInvalidateAndRebuildCache()
 	}
-	c.JSON(200, gin.H{"ok": true, "message": "cache_refreshed"})
+	c.JSON(202, gin.H{"ok": true, "accepted": true, "message": "cache_refresh_scheduled"})
 }
 
 func (h *Handler) handleMarkets(c *gin.Context) {
@@ -490,11 +496,12 @@ func (h *Handler) handleMarketsRefresh(c *gin.Context) {
 	if fq == "0" || fq == "false" || fq == "no" {
 		force = false
 	}
-	if err := h.app.SyncAndBroadcastMarkets(c, force); err != nil {
-		c.JSON(500, gin.H{"error": "sync_failed", "message": err.Error()})
-		return
+	started := h.app.ScheduleMarketsRefresh(force)
+	body := gin.H{"ok": true, "accepted": true, "message": "markets_refresh_scheduled"}
+	if !started {
+		body["alreadyRunning"] = true
 	}
-	c.JSON(200, gin.H{"ok": true, "message": "markets_refreshed"})
+	c.JSON(202, body)
 }
 
 func (h *Handler) handleOrderbook(c *gin.Context) {
@@ -796,7 +803,7 @@ func (h *Handler) handleCreateAccount(c *gin.Context) {
 	}
 	accountsCache.Delete("list")
 	polysession.InvalidateEnvCache()
-	h.app.InvalidateAndRebuildCache()
+	h.app.ScheduleInvalidateAndRebuildCache()
 	c.JSON(201, gin.H{"id": ac.ID, "name": ac.Name, "funderAddress": ac.FunderAddress, "isActive": ac.IsActive})
 }
 
@@ -812,7 +819,7 @@ func (h *Handler) handleActivateAccount(c *gin.Context) {
 	}
 	accountsCache.Delete("list")
 	polysession.InvalidateEnvCache()
-	h.app.InvalidateAndRebuildCache()
+	h.app.ScheduleInvalidateAndRebuildCache()
 	c.JSON(200, gin.H{"ok": true, "id": id})
 }
 
@@ -845,7 +852,7 @@ func (h *Handler) handleDeleteAccount(c *gin.Context) {
 		return
 	}
 	polysession.InvalidateEnvCache()
-	h.app.InvalidateAndRebuildCache()
+	h.app.ScheduleInvalidateAndRebuildCache()
 	c.Status(204)
 }
 
@@ -856,10 +863,11 @@ func (h *Handler) handleRiskPositions(c *gin.Context) {
 	if acct != nil {
 		accountID = acct.ID
 	}
-	fetch := func() (memcache.RiskFetchResult, error) {
-		return riskPositionsFetchResult(c.Request.Context(), c.GetString("request_id"), h.risk, accountID, meta)
+	rid := c.GetString("request_id")
+	fetch := func(ctx context.Context) (memcache.RiskFetchResult, error) {
+		return riskPositionsFetchResult(ctx, rid, h.risk, accountID, meta)
 	}
-	rows, meta2, fromCache, err := h.riskCache.GetWithRefresh(c, fetch)
+	rows, meta2, fromCache, err := h.riskCache.GetWithRefresh(c.Request.Context(), fetch)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "risk"})
 		return
@@ -878,28 +886,16 @@ func (h *Handler) handleRiskRefresh(c *gin.Context) {
 		c.JSON(403, gin.H{"error": "read_only"})
 		return
 	}
-	var syncErr *string
-	if h.risk != nil {
-		if err := h.risk.SyncRiskFromRESTTrades(c); err != nil {
-			es := err.Error()
-			syncErr = &es
-			fields := logx.Pairs("request_id", rid, "err", es)
-			logrus.WithFields(fields).Warn("风控刷新：CLOB 成交同步失败")
-			logx.Position().WithFields(fields).Warn("风控刷新：CLOB 成交同步失败")
-		} else {
-			fields := logx.Pairs("request_id", rid)
-			logrus.WithFields(fields).Info("风控刷新：CLOB 成交同步成功")
-			logx.Position().WithFields(fields).Info("风控刷新：CLOB 成交同步成功")
-		}
-	}
+	logrus.WithFields(logx.Pairs("request_id", rid)).Info("风控刷新：已接受，后台同步")
+	started := true
 	if h.app != nil {
-		h.app.InvalidateAndRebuildCache()
+		started = h.app.ScheduleRiskOfficialRefresh()
 	}
-	body := gin.H{"ok": true}
-	if syncErr != nil {
-		body["syncError"] = *syncErr
+	body := gin.H{"ok": true, "accepted": true, "message": "risk_refresh_scheduled"}
+	if !started {
+		body["alreadyRunning"] = true
 	}
-	c.JSON(200, body)
+	c.JSON(202, body)
 }
 
 // handleRiskTasksClear deletes terminal risk_tasks rows only (succeeded, failed,
@@ -1370,7 +1366,7 @@ func (h *Handler) handleRiskHiddenPost(c *gin.Context) {
 		h.riskCache.Invalidate(c.Request.Context())
 	}
 	if h.app != nil {
-		h.app.InvalidateAndRebuildCache()
+		h.app.ScheduleInvalidateAndRebuildCache()
 	}
 	c.JSON(200, gin.H{"ok": true})
 }
@@ -1401,7 +1397,7 @@ func (h *Handler) handleRiskHiddenDelete(c *gin.Context) {
 		h.riskCache.Invalidate(c.Request.Context())
 	}
 	if h.app != nil {
-		h.app.InvalidateAndRebuildCache()
+		h.app.ScheduleInvalidateAndRebuildCache()
 	}
 	c.JSON(200, gin.H{"ok": true})
 }

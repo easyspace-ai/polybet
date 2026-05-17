@@ -16,6 +16,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/logx"
+	"github.com/easyspace-ai/polybet/internal/memcache"
 	"github.com/easyspace-ai/polybet/internal/polyexec"
 	"github.com/easyspace-ai/polybet/internal/polywarm"
 	"github.com/easyspace-ai/polybet/internal/service/marketsvc"
@@ -192,16 +193,20 @@ func (h *Handler) handleWSRisk(c *gin.Context) {
 		"polyUserConnected":      h.risk.UserWSConnected(),
 	})
 
-	// 发送初始仓位快照
-	meta := risksvc.Meta{OutboundProxyConfigured: h.cfg.HTTPPlatformProxy != ""}
-	acct, _ := h.st.GetActivePolymarketAccount(c)
-	accountID := ""
-	if acct != nil {
-		accountID = acct.ID
-	}
-	rows, _, err := h.risk.ListRiskPositionsEnriched(c, meta, accountID)
-	if err == nil {
+	// 发送初始仓位快照（优先读缓存，避免 WS 连接阻塞在 enrich 上）
+	if rows, _, found, _ := h.riskCache.Get(c); found {
 		_ = h.riskHub.WriteJSON(conn, map[string]any{"type": "position_update", "data": rows})
+	} else {
+		meta := risksvc.Meta{OutboundProxyConfigured: h.cfg.HTTPPlatformProxy != ""}
+		acct, _ := h.st.GetActivePolymarketAccount(c)
+		accountID := ""
+		if acct != nil {
+			accountID = acct.ID
+		}
+		fetch := func(ctx context.Context) (memcache.RiskFetchResult, error) {
+			return riskPositionsFetchResult(ctx, rid, h.risk, accountID, meta)
+		}
+		h.riskCache.RefreshAsync(fetch)
 	}
 
 	if h.riskRuntime != nil {

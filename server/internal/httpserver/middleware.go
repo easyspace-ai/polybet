@@ -24,6 +24,20 @@ func requestID() gin.HandlerFunc {
 	}
 }
 
+func requestStartLog() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if strings.HasPrefix(path, "/api/risk/") || path == "/api/cache/refresh" || path == "/api/markets/refresh" {
+			logrus.WithFields(logx.Pairs(
+				"request_id", c.GetString("request_id"),
+				"method", c.Request.Method,
+				"path", path,
+			)).Info("HTTP：请求开始")
+		}
+		c.Next()
+	}
+}
+
 func accessLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
