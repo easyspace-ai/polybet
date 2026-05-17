@@ -209,6 +209,10 @@ func (s *Store) SeedDefaultConfig(ctx context.Context) error {
 		// market message has been observed across all subscriptions for that
 		// long, even if the per-token cache happens to look fresh.
 		{"riskMaxReconcileGapSec", "0"},
+		// > 0 refuses new opens when the market start_time is more than
+		// this many seconds in the past (post-kickoff guard). Tokens with
+		// unknown start_time are NOT blocked. 0 disables.
+		{"riskBlockOpenAfterStartSec", "0"},
 		// Absolute cent-drop ceiling combined with the price-band percent
 		// table. Effective trigger = max(percent_trail, hw - priceStopLossAbsCents).
 		// Useful for high-price favourites where 10% percent trail is far too

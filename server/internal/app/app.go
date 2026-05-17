@@ -219,6 +219,11 @@ func (a *App) Run(ctx context.Context) error {
 	a.wg.Add(1)
 	go a.riskTicker(ctx)
 	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		a.Risk.RunGC(ctx, a.Cache)
+	}()
+	a.wg.Add(1)
 	go a.syncTicker(ctx)
 	a.wg.Add(1)
 	go a.restTradesTicker(ctx)

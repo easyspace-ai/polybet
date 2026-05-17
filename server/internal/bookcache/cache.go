@@ -21,6 +21,15 @@ type tokenBook struct {
 	asks map[string]float64
 	bids map[string]float64
 	ts   int64
+	// bestBid / bestAsk are the cached top-of-book (0–1 probability prices).
+	// Tracked separately from the level maps so:
+	//   - ApplyTopOfBook (which lacks size info) can update the top without
+	//     polluting the maps with size=0 placeholder entries that previously
+	//     leaked into the levels ladder and showed up as "$0" rows.
+	//   - TopOfBook is O(1) instead of O(N) per call (called on every WS tick
+	//     and every risk evaluation).
+	bestBid float64
+	bestAsk float64
 }
 
 // Cache mirrors bot polymarketBookCache (asks → taker buy ladder).
@@ -72,8 +81,11 @@ func (c *Cache) FeeRate(tokenID string) float64 {
 	return c.feeRates[tokenID]
 }
 
-// ApplyTopOfBook records best bid/ask from CLOB best_bid_ask or price_change when full depth
-// is not included. Ensures TopOfBook and risk evaluation stay aligned with live WS ticks.
+// ApplyTopOfBook records best bid/ask from CLOB best_bid_ask or price_change
+// when full depth is not included. Updates the cached top fields directly
+// rather than injecting size=0 placeholder rows into the level maps so the
+// levels ladder (consumed by routersvc + dashboard UI) is not polluted with
+// phantom $0-size entries.
 func (c *Cache) ApplyTopOfBook(tokenID string, bestBid, bestAsk float64, ts int64) {
 	if tokenID == "" {
 		return
@@ -94,16 +106,10 @@ func (c *Cache) ApplyTopOfBook(tokenID string, bestBid, bestAsk float64, ts int6
 		tb.ts = time.Now().UnixMilli()
 	}
 	if bestBid > 0 && isFinite(bestBid) {
-		p := priceLevelKey(bestBid)
-		if _, ok := tb.bids[p]; !ok {
-			tb.bids[p] = 0
-		}
+		tb.bestBid = bestBid
 	}
 	if bestAsk > 0 && isFinite(bestAsk) {
-		p := priceLevelKey(bestAsk)
-		if _, ok := tb.asks[p]; !ok {
-			tb.asks[p] = 0
-		}
+		tb.bestAsk = bestAsk
 	}
 }
 
@@ -124,18 +130,34 @@ func (c *Cache) ReplaceBook(tokenID string, bids, asks []struct{ Price, Size str
 	}
 	tb.asks = map[string]float64{}
 	tb.bids = map[string]float64{}
+	bestAsk := 0.0
 	for _, a := range asks {
 		sz, _ := strconv.ParseFloat(strings.TrimSpace(a.Size), 64)
 		if sz > 0 {
-			tb.asks[strings.TrimSpace(a.Price)] = sz
+			price := strings.TrimSpace(a.Price)
+			tb.asks[price] = sz
+			if p, err := strconv.ParseFloat(price, 64); err == nil && p > 0 {
+				if bestAsk == 0 || p < bestAsk {
+					bestAsk = p
+				}
+			}
 		}
 	}
+	bestBid := 0.0
 	for _, b := range bids {
 		sz, _ := strconv.ParseFloat(strings.TrimSpace(b.Size), 64)
 		if sz > 0 {
-			tb.bids[strings.TrimSpace(b.Price)] = sz
+			price := strings.TrimSpace(b.Price)
+			tb.bids[price] = sz
+			if p, err := strconv.ParseFloat(price, 64); err == nil && p > 0 {
+				if p > bestBid {
+					bestBid = p
+				}
+			}
 		}
 	}
+	tb.bestBid = bestBid
+	tb.bestAsk = bestAsk
 	tb.ts = ts
 }
 
@@ -150,17 +172,66 @@ func (c *Cache) ApplyPriceChange(tokenID string, side string, price string, size
 	if ts < tb.ts {
 		return
 	}
+	isSell := strings.EqualFold(side, "SELL")
 	target := tb.bids
-	if strings.EqualFold(side, "SELL") {
+	if isSell {
 		target = tb.asks
 	}
+	priceTrim := strings.TrimSpace(price)
+	priceFloat, _ := strconv.ParseFloat(priceTrim, 64)
 	sz, _ := strconv.ParseFloat(strings.TrimSpace(size), 64)
 	if size == "0" || sz <= 0 {
-		delete(target, strings.TrimSpace(price))
+		delete(target, priceTrim)
+		// If we removed the cached top, recompute from the remaining levels.
+		// Keeping the cached top in sync after deletes is the only place a
+		// scan is unavoidable; affects only the price_change pathway.
+		if isSell && tb.bestAsk > 0 && priceFloat == tb.bestAsk {
+			tb.bestAsk = recomputeBestAsk(tb.asks)
+		} else if !isSell && tb.bestBid > 0 && priceFloat == tb.bestBid {
+			tb.bestBid = recomputeBestBid(tb.bids)
+		}
 	} else {
-		target[strings.TrimSpace(price)] = sz
+		target[priceTrim] = sz
+		// Incremental top update for non-deletes.
+		if isSell {
+			if tb.bestAsk == 0 || (priceFloat > 0 && priceFloat < tb.bestAsk) {
+				tb.bestAsk = priceFloat
+			}
+		} else {
+			if priceFloat > tb.bestBid {
+				tb.bestBid = priceFloat
+			}
+		}
 	}
 	tb.ts = ts
+}
+
+func recomputeBestBid(bids map[string]float64) float64 {
+	best := 0.0
+	for p := range bids {
+		v, err := strconv.ParseFloat(p, 64)
+		if err != nil || v <= 0 {
+			continue
+		}
+		if v > best {
+			best = v
+		}
+	}
+	return best
+}
+
+func recomputeBestAsk(asks map[string]float64) float64 {
+	best := 0.0
+	for p := range asks {
+		v, err := strconv.ParseFloat(p, 64)
+		if err != nil || v <= 0 {
+			continue
+		}
+		if best == 0 || v < best {
+			best = v
+		}
+	}
+	return best
 }
 
 // BookAge returns time since last book update for tokenID.
@@ -213,6 +284,12 @@ func (c *Cache) getLevelsLocked(tokenID string) []Level {
 		if err != nil || raw <= 0 || !isFinite(raw) || !isFinite(shares) {
 			continue
 		}
+		// Defensive: drop any zero-size level that may have slipped through
+		// historical paths so the levels ladder does not surface phantom
+		// $0 rows to the router or UI.
+		if shares <= 0 {
+			continue
+		}
 		lv = append(lv, pair{odds: applyFee(raw, fee), size: shares * raw})
 	}
 	sort.Slice(lv, func(i, j int) bool { return lv[i].odds < lv[j].odds })
@@ -233,6 +310,11 @@ func (c *Cache) TopOfBook(tokenID string) (bestBid, bestAsk float64, ok bool) {
 	tb := c.books[tokenID]
 	if tb == nil {
 		return 0, 0, false
+	}
+	// Fast path: cached top tracked by every mutation. Falls through to a
+	// scan only if a legacy code path bypassed the cached fields (defensive).
+	if tb.bestBid > 0 || tb.bestAsk > 0 {
+		return tb.bestBid, tb.bestAsk, true
 	}
 	for p := range tb.asks {
 		v, err := strconv.ParseFloat(p, 64)
@@ -304,6 +386,46 @@ func (c *Cache) GetBidsAsks(tokenID string, n int) (bids, asks []Level) {
 // SnapshotLevels returns JSON-serializable levels for WS relay.
 func (c *Cache) SnapshotLevels(tokenID string) []Level {
 	return c.GetLevels(tokenID)
+}
+
+// PruneIdle evicts tokens whose last update is older than maxAge. Returns
+// the number of entries removed. Intended to be called periodically (e.g.
+// every few minutes) so accounts that switch tokens or stop following a
+// market do not leave their books in memory forever.
+//
+// maxAge <= 0 disables (no-op). Tokens still actively subscribed via the
+// market WS will reappear on the next book event so eviction is safe.
+func (c *Cache) PruneIdle(maxAge time.Duration) int {
+	if maxAge <= 0 {
+		return 0
+	}
+	cutoff := time.Now().UnixMilli() - maxAge.Milliseconds()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	removed := 0
+	for tid, tb := range c.books {
+		if tb == nil {
+			delete(c.books, tid)
+			removed++
+			continue
+		}
+		if tb.ts > 0 && tb.ts < cutoff {
+			delete(c.books, tid)
+			// Companion fee-rate entry is also dropped so feeRates does not
+			// outlive the book; reseeding happens on next subscribe.
+			delete(c.feeRates, tid)
+			removed++
+		}
+	}
+	return removed
+}
+
+// Size returns the number of tokens currently cached. Useful for /api/health
+// and tests.
+func (c *Cache) Size() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.books)
 }
 
 func isFinite(f float64) bool {
