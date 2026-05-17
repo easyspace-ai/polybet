@@ -228,10 +228,10 @@ function RiskPage() {
     setOfficialSyncing(true);
     try {
       const r = await postRiskOfficialRefresh();
-      if (r.syncError) {
-        toast.warning('缓存已更新', { description: `官方持仓同步未完全成功：${r.syncError}` });
+      if (r.alreadyRunning) {
+        toast.info('同步进行中', { description: '已有官方同步任务在后台运行，请稍候' });
       } else {
-        toast.success('已刷新', { description: '已从官方 CLOB 同步持仓与链上余额' });
+        toast.success('已提交', { description: '官方持仓同步已在后台进行，完成后会自动更新' });
       }
       refresh();
     } catch (err) {

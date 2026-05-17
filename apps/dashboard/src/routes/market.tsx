@@ -10,6 +10,7 @@ import { useConfig } from "@/hooks/useConfig";
 import { groupMarkets, formatDateHeader, localDateKey, isAmericanSport, get1X2, getSpreadMLTotal, type MatchGroup, type OutcomeRow } from "@/lib/marketUtils";
 import { DEFAULT_EVENT_CLASSIFICATION_TAGS, parseEventClassificationTags } from "@/lib/eventClassification";
 import { getOrderBook, postTrade, type Market, type OrderBookLevel } from "@/lib/api";
+import { refreshRiskData } from "@/hooks/useRiskControlCache";
 import { polymarketEventUrl } from "@/lib/polymarketLinks";
 import { cn } from "@/lib/utils";
 
@@ -306,6 +307,9 @@ function TradeSidebar({
       }
       setAmount('');
       refreshBalance();
+      if (result.status === 'filled' || result.status === 'partial') {
+        refreshRiskData();
+      }
     } catch (err) {
       toast.error('下单失败', { description: err instanceof Error ? err.message : '请求错误' });
     } finally {
