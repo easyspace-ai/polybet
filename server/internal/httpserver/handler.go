@@ -864,19 +864,20 @@ func (h *Handler) handleRiskPositions(c *gin.Context) {
 		accountID = acct.ID
 	}
 	rid := c.GetString("request_id")
+
+	rows, meta2, found := h.riskCache.Snapshot()
+	stale := !found
+	if stale {
+		rows = []map[string]any{}
+		meta2 = riskMetaForAPI(h.risk.DashboardListingMeta(c.Request.Context(), meta))
+	}
+
 	fetch := func(ctx context.Context) (memcache.RiskFetchResult, error) {
 		return riskPositionsFetchResult(ctx, rid, h.risk, accountID, meta)
 	}
-	rows, meta2, fromCache, err := h.riskCache.GetWithRefresh(c.Request.Context(), fetch)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "risk"})
-		return
-	}
-	if !fromCache {
-		fields := logx.Pairs("request_id", c.GetString("request_id"), "count", len(rows))
-		logx.Position().WithFields(fields).Info("风控持仓：列表已刷新")
-	}
-	c.JSON(200, gin.H{"positions": rows, "meta": meta2, "cached": fromCache})
+	h.riskCache.RequestBackgroundRefresh(fetch)
+
+	c.JSON(200, gin.H{"positions": rows, "meta": meta2, "cached": found, "stale": stale})
 }
 
 func (h *Handler) handleRiskRefresh(c *gin.Context) {

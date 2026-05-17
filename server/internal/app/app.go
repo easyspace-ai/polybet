@@ -222,6 +222,13 @@ func (a *App) Run(ctx context.Context) error {
 	a.wg.Add(1)
 	go a.riskTicker(ctx)
 	a.wg.Add(1)
+	go a.riskSnapshotTicker(ctx)
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		a.ScheduleRiskCacheRebuild()
+	}()
+	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
 		a.Risk.RunGC(ctx, a.Cache)
@@ -285,6 +292,28 @@ func sleepCtx(ctx context.Context, d time.Duration) {
 	select {
 	case <-ctx.Done():
 	case <-t.C:
+	}
+}
+
+// riskSnapshotTicker keeps RiskCache warm while positions are open. Runs on a
+// dedicated worker — never on the Gin HTTP goroutine pool.
+func (a *App) riskSnapshotTicker(ctx context.Context) {
+	defer a.wg.Done()
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if a.OpenRiskPositionCount(ctx) <= 0 {
+				continue
+			}
+			a.jobs.Run("risk_snapshot_tick", func(runCtx context.Context) error {
+				a.broadcastPositionSnapshotFast()
+				return nil
+			})
+		}
 	}
 }
 

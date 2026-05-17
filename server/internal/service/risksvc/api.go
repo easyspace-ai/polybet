@@ -168,7 +168,12 @@ func (s *Service) listRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 	if derr != nil {
 		disp = map[string]store.RiskDisplayMeta{}
 	}
-	gammaByTok := s.gammaMetaBatch(ctx, tokens)
+	var gammaByTok map[string]gammaclient.TokenMarketDisplay
+	if readOnly {
+		gammaByTok = s.gammaMetaCachedOnly(tokens)
+	} else {
+		gammaByTok = s.gammaMetaBatch(ctx, tokens)
+	}
 	hiddenKeys, herr := s.st.ListRiskHiddenCompositeKeys(ctx, accountID)
 	if herr != nil && !isBenignListContextErr(readOnly, herr) {
 		s.log.WithFields(logx.Pairs("err", herr.Error())).Warn("风控：隐藏持仓键加载失败")

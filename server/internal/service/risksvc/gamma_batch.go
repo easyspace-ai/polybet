@@ -33,6 +33,26 @@ func dedupeTrimTokens(ids []string) []string {
 	return out
 }
 
+// gammaMetaCachedOnly returns only entries already in the in-memory TTL cache.
+// Safe for HTTP read paths — never blocks on Gamma HTTP.
+func (s *Service) gammaMetaCachedOnly(tokenIDs []string) map[string]gammaclient.TokenMarketDisplay {
+	uniq := dedupeTrimTokens(tokenIDs)
+	res := make(map[string]gammaclient.TokenMarketDisplay, len(uniq))
+	s.gammaMetaMu.Lock()
+	defer s.gammaMetaMu.Unlock()
+	if s.gammaMeta == nil {
+		return res
+	}
+	now := time.Now()
+	for _, t := range uniq {
+		ent, ok := s.gammaMeta[t]
+		if ok && now.Sub(ent.at) < gammaMetaTTL {
+			res[t] = ent.disp
+		}
+	}
+	return res
+}
+
 // gammaMetaBatch returns Gamma market display fields per CLOB token id, with a small in-memory TTL cache.
 func (s *Service) gammaMetaBatch(ctx context.Context, tokenIDs []string) map[string]gammaclient.TokenMarketDisplay {
 	uniq := dedupeTrimTokens(tokenIDs)

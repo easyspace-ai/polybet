@@ -97,6 +97,14 @@ func (h *Hub) WriteJSON(c *websocket.Conn, v any) error {
 	return c.WriteJSON(v)
 }
 
+// BroadcastJSONAsync fan-out without blocking the caller (e.g. HTTP / worker hot paths).
+func (h *Hub) BroadcastJSONAsync(v any) {
+	if h == nil {
+		return
+	}
+	go h.BroadcastJSON(v)
+}
+
 func (h *Hub) BroadcastJSON(v any) {
 	b, err := json.Marshal(v)
 	if err != nil {

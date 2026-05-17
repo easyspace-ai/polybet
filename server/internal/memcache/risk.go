@@ -33,8 +33,7 @@ type RiskFetchResult struct {
 	Meta      RiskMeta
 }
 
-// RiskFetchFunc loads a fresh snapshot. Callers pass request ctx for synchronous
-// fetches; background refresh supplies its own long-lived ctx.
+// RiskFetchFunc loads a fresh snapshot on a background worker goroutine.
 type RiskFetchFunc func(ctx context.Context) (RiskFetchResult, error)
 
 type riskCacheData struct {
@@ -44,8 +43,7 @@ type riskCacheData struct {
 }
 
 // RiskCache holds a single snapshot of enriched risk positions in memory.
-// Single-writer: RefreshAsync serializes background writes with refreshMu;
-// readers use dataMu RWMutex. Cache misses use singleflight to avoid herds.
+// HTTP handlers must call Snapshot() only — never block on enrichment.
 type RiskCache struct {
 	log *logrus.Logger
 
@@ -75,6 +73,12 @@ func (r *RiskCache) Get(ctx context.Context) ([]map[string]any, RiskMeta, bool, 
 	return r.data.Positions, r.data.Meta, true, nil
 }
 
+// Snapshot returns the in-memory copy instantly. The bool is false when empty/expired.
+func (r *RiskCache) Snapshot() ([]map[string]any, RiskMeta, bool) {
+	positions, meta, found, _ := r.Get(context.Background())
+	return positions, meta, found
+}
+
 func (r *RiskCache) Invalidate(ctx context.Context) {
 	if r == nil {
 		return
@@ -99,13 +103,12 @@ func (r *RiskCache) Set(ctx context.Context, result RiskFetchResult) error {
 	return nil
 }
 
-func (r *RiskCache) RefreshAsync(fetch RiskFetchFunc) {
+// RequestBackgroundRefresh schedules enrichment on a worker goroutine.
+// Never blocks the caller; duplicate requests are deduplicated via singleflight.
+func (r *RiskCache) RequestBackgroundRefresh(fetch RiskFetchFunc) {
 	if r == nil || fetch == nil {
 		return
 	}
-	r.refreshMu.Lock()
-	defer r.refreshMu.Unlock()
-
 	go func() {
 		_, err, _ := r.sf.Do("refresh", func() (any, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), riskBackgroundRefresh)
@@ -126,28 +129,7 @@ func (r *RiskCache) RefreshAsync(fetch RiskFetchFunc) {
 	}()
 }
 
-func (r *RiskCache) GetWithRefresh(ctx context.Context, fetch RiskFetchFunc) ([]map[string]any, RiskMeta, bool, error) {
-	positions, meta, found, err := r.Get(ctx)
-	if found && err == nil {
-		r.RefreshAsync(fetch)
-		return positions, meta, true, nil
-	}
-
-	v, err, _ := r.sf.Do("fetch", func() (any, error) {
-		if positions, meta, found, err := r.Get(ctx); found && err == nil {
-			return RiskFetchResult{Positions: positions, Meta: meta}, nil
-		}
-		result, err := fetch(ctx)
-		if err != nil {
-			return nil, err
-		}
-		_ = r.Set(ctx, result)
-		return result, nil
-	})
-	if err != nil {
-		return nil, RiskMeta{}, false, err
-	}
-	result := v.(RiskFetchResult)
-	r.RefreshAsync(fetch)
-	return result.Positions, result.Meta, false, nil
+// RefreshAsync is an alias for RequestBackgroundRefresh.
+func (r *RiskCache) RefreshAsync(fetch RiskFetchFunc) {
+	r.RequestBackgroundRefresh(fetch)
 }
