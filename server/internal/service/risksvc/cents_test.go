@@ -29,3 +29,31 @@ func TestTrailingStopCentsFromHW(t *testing.T) {
 		t.Fatalf("got %v want 44.7", g)
 	}
 }
+
+func TestTrailingStopCentsFromHWWithAbs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name             string
+		hw, pct, maxDrop float64
+		want             float64
+	}{
+		// maxDrop disabled (<=0): equals legacy percent-only formula.
+		{"abs_disabled_equiv", 55.9, 20, 0, 44.7},
+		{"abs_negative_equiv", 55.9, 20, -3, 44.7},
+		// On a 95¢ favourite, 10% trail = 85.5¢; maxDrop=3 tightens to 92¢.
+		{"abs_caps_drop_on_high_price", 95, 10, 3, 92},
+		// 90¢ HW, 50% pct trail = 45¢, maxDrop=3 → 87¢ wins.
+		{"max_wins_when_pct_loose", 90, 50, 3, 87},
+		// 5¢ HW, 10% trail = 4.5¢; maxDrop=2 → 5-2=3, but pct (4.5) > abs (3) → pct wins.
+		{"pct_wins_when_already_tight", 5, 10, 2, 4.5},
+		// 5¢ HW, absurdly large maxDrop=100 → -95 clamped at 0; pct wins (4.5).
+		{"pct_wins_against_giant_abs", 5, 10, 100, 4.5},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if g := TrailingStopCentsFromHWWithAbs(tc.hw, tc.pct, tc.maxDrop); g != tc.want {
+				t.Fatalf("hw=%v pct=%v maxDrop=%v got %v want %v", tc.hw, tc.pct, tc.maxDrop, g, tc.want)
+			}
+		})
+	}
+}

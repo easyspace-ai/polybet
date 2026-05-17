@@ -197,6 +197,24 @@ func (s *Store) SeedDefaultConfig(ctx context.Context) error {
 		{"riskCloseFakWorstPrice", "0.01"},
 		{"riskHedgeBuySizing", "notional"},
 		{"riskHedgeAutoHidePosition", "true"},
+		// Trade gate / kill-switch defaults. All <= 0 / falsy keys are no-ops
+		// so existing deployments are unaffected until operators opt in.
+		{"riskTradingHalted", "false"},
+		{"riskMaxDailyLossUSD", "0"},
+		{"riskMaxOpenPositions", "0"},
+		// 0 disables per-token book-staleness gating; setting to e.g. 5000
+		// (= 5 s) refuses opens when WS+REST cache is older than that window.
+		{"riskBookMaxAgeMs", "0"},
+		// 0 disables; setting to e.g. 60 (= 60 s) refuses opens when no WS
+		// market message has been observed across all subscriptions for that
+		// long, even if the per-token cache happens to look fresh.
+		{"riskMaxReconcileGapSec", "0"},
+		// Absolute cent-drop ceiling combined with the price-band percent
+		// table. Effective trigger = max(percent_trail, hw - priceStopLossAbsCents).
+		// Useful for high-price favourites where 10% percent trail is far too
+		// loose (10% of 95¢ = 9.5¢ drop). 0 disables, preserving legacy
+		// percent-only behaviour.
+		{"priceStopLossAbsCents", "0"},
 	}
 	for _, r := range append(rows, wsConfigSeedRows()...) {
 		if err := s.InsertBotConfigDefault(ctx, r.k, r.v); err != nil {

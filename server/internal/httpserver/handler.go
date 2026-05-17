@@ -639,6 +639,19 @@ func (h *Handler) handleTradeExecute(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "only_buy_supported"})
 		return
 	}
+	// Trade gate: kill-switch / manual halt / WS-down / open-position cap.
+	// Token-level staleness is re-checked inside tradesvc.ExecutePlan once the
+	// allocation plan resolves the per-leg tokenIDs.
+	if gate := h.risk.EnsureTradeAllowed(c, ""); gate != nil {
+		fields := logx.Pairs(
+			"request_id", rid, "outcome_id", body.OutcomeID, "side", body.Side, "size", body.Size,
+			"gate_code", gate.Code, "gate_message", gate.Message, "detail", gate.Detail,
+		)
+		logrus.WithFields(fields).Warn("交易执行：风控门控拒绝")
+		logx.Trade().WithFields(fields).Warn("交易执行：风控门控拒绝")
+		c.JSON(409, gin.H{"error": gate.Code, "message": gate.Message, "detail": gate.Detail})
+		return
+	}
 	execFields := logx.Pairs("request_id", rid, "outcome_id", body.OutcomeID, "side", body.Side, "size", body.Size)
 	logrus.WithFields(execFields).Info("交易执行：收到下单请求")
 	logx.Trade().WithFields(execFields).Info("交易执行：收到下单请求")
@@ -1074,6 +1087,10 @@ func (h *Handler) handlePatchRiskPosition(c *gin.Context) {
 
 func (h *Handler) riskRowFromPosition(ctx context.Context, p *store.RiskPosition) gin.H {
 	row := riskRowFromPosition(p)
+	// Re-derive trail using the configured absolute cent floor when present.
+	// The unauthenticated/test variant keeps the legacy formula (no store).
+	hw := risksvc.FloorCents1(p.HighWaterCents)
+	row["trailingStopCents"] = risksvc.TrailingStopCentsFromHWWithAbs(hw, p.StopLossPct, h.st.GetBotConfigFloat(ctx, "priceStopLossAbsCents", 0))
 
 	if bid, ask, ok := h.risk.BestBidAskCents(ctx, p.TokenID); ok {
 		cur := bid
@@ -1102,6 +1119,68 @@ func riskRowFromPosition(p *store.RiskPosition) gin.H {
 		"valueUsd": nil, "pnlUsd": nil, "maxPayoffUsd": p.SizeShares, "potentialProfitUsd": p.SizeShares - p.CostUSD,
 		"status": p.Status, "source": p.Source,
 	}
+}
+
+// handleRiskGate exposes current trade-gate state (kill switch, halt, WS health).
+// Operators inspect this to understand why /api/trade is rejecting.
+func (h *Handler) handleRiskGate(c *gin.Context) {
+	manualHalted := false
+	if v, ok, _ := h.st.GetBotConfig(c, "riskTradingHalted"); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "on":
+			manualHalted = true
+		}
+	}
+	autoHalted, autoReason := h.risk.AutoHaltStatus()
+	wsDown, wsReason := h.risk.WSMarketDown()
+	last := h.risk.LastBookTickAt()
+	gateErr := h.risk.EnsureTradeAllowed(c, "")
+	out := gin.H{
+		"manualHalted":      manualHalted,
+		"autoHalted":        autoHalted,
+		"autoHaltReason":    autoReason,
+		"wsMarketDown":      wsDown,
+		"wsMarketReason":    wsReason,
+		"maxDailyLossUSD":   h.st.GetBotConfigFloat(c, "riskMaxDailyLossUSD", 0),
+		"maxOpenPositions":  h.st.GetBotConfigInt(c, "riskMaxOpenPositions", 0),
+		"bookMaxAgeMs":      h.st.GetBotConfigInt(c, "riskBookMaxAgeMs", 0),
+		"maxReconcileGapSec": h.st.GetBotConfigInt(c, "riskMaxReconcileGapSec", 0),
+		"stopLossAbsCents":  h.st.GetBotConfigFloat(c, "priceStopLossAbsCents", 0),
+		"openTradeAllowed":  gateErr == nil,
+	}
+	if !last.IsZero() {
+		out["lastBookTickAt"] = last.Format(time.RFC3339)
+	}
+	if gateErr != nil {
+		out["openTradeReject"] = gin.H{
+			"code":    gateErr.Code,
+			"message": gateErr.Message,
+			"detail":  gateErr.Detail,
+		}
+	}
+	if snap, err := h.risk.EvaluateKillSwitch(c); err == nil {
+		out["killSwitch"] = gin.H{
+			"thresholdUsd":     snap.ThresholdUSD,
+			"unrealizedUsd":    snap.UnrealizedUSD,
+			"openPositions":    snap.OpenPositions,
+			"bookCovered":      snap.BookCovered,
+			"bookMissing":      snap.BookMissing,
+			"worstPositionUsd": snap.WorstPositionUSD,
+			"tripped":          snap.Tripped,
+			"reason":           snap.Reason,
+		}
+	}
+	c.JSON(200, out)
+}
+
+// handleRiskKillSwitchClear clears the auto-halt flag (manual halt via bot
+// config is unaffected).
+func (h *Handler) handleRiskKillSwitchClear(c *gin.Context) {
+	rid := c.GetString("request_id")
+	h.risk.ClearAutoHalt(c, rid)
+	logrus.WithFields(logx.Pairs("request_id", rid)).Info("风控：API 调用已清除 KILL SWITCH 自动标志")
+	logx.Trade().WithFields(logx.Pairs("request_id", rid)).Info("风控：API 调用已清除 KILL SWITCH 自动标志")
+	c.JSON(200, gin.H{"ok": true})
 }
 
 func (h *Handler) handleClosePosition(c *gin.Context) {

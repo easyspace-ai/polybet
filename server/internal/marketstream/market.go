@@ -440,6 +440,10 @@ func (s *MarketStream) WriteMessage(messageType int, data []byte) error {
 	return s.conn.WriteMessage(messageType, data)
 }
 
+// MaxResubscribeBatch caps the number of assetIds per resubscribe frame so very
+// large reconciled subscription sets do not exceed CLOB frame limits on reconnect.
+const MaxResubscribeBatch = 50
+
 func (s *MarketStream) resubscribe() error {
 	s.subMu.RLock()
 	assetIDs := make([]string, 0, len(s.subscriptions))
@@ -452,7 +456,38 @@ func (s *MarketStream) resubscribe() error {
 		return nil
 	}
 
-	return s.sendSubscription(assetIDs, "")
+	for i := 0; i < len(assetIDs); i += MaxResubscribeBatch {
+		j := i + MaxResubscribeBatch
+		if j > len(assetIDs) {
+			j = len(assetIDs)
+		}
+		if err := s.sendSubscription(assetIDs[i:j], ""); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ReconnectAttempts returns the current consecutive reconnect attempts (0 when stable).
+func (s *MarketStream) ReconnectAttempts() int {
+	s.reconnectMu.Lock()
+	defer s.reconnectMu.Unlock()
+	return s.reconnectAttempts
+}
+
+// LastConnectedAt returns the wall time of the most recent successful dial (zero if never).
+func (s *MarketStream) LastConnectedAt() time.Time {
+	s.connectedAtMu.Lock()
+	defer s.connectedAtMu.Unlock()
+	return s.connectedAt
+}
+
+// IsConnected reports whether the underlying socket is currently held open
+// (best-effort: not a deep liveness check).
+func (s *MarketStream) IsConnected() bool {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	return s.conn != nil
 }
 
 func (s *MarketStream) readLoop() {

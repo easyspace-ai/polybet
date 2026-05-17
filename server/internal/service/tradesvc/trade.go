@@ -68,6 +68,20 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 			results = append(results, TradeResult{TradeID: tid, Status: "failed", Platform: a.Platform, FailureReason: "unsupported_platform"})
 			continue
 		}
+		// Per-leg gate: at this point we know the CLOB tokenID, so the trade
+		// gate can additionally enforce per-token book staleness. Skipping the
+		// leg keeps any sibling legs that pass the gate in flight.
+		if gate := risk.EnsureTradeAllowed(ctx, a.ExternalOutcomeID); gate != nil {
+			_ = st.MarkTradeFailed(ctx, tid, "gate:"+gate.Code)
+			fields := logx.Pairs(
+				"trade_id", tid, "outcome_id", a.OutcomeID, "token_id", a.ExternalOutcomeID,
+				"gate_code", gate.Code, "gate_message", gate.Message, "detail", gate.Detail,
+			)
+			logrus.WithFields(fields).Warn("交易：风控门控拒绝该 leg")
+			logx.Trade().WithFields(fields).Warn("交易：风控门控拒绝该 leg")
+			results = append(results, TradeResult{TradeID: tid, Status: "failed", Platform: a.Platform, FailureReason: "gate:" + gate.Code + " " + gate.Message})
+			continue
+		}
 		fields := logx.Pairs(
 			"trade_id", tid, "outcome_id", a.OutcomeID, "token_id", a.ExternalOutcomeID,
 			"size_usdc", a.Size, "expected_odds", a.ExpectedOdds, "extra_ticks", buyExtra,

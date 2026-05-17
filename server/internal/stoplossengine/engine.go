@@ -146,8 +146,59 @@ func (e *Engine) EnsureTokenSubscribed(tokenID string) {
 	}
 }
 
-// Run owns the market WebSocket until ctx is cancelled.
+// Run owns the market WebSocket until ctx is cancelled. The upstream stream is
+// supervised: when MarketStream surfaces a fatal error (max reconnect attempts
+// exhausted), we mark the risk layer degraded, sleep with backoff, and rebuild
+// the stream from scratch so the bot does not silently go market-blind.
 func (e *Engine) Run(ctx context.Context) {
+	const (
+		streamRestartBaseDelay = 2 * time.Second
+		streamRestartMaxDelay  = 60 * time.Second
+	)
+	restartAttempts := 0
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		stopped := e.runStreamOnce(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		// Surface degraded state and back off before rebuilding.
+		reason := "market stream supervisor: rebuilding upstream"
+		if stopped != "" {
+			reason = stopped
+		}
+		if e.risk != nil {
+			e.risk.SetWSMarketDown(reason)
+		}
+		restartAttempts++
+		delay := streamRestartBaseDelay << uint(restartAttempts-1)
+		if delay > streamRestartMaxDelay || delay <= 0 {
+			delay = streamRestartMaxDelay
+		}
+		fields := logx.Pairs("attempt", restartAttempts, "delay_ms", delay.Milliseconds(), "reason", reason)
+		e.log.WithFields(fields).Warn("止损引擎：行情上游受损，准备重建 MarketStream")
+		logx.StopLoss().WithFields(fields).Warn("止损引擎：行情上游受损，准备重建 MarketStream")
+		if e.runtime != nil {
+			e.runtime.Publish("transport", "warn", "ws.market.supervisor_restart", e.accountID(), "", "", "", map[string]any{
+				"attempt": restartAttempts, "delayMs": delay.Milliseconds(), "reason": reason,
+			})
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		// Reset attempts when we've kept the stream alive for a stable window.
+		// runStreamOnce sets degraded immediately; ClearWSMarketDown happens on first tick.
+	}
+}
+
+// runStreamOnce builds and runs a single MarketStream. It returns when the
+// stream stops (context cancel or fatal upstream error). The string is a
+// human-readable termination cause; empty means clean shutdown via ctx.
+func (e *Engine) runStreamOnce(ctx context.Context) string {
 	msCfg := marketstream.DefaultConfig()
 	if p := strings.TrimSpace(e.cfg.HTTPPlatformProxy); p != "" {
 		msCfg.ProxyURL = p
@@ -167,6 +218,9 @@ func (e *Engine) Run(ctx context.Context) {
 	}
 
 	e.mu.Lock()
+	// Reset the local subscription set so reconcile can re-subscribe everything
+	// against the fresh underlying stream.
+	e.subscribed = make(map[string]struct{})
 	e.market = marketstream.NewMarketStreamWithConfig(msCfg)
 	ms := e.market
 	e.mu.Unlock()
@@ -179,10 +233,12 @@ func (e *Engine) Run(ctx context.Context) {
 		fields := logx.Pairs("err", err.Error())
 		e.log.WithFields(fields).Error("止损引擎：MarketStream 启动失败")
 		logx.StopLoss().WithFields(fields).Error("止损引擎：MarketStream 启动失败")
-		return
+		return "start_failed: " + err.Error()
 	}
 	defer ms.Stop()
 
+	// Fatal-error channel from the upstream stream (e.g. max reconnect attempts).
+	fatalCh := make(chan string, 1)
 	go func() {
 		for err := range ms.Errors() {
 			fields := logx.Pairs("err", err.Error())
@@ -190,6 +246,13 @@ func (e *Engine) Run(ctx context.Context) {
 			logx.StopLoss().WithFields(fields).Warn("止损引擎：MarketStream 报错")
 			if e.runtime != nil {
 				e.runtime.Publish("transport", "warn", "ws.market.error", e.accountID(), "", "", "", map[string]any{"err": err.Error()})
+			}
+			// "max reconnect attempts" is fatal: surface and trigger supervisor.
+			if strings.Contains(err.Error(), "max reconnect attempts") {
+				select {
+				case fatalCh <- err.Error():
+				default:
+				}
 			}
 		}
 	}()
@@ -203,12 +266,14 @@ func (e *Engine) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return ""
+		case fatal := <-fatalCh:
+			return "fatal: " + fatal
 		case <-e.bump:
 			e.reconcileBounded(ctx, ms)
 		case <-ticker.C:
 			if ctx.Err() != nil {
-				return
+				return ""
 			}
 			ws = wsconfig.Load(ctx, e.st)
 			reconcileSec = ws.StoplossReconcileSec
@@ -460,6 +525,12 @@ func (e *Engine) applyBookUpdate(assetIDRaw string, bid, ask float64, hasBook bo
 	assetID := normalizeTokenID(assetIDRaw)
 	if assetID == "" {
 		return
+	}
+	// Any inbound book event proves the upstream is healthy: clear degraded
+	// flag and refresh the last-tick timestamp used by the trade gate.
+	if e.risk != nil {
+		e.risk.MarkBookTick()
+		e.risk.ClearWSMarketDown()
 	}
 	ts := parseWSTS(tsRaw)
 	if hasBook {

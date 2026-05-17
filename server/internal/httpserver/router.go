@@ -62,6 +62,10 @@ func NewRouter(d Deps) *gin.Engine {
 		api.POST("/risk/hidden-positions", h.handleRiskHiddenPost)
 		api.DELETE("/risk/hidden-positions", h.handleRiskHiddenDelete)
 
+		// Trade gate / kill switch
+		api.GET("/risk/gate", h.handleRiskGate)
+		api.POST("/risk/kill-switch/clear", h.handleRiskKillSwitchClear)
+
 		// Stats
 		api.GET("/stats/markets", h.handleStatsMarkets)
 
