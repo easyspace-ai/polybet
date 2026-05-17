@@ -135,12 +135,15 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 						"tradeId": tradeID, "side": ev.Side, "size": sizeStr, "price": priceStr, "status": ev.Status,
 					})
 				}
-				if syncErr := a.Risk.SyncPositionsFromDataAPI(context.Background(), accountID); syncErr != nil {
-					syncFields := logx.Pairs("err", syncErr.Error(), "trade_id", tradeID)
-					a.Log.WithFields(syncFields).Warn("用户 CLOB WS：成交后同步持仓失败")
-					logx.Position().WithFields(syncFields).Warn("用户 CLOB WS：成交后同步持仓失败")
-				}
-				a.rebuildAndBroadcastCache()
+				a.broadcastPositionSnapshotFast()
+				a.Debounce.Trigger("risk_cache_rebuild", func() {
+					if syncErr := a.Risk.SyncPositionsFromDataAPI(context.Background(), accountID); syncErr != nil {
+						syncFields := logx.Pairs("err", syncErr.Error(), "trade_id", tradeID)
+						a.Log.WithFields(syncFields).Warn("用户 CLOB WS：成交后同步持仓失败")
+						logx.Position().WithFields(syncFields).Warn("用户 CLOB WS：成交后同步持仓失败")
+					}
+					a.rebuildAndBroadcastCache()
+				})
 			} else {
 				a.Log.WithFields(logx.Pairs("trade_id", tradeID, "status", ev.Status)).Debug("用户 CLOB WS：跳过重复或非新成交")
 			}
@@ -269,8 +272,9 @@ func (a *App) rebuildAndBroadcastCache() {
 			RiskHedgeBuySizing:      enrichedMeta.RiskHedgeBuySizing,
 		}})
 		if shouldBroadcast {
-			a.Hub.BroadcastJSON(map[string]any{"type": "position_update", "data": rows})
-			a.RiskHub.BroadcastJSON(map[string]any{"type": "position_update", "data": rows})
+			payload := map[string]any{"type": "position_update", "data": rows}
+			a.Hub.BroadcastJSONAsync(payload)
+			a.RiskHub.BroadcastJSONAsync(payload)
 			if a.RiskRuntime != nil {
 				a.RiskRuntime.Publish("position", "info", "position.snapshot_changed", accountID, "", "", "", map[string]any{
 					"openCount": countOpenRiskRows(rows),

@@ -20,18 +20,42 @@ func (a *App) initWorkQueue() {
 	}
 }
 
-// ScheduleInvalidateAndRebuildCache invalidates caches and rebuilds them on a
-// debounced background goroutine so HTTP handlers return immediately.
+// ScheduleInvalidateAndRebuildCache rebuilds caches on a debounced background
+// worker. Old snapshots stay served until the rebuild completes (stale-while-revalidate).
 func (a *App) ScheduleInvalidateAndRebuildCache() {
 	if a == nil {
 		return
 	}
 	a.initWorkQueue()
-	a.BalanceCache.Invalidate(context.Background())
-	a.RiskCache.Invalidate(context.Background())
+	a.ScheduleRiskCacheRebuild()
+	a.scheduleBalanceRebuild()
+}
+
+func (a *App) ScheduleRiskCacheRebuild() {
+	if a == nil {
+		return
+	}
+	a.initWorkQueue()
 	a.Debounce.Trigger("risk_cache_rebuild", func() {
 		a.jobs.Run("risk_cache_rebuild", func(ctx context.Context) error {
-			a.rebuildCachesSync(ctx)
+			a.rebuildRiskCacheSync(ctx)
+			return nil
+		})
+	})
+}
+
+func (a *App) scheduleBalanceRebuild() {
+	if a == nil {
+		return
+	}
+	a.Debounce.Trigger("balance_rebuild", func() {
+		a.jobs.Run("balance_rebuild", func(ctx context.Context) error {
+			runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+			if summary, err := balancesvc.Fetch(runCtx, a.Cfg, a.Store); err == nil {
+				_ = a.BalanceCache.Set(runCtx, summary)
+				a.broadcastBalanceUpdateIfChanged(runCtx, summary)
+			}
 			return nil
 		})
 	})
@@ -43,6 +67,11 @@ func (a *App) InvalidateAndRebuildCache() {
 }
 
 func (a *App) rebuildCachesSync(ctx context.Context) {
+	a.rebuildRiskCacheSync(ctx)
+	a.scheduleBalanceRebuild()
+}
+
+func (a *App) rebuildRiskCacheSync(ctx context.Context) {
 	if a == nil {
 		return
 	}
@@ -60,31 +89,25 @@ func (a *App) rebuildCachesSync(ctx context.Context) {
 	}
 
 	rows, enrichedMeta, err := a.Risk.ListRiskPositionsEnriched(runCtx, meta, accountID)
-	if err == nil {
-		oldRows, _, found, _ := a.RiskCache.Get(runCtx)
-		shouldBroadcast := !found || !positionsStructurallyEqual(oldRows, rows)
-		_ = a.RiskCache.Set(runCtx, memcache.RiskFetchResult{Positions: rows, Meta: memcache.RiskMeta{
-			UserWsConnected:         enrichedMeta.UserWsConnected,
-			UserWsConnecting:        enrichedMeta.UserWsConnecting,
-			OutboundProxyConfigured: enrichedMeta.OutboundProxyConfigured,
-			MinOpenRiskShares:       enrichedMeta.MinOpenRiskShares,
-			RiskCloseExecutionMode:  enrichedMeta.RiskCloseExecutionMode,
-			RiskCloseFakWorstPrice:  enrichedMeta.RiskCloseFakWorstPrice,
-			RiskHedgeBuySizing:      enrichedMeta.RiskHedgeBuySizing,
-		}})
-		if shouldBroadcast {
-			a.Hub.BroadcastJSON(map[string]any{"type": "position_update", "data": rows})
-			a.RiskHub.BroadcastJSON(map[string]any{"type": "position_update", "data": rows})
-		}
-	} else {
+	if err != nil {
 		a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("缓存重建：风控列表失败")
+		return
 	}
-
-	if summary, err := balancesvc.Fetch(runCtx, a.Cfg, a.Store); err == nil {
-		_ = a.BalanceCache.Set(runCtx, summary)
-		a.broadcastBalanceUpdateIfChanged(runCtx, summary)
-	} else {
-		a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("缓存重建：拉取余额失败")
+	oldRows, _, found, _ := a.RiskCache.Get(runCtx)
+	shouldBroadcast := !found || !positionsStructurallyEqual(oldRows, rows)
+	_ = a.RiskCache.Set(runCtx, memcache.RiskFetchResult{Positions: rows, Meta: memcache.RiskMeta{
+		UserWsConnected:         enrichedMeta.UserWsConnected,
+		UserWsConnecting:        enrichedMeta.UserWsConnecting,
+		OutboundProxyConfigured: enrichedMeta.OutboundProxyConfigured,
+		MinOpenRiskShares:       enrichedMeta.MinOpenRiskShares,
+		RiskCloseExecutionMode:  enrichedMeta.RiskCloseExecutionMode,
+		RiskCloseFakWorstPrice:  enrichedMeta.RiskCloseFakWorstPrice,
+		RiskHedgeBuySizing:      enrichedMeta.RiskHedgeBuySizing,
+	}})
+	if shouldBroadcast {
+		payload := map[string]any{"type": "position_update", "data": rows}
+		a.Hub.BroadcastJSONAsync(payload)
+		a.RiskHub.BroadcastJSONAsync(payload)
 	}
 }
 
@@ -107,6 +130,40 @@ func (a *App) ScheduleRiskOfficialRefresh() bool {
 		a.rebuildCachesSync(runCtx)
 		return nil
 	})
+}
+
+// broadcastPositionSnapshotFast pushes a read-only position list over WS and
+// updates RiskCache without waiting for REST orderbook / full enrich. Used on
+// the hot path (CLOB trade applied) so the dashboard shows new rows immediately.
+func (a *App) broadcastPositionSnapshotFast() {
+	if a == nil || a.Risk == nil {
+		return
+	}
+	meta := risksvc.Meta{OutboundProxyConfigured: a.Cfg.HTTPPlatformProxy != ""}
+	acct, _ := a.Store.GetActivePolymarketAccount(context.Background())
+	accountID := ""
+	if acct != nil {
+		accountID = acct.ID
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	rows, enrichedMeta, err := a.Risk.ListRiskPositionsEnrichedReadOnly(ctx, meta, accountID)
+	if err != nil {
+		a.Log.WithFields(logx.Pairs("err", err.Error())).Debug("持仓快照：快速广播失败")
+		return
+	}
+	_ = a.RiskCache.Set(ctx, memcache.RiskFetchResult{Positions: rows, Meta: memcache.RiskMeta{
+		UserWsConnected:         enrichedMeta.UserWsConnected,
+		UserWsConnecting:        enrichedMeta.UserWsConnecting,
+		OutboundProxyConfigured: enrichedMeta.OutboundProxyConfigured,
+		MinOpenRiskShares:       enrichedMeta.MinOpenRiskShares,
+		RiskCloseExecutionMode:  enrichedMeta.RiskCloseExecutionMode,
+		RiskCloseFakWorstPrice:  enrichedMeta.RiskCloseFakWorstPrice,
+		RiskHedgeBuySizing:      enrichedMeta.RiskHedgeBuySizing,
+	}})
+	payload := map[string]any{"type": "position_update", "data": rows}
+	a.Hub.BroadcastJSONAsync(payload)
+	a.RiskHub.BroadcastJSONAsync(payload)
 }
 
 // ScheduleMarketsRefresh runs Gamma sync in the background. Returns false when
