@@ -45,6 +45,24 @@ func NewEngine(cfg *config.Config, st *store.Store, cache *bookcache.Cache, spor
 	return &Engine{cfg: cfg, st: st, cache: cache, sportsCache: sportsCache, logger: logger}
 }
 
+// defaultFeeRate returns the fee fraction (e.g. 0.02 = 2%) to apply when a
+// Gamma row does not carry a per-market fee field. Reads bot_config
+// syncDefaultTakerFeeRate (float string); falls back to sportsFeeRate.
+//
+// Acceptable range is [0, 1). Out-of-range values fall back to the
+// default. Negative configured values are treated as 0 (no fee), which
+// is sometimes accurate for promotional / maker-rebated markets.
+func (e *Engine) defaultFeeRate(ctx context.Context) float64 {
+	v := e.st.GetBotConfigFloat(ctx, "syncDefaultTakerFeeRate", sportsFeeRate)
+	if v < 0 {
+		return 0
+	}
+	if v >= 1 {
+		return sportsFeeRate
+	}
+	return v
+}
+
 func parseTagListJSON(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -120,14 +138,14 @@ func (e *Engine) Once(ctx context.Context, force bool) error {
 				e.logger.WithFields(logx.Pairs("event_id", ev.ID, "title", ev.Title)).Debug("市场同步：跳过子市场标题")
 				continue
 			}
-			q, err := quoteFromMoneyline12(ev, lg)
+			q, fee, err := quoteFromMoneyline12WithFee(ev, lg, e.defaultFeeRate(ctx))
 			if err != nil {
 				skippedQuote++
 				e.logger.WithFields(logx.Pairs("event_id", ev.ID, "title", ev.Title, "reason", err.Error())).Debug("市场同步：跳过报价解析")
 				continue
 			}
 			for _, oc := range q.Outcomes {
-				e.cache.SetFeeRate(oc.ExternalID, sportsFeeRate)
+				e.cache.SetFeeRate(oc.ExternalID, fee)
 			}
 			if err := e.st.UpsertPolyMarketQuote(ctx, q); err != nil {
 				skippedUpsertErr++
