@@ -639,19 +639,9 @@ func (h *Handler) handleTradeExecute(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "only_buy_supported"})
 		return
 	}
-	// Trade gate: kill-switch / manual halt / WS-down / open-position cap.
-	// Token-level staleness is re-checked inside tradesvc.ExecutePlan once the
-	// allocation plan resolves the per-leg tokenIDs.
-	if gate := h.risk.EnsureTradeAllowed(c, ""); gate != nil {
-		fields := logx.Pairs(
-			"request_id", rid, "outcome_id", body.OutcomeID, "side", body.Side, "size", body.Size,
-			"gate_code", gate.Code, "gate_message", gate.Message, "detail", gate.Detail,
-		)
-		logrus.WithFields(fields).Warn("交易执行：风控门控拒绝")
-		logx.Trade().WithFields(fields).Warn("交易执行：风控门控拒绝")
-		c.JSON(409, gin.H{"error": gate.Code, "message": gate.Message, "detail": gate.Detail})
-		return
-	}
+	// NOTE: account-level trade gate runs in tradeGateMiddleware before this
+	// handler is reached. Per-token checks (book staleness, post-kickoff)
+	// happen inside tradesvc.ExecutePlan once the per-leg tokenID resolves.
 	execFields := logx.Pairs("request_id", rid, "outcome_id", body.OutcomeID, "side", body.Side, "size", body.Size)
 	logrus.WithFields(execFields).Info("交易执行：收到下单请求")
 	logx.Trade().WithFields(execFields).Info("交易执行：收到下单请求")

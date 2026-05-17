@@ -28,7 +28,12 @@ func NewRouter(d Deps) *gin.Engine {
 		// Trades
 		api.GET("/trade/orderbook", h.handleOrderbook)
 		api.GET("/trade/preview", h.handleTradePreview)
-		api.POST("/trade", h.handleTradeExecute)
+		// POST /api/trade goes through the trade-gate middleware so manual
+		// halt / kill switch / WS-down / exposure caps short-circuit before
+		// the handler does any work. Per-token checks (book staleness,
+		// post-kickoff) still run inside tradesvc.ExecutePlan once the
+		// allocation plan resolves the per-leg tokenID.
+		api.POST("/trade", tradeGateMiddleware(h.risk), h.handleTradeExecute)
 		api.GET("/trades", h.handleTradesList)
 
 		// Config
