@@ -3,7 +3,40 @@ package store
 import (
 	"context"
 	"strings"
+	"time"
 )
+
+// AccountRealizedPnLSince returns the sum of realized_pnl_usd across all
+// risk_positions for the given account that closed on or after `since`.
+// Used by the kill-switch evaluator so today's already-realized losses
+// (closed positions) count alongside the unrealized mark-to-market on
+// open positions.
+//
+// Rows whose realized_pnl_usd is NULL (legacy / dust / ghost-balance
+// closures with no reliable fill price) are excluded from the sum so
+// missing data does not poison the aggregate. Operators relying on
+// dust-heavy closures may want to track those out-of-band.
+func (s *Store) AccountRealizedPnLSince(ctx context.Context, accountID string, since time.Time) (float64, error) {
+	if strings.TrimSpace(accountID) == "" {
+		return 0, nil
+	}
+	if since.IsZero() {
+		// All-time aggregate is rarely useful and can overflow on long-
+		// running deployments; require a window to opt-in explicitly.
+		return 0, nil
+	}
+	var sum float64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(realized_pnl_usd), 0) FROM risk_positions
+		 WHERE account_id = ? AND status = 'closed'
+		   AND realized_pnl_usd IS NOT NULL
+		   AND closed_at IS NOT NULL AND closed_at >= ?`,
+		accountID, since.UTC().Format(time.RFC3339Nano)).Scan(&sum)
+	if err != nil {
+		return 0, err
+	}
+	return sum, nil
+}
 
 // AccountOpenExposureUSD returns the sum of cost_usd across all open
 // positions for the given account. Used by the trade gate to enforce a

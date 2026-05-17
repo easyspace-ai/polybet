@@ -109,6 +109,11 @@ func Migrate(ctx context.Context, conn *sql.DB) error {
 		{7, "migrations/007_risk_position_poly_slugs.sql"},
 		{8, "migrations/008_risk_tasks_last_attempt.sql"},
 		{9, "migrations/009_trade_quality.sql"},
+		// Migration 10 introduces realized_pnl_usd + closed_at on
+		// risk_positions for the kill-switch realized-PnL accumulator.
+		// PR #7 (still open) also numbers its config-backfill at 10; whichever
+		// lands second must bump its number to 11 before merging.
+		{10, "migrations/010_risk_positions_realized_pnl.sql"},
 	}
 	for _, step := range steps {
 		if v >= step.version {

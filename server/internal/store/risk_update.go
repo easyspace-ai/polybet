@@ -15,9 +15,36 @@ func (s *Store) UpdateRiskPositionSharesCost(ctx context.Context, id string, sha
 	return err
 }
 
+// CloseRiskPosition transitions a position to status='closed' without
+// recording a realized PnL value. Used by paths where we don't have a
+// reliable fill price (e.g. dust normalization, ghost-balance cleanup).
+//
+// New code that has a realized PnL number should call CloseRiskPositionPnL
+// so the kill-switch evaluator can sum closed-today PnL.
 func (s *Store) CloseRiskPosition(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE risk_positions SET status = 'closed', size_shares = 0, cost_usd = 0, updated_at = datetime('now') WHERE id = ?`, id)
+		UPDATE risk_positions SET status = 'closed', size_shares = 0, cost_usd = 0,
+			closed_at = COALESCE(closed_at, datetime('now')),
+			updated_at = datetime('now')
+		WHERE id = ?`, id)
+	return err
+}
+
+// CloseRiskPositionPnL transitions a position to status='closed' and stores
+// the realized PnL (USD; negative = loss). closed_at is set to now if not
+// already populated so the kill switch can window queries by closure time.
+//
+// realizedPnLUSD = sale_proceeds - cost_basis. Callers should compute it
+// from the actual fill (FOK exact fill price × shares) or a conservative
+// proxy (FAK limit floor × shares) and document the choice in `notes`
+// via trade_quality.
+func (s *Store) CloseRiskPositionPnL(ctx context.Context, id string, realizedPnLUSD float64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE risk_positions SET status = 'closed', size_shares = 0, cost_usd = 0,
+			realized_pnl_usd = ?,
+			closed_at = COALESCE(closed_at, datetime('now')),
+			updated_at = datetime('now')
+		WHERE id = ?`, realizedPnLUSD, id)
 	return err
 }
 
