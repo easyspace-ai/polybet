@@ -55,13 +55,26 @@ type Service struct {
 	// After aborted:market_ended, suppress new stop_loss tasks until deadline (reduces task-queue spam).
 	slMktEndedCoolMu sync.Mutex
 	slMktEndedCool   map[string]time.Time // positionID -> cooldown until (UTC)
+
+	// deg holds runtime degradation flags (WS market down, kill-switch, last book tick).
+	deg *degradedState
 }
 
 func New(cfg *config.Config, st *store.Store, cache *bookcache.Cache, dataClient data.Client, log *logrus.Logger, rt *riskruntime.Bus) *Service {
 	if log == nil {
 		log = logrus.StandardLogger()
 	}
-	return &Service{cfg: cfg, st: st, cache: cache, dataClient: dataClient, log: log, rt: rt, WSMeta: NewWSMetaCollector(), slMktEndedCool: make(map[string]time.Time)}
+	return &Service{
+		cfg:            cfg,
+		st:             st,
+		cache:          cache,
+		dataClient:     dataClient,
+		log:            log,
+		rt:             rt,
+		WSMeta:         NewWSMetaCollector(),
+		slMktEndedCool: make(map[string]time.Time),
+		deg:            newDegradedState(),
+	}
 }
 
 func (s *Service) setStopLossMarketEndedCooldown(ctx context.Context, positionID string) {
