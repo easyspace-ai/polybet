@@ -94,6 +94,23 @@ func tierForAttempt(tiers []ladderTier, attempts int) ladderTier {
 	return tiers[attempts]
 }
 
+// activeCloseTierType returns the close mode that the next attempt at the
+// given attempt count would dispatch to, given the current bot config.
+// Returns "" when the operator has not switched to ladder mode (the legacy
+// non-laddered modes are constant per process).
+//
+// Used by the retry-backoff logic so the parent goroutine can pick a
+// longer floor when the ladder has reached the hedge tier — without the
+// runClosePosition dispatch needing to thread tier info up through the
+// error return.
+func (s *Service) activeCloseTierType(ctx context.Context, attempts int) string {
+	if effectiveRiskCloseExecutionMode(ctx, s.st) != riskCloseModeLadder {
+		return effectiveRiskCloseExecutionMode(ctx, s.st)
+	}
+	tiers := resolveLadderTiers(ctx, s.st)
+	return tierForAttempt(tiers, attempts).Type
+}
+
 // runCloseLadder dispatches to the appropriate underlying close routine for
 // the configured ladder tier. It overrides the per-attempt aggressiveness
 // (sell extra ticks, FAK worst price) so the global retry-amplification
