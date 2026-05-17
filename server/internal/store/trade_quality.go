@@ -35,6 +35,11 @@ type TradeQuality struct {
 	TradeID         string
 	RiskTaskID      string
 	Notes           string
+	// RealizedPnLUSD is populated on SELL completions where the close path
+	// could compute it (FOK exact fill, FAK proxy). NULL on BUY rows and
+	// on dust / ghost-balance closures. Sum-aggregated by the realized-PnL
+	// analytics endpoint.
+	RealizedPnLUSD float64
 }
 
 // SlippageBpsBuy returns the buy-side slippage in basis points: > 0 means the
@@ -73,27 +78,32 @@ func (s *Store) InsertTradeQuality(ctx context.Context, q *TradeQuality) error {
 		INSERT INTO trade_quality(
 			id, created_at, account_id, side, order_type, token_id,
 			expected_odds, fill_odds, limit_odds, best_bid, best_ask, slippage_bps,
-			size, submit_latency_ms, trade_id, risk_task_id, notes
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			size, submit_latency_ms, trade_id, risk_task_id, notes, realized_pnl_usd
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		q.ID, q.CreatedAt.UTC().Format(time.RFC3339Nano),
 		nullableStr(q.AccountID), q.Side, q.OrderType, q.TokenID,
 		nullableFloat(q.ExpectedOdds), nullableFloat(q.FillOdds), nullableFloat(q.LimitOdds),
 		nullableFloat(q.BestBid), nullableFloat(q.BestAsk), nullableFloat(q.SlippageBps),
 		nullableFloat(q.Size), nullableInt(q.SubmitLatencyMs),
 		nullableStr(q.TradeID), nullableStr(q.RiskTaskID), nullableStr(q.Notes),
+		nullableFloat(q.RealizedPnLUSD),
 	)
 	return err
 }
 
 // TradeQualityAggregate is a summary across a window.
 type TradeQualityAggregate struct {
-	Count         int     `json:"count"`
+	Count          int     `json:"count"`
 	AvgSlippageBps float64 `json:"avgSlippageBps"`
 	MaxSlippageBps float64 `json:"maxSlippageBps"`
-	BuyCount      int     `json:"buyCount"`
-	SellCount     int     `json:"sellCount"`
-	BuyAvgBps     float64 `json:"buyAvgBps"`
-	SellAvgBps    float64 `json:"sellAvgBps"`
+	BuyCount       int     `json:"buyCount"`
+	SellCount      int     `json:"sellCount"`
+	BuyAvgBps      float64 `json:"buyAvgBps"`
+	SellAvgBps     float64 `json:"sellAvgBps"`
+	// RealizedPnLUSD sums realized_pnl_usd over the window. Only SELL
+	// rows that recorded a fill price contribute (BUY rows + dust /
+	// ghost-balance closures stay NULL and are excluded by the WHERE).
+	RealizedPnLUSD float64 `json:"realizedPnlUsd"`
 }
 
 // AggregateTradeQuality returns aggregate slippage stats for the given
@@ -117,7 +127,8 @@ func (s *Store) AggregateTradeQuality(ctx context.Context, accountID string, sin
             SUM(CASE WHEN side='buy' THEN 1 ELSE 0 END),
             SUM(CASE WHEN side='sell' THEN 1 ELSE 0 END),
             COALESCE(AVG(CASE WHEN side='buy' THEN slippage_bps END), 0),
-            COALESCE(AVG(CASE WHEN side='sell' THEN slippage_bps END), 0)
+            COALESCE(AVG(CASE WHEN side='sell' THEN slippage_bps END), 0),
+            COALESCE(SUM(realized_pnl_usd), 0)
         FROM trade_quality WHERE ` + strings.Join(where, " AND ")
 	row := s.db.QueryRowContext(ctx, q, args...)
 	var buyCount, sellCount sql.NullInt64
@@ -129,6 +140,7 @@ func (s *Store) AggregateTradeQuality(ctx context.Context, accountID string, sin
 		&sellCount,
 		&out.BuyAvgBps,
 		&out.SellAvgBps,
+		&out.RealizedPnLUSD,
 	); err != nil {
 		return out, err
 	}
@@ -139,6 +151,67 @@ func (s *Store) AggregateTradeQuality(ctx context.Context, accountID string, sin
 		out.SellCount = int(sellCount.Int64)
 	}
 	return out, nil
+}
+
+// EventRealizedPnL is one row of the per-event realized PnL aggregator.
+// Rendered by /api/risk/realized-pnl-by-event for operator review.
+type EventRealizedPnL struct {
+	PolyEventSlug  string  `json:"polyEventSlug"`
+	RealizedPnLUSD float64 `json:"realizedPnlUsd"`
+	Fills          int     `json:"fills"`
+}
+
+// RealizedPnLByEvent groups SUM(realized_pnl_usd) by Polymarket event slug
+// across SELL fills on the given account within the rolling window. Joins
+// trade_quality.token_id → outcomes.external_id → markets → events to
+// resolve the slug; rows whose token doesn't map to a synced event are
+// dropped. Sorted with most-negative (worst) PnL first so the operator
+// sees the costliest games at the top.
+//
+// Self-contained against trade_quality + the existing markets/events
+// hierarchy (no dependency on risk_positions.closed_at / realized_pnl_usd
+// columns) so it ships independently of any other in-flight DB changes.
+func (s *Store) RealizedPnLByEvent(ctx context.Context, accountID string, since time.Time, limit int) ([]EventRealizedPnL, error) {
+	if strings.TrimSpace(accountID) == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	args := []any{accountID}
+	whereTime := ""
+	if !since.IsZero() {
+		whereTime = " AND tq.created_at >= ?"
+		args = append(args, since.UTC().Format(time.RFC3339Nano))
+	}
+	args = append(args, limit)
+	q := `SELECT COALESCE(e.poly_slug,''),
+	             COALESCE(SUM(tq.realized_pnl_usd), 0),
+	             COUNT(1)
+	      FROM trade_quality tq
+	      JOIN outcomes o ON o.external_id = tq.token_id
+	      JOIN markets m  ON m.id = o.market_id
+	      JOIN events e   ON e.id = m.event_id
+	      WHERE tq.account_id = ? AND tq.side = 'sell'
+	            AND tq.realized_pnl_usd IS NOT NULL
+	            AND COALESCE(e.poly_slug,'') != ''` + whereTime + `
+	      GROUP BY e.poly_slug
+	      ORDER BY SUM(tq.realized_pnl_usd) ASC
+	      LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]EventRealizedPnL, 0)
+	for rows.Next() {
+		var r EventRealizedPnL
+		if err := rows.Scan(&r.PolyEventSlug, &r.RealizedPnLUSD, &r.Fills); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // ListRecentTradeQuality returns the most recent N rows (newest first).
@@ -158,7 +231,8 @@ func (s *Store) ListRecentTradeQuality(ctx context.Context, accountID string, li
 			COALESCE(expected_odds,0), COALESCE(fill_odds,0), COALESCE(limit_odds,0),
 			COALESCE(best_bid,0), COALESCE(best_ask,0), COALESCE(slippage_bps,0),
 			COALESCE(size,0), COALESCE(submit_latency_ms,0),
-			COALESCE(trade_id,''), COALESCE(risk_task_id,''), COALESCE(notes,'')
+			COALESCE(trade_id,''), COALESCE(risk_task_id,''), COALESCE(notes,''),
+			COALESCE(realized_pnl_usd,0)
 		FROM trade_quality ` + where + ` ORDER BY created_at DESC LIMIT ?`
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -171,7 +245,7 @@ func (s *Store) ListRecentTradeQuality(ctx context.Context, accountID string, li
 		var created string
 		if err := rows.Scan(&t.ID, &created, &t.AccountID, &t.Side, &t.OrderType, &t.TokenID,
 			&t.ExpectedOdds, &t.FillOdds, &t.LimitOdds, &t.BestBid, &t.BestAsk, &t.SlippageBps,
-			&t.Size, &t.SubmitLatencyMs, &t.TradeID, &t.RiskTaskID, &t.Notes); err != nil {
+			&t.Size, &t.SubmitLatencyMs, &t.TradeID, &t.RiskTaskID, &t.Notes, &t.RealizedPnLUSD); err != nil {
 			return nil, err
 		}
 		t.CreatedAt = parseSQLiteTime(created)
