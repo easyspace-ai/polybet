@@ -31,12 +31,14 @@ func Run(ctx context.Context, cfg *config.Config, st *store.Store, log *logrus.L
 		}
 		token, chat := ResolveTelegramCreds(ctx, cfg, st)
 		if token == "" || chat == "" {
+			t := time.NewTimer(30 * time.Second)
 			select {
 			case <-ctx.Done():
+				t.Stop()
 				return
-			case <-time.After(30 * time.Second):
-				continue
+			case <-t.C:
 			}
+			continue
 		}
 		if !startedLog {
 			log.Info("Telegram Bot：长轮询已启动")

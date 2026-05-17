@@ -11,6 +11,7 @@ import (
 
 	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/marketstream"
+	"github.com/easyspace-ai/polybet/internal/wsconfig"
 )
 
 func normalizeTokenID(id string) string {
@@ -147,9 +148,17 @@ func (a *App) polymarketMarketstreamConfig() *marketstream.Config {
 	cfg.MarketWSURL = marketURL
 	cfg.UserWSURL = userURL
 	cfg.HandshakeTimeout = 45 * time.Second
-	cfg.PingInterval = 20 * time.Second
-	cfg.PongTimeout = 60 * time.Second
-	return cfg
+	ws := wsconfig.Load(context.Background(), a.Store)
+	return ws.ToMarketstreamConfig(cfg)
+}
+
+func (a *App) clobOnReconnectScheduled(channel string) func(attempt int, nextRetryAt time.Time) {
+	return func(attempt int, nextRetryAt time.Time) {
+		if a.Risk.WSMeta != nil {
+			a.Risk.WSMeta.SetReconnectSchedule(channel, attempt, nextRetryAt)
+			a.broadcastPolyStatus()
+		}
+	}
 }
 
 func firstBookBid(levels []marketstream.OrderLevel) float64 {

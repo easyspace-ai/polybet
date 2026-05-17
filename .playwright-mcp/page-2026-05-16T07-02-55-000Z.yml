@@ -1,0 +1,147 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - img [ref=e7]
+      - navigation [ref=e9]:
+        - link "风控" [ref=e10] [cursor=pointer]:
+          - /url: /risk
+          - img [ref=e12]
+          - generic [ref=e14]: 风控
+        - link "市场" [ref=e15] [cursor=pointer]:
+          - /url: /market
+          - img [ref=e16]
+          - generic [ref=e19]: 市场
+        - link "历史" [ref=e20] [cursor=pointer]:
+          - /url: /history
+          - img [ref=e21]
+          - generic [ref=e25]: 历史
+        - link "账号" [ref=e26] [cursor=pointer]:
+          - /url: /accounts
+          - img [ref=e27]
+          - generic [ref=e30]: 账号
+        - link "设置" [ref=e31] [cursor=pointer]:
+          - /url: /settings
+          - img [ref=e32]
+          - generic [ref=e35]: 设置
+      - generic [ref=e37]:
+        - paragraph [ref=e38]: fuck8
+        - generic [ref=e40]: $0.61
+    - main [ref=e41]:
+      - generic [ref=e42]:
+        - generic [ref=e43]:
+          - heading "风控" [level=1] [ref=e44]
+          - generic [ref=e46]:
+            - generic "服务端 Polymarket 盘口上游（经本机 WS 推送）" [ref=e47]: OB 已连接
+            - generic [ref=e49]: ·
+            - generic "服务端 Polymarket 用户订单/成交上游（经本机 WS 推送）" [ref=e50]: USER 已连接
+            - generic [ref=e52]: ·
+            - generic [ref=e53]: 更新 0s前
+            - generic [ref=e54]: ·
+            - generic [ref=e55]: minOpenRiskShares ≥ 1
+        - generic [ref=e56]:
+          - generic [ref=e57]:
+            - img [ref=e58]
+            - generic [ref=e62]: 已连接
+            - img [ref=e63]
+          - button "刷新" [ref=e65]:
+            - img [ref=e66]
+            - text: 刷新
+          - button "一键全部平仓" [ref=e71]:
+            - img [ref=e72]
+            - text: 一键全部平仓
+          - button "切换主题" [ref=e74]:
+            - img [ref=e75]
+      - generic [ref=e77]:
+        - generic [ref=e78]:
+          - generic [ref=e79]:
+            - heading "持仓监控" [level=2] [ref=e80]
+            - generic [ref=e81]: 1 个市场
+          - table [ref=e83]:
+            - rowgroup [ref=e90]:
+              - row "市场 盘口 移动止损 市值 操作" [ref=e91]:
+                - columnheader "市场" [ref=e92]
+                - columnheader "盘口" [ref=e93]
+                - columnheader "移动止损" [ref=e94]
+                - columnheader "市值" [ref=e95]
+                - columnheader "操作" [ref=e96]
+            - rowgroup [ref=e97]:
+              - row "Will the highest temperature in Seoul… 买价(均价) 83.0¢·当前 80.0¢ 份额 1.20·成本 $1.00·可赢利 $0.20 Bid 80.0¢ $26 79.0¢ $33 78.0¢ $28 77.0¢ $10 Ask 84.0¢ $76 85.0¢ $119 86.0¢ $4 87.0¢ $53 高 81 ¢ 损% 20 触发 64.8¢ 应用 $0.96 −$0.04 (−3.6%) 不再监控 卖出" [ref=e98]:
+                - cell "Will the highest temperature in Seoul… 买价(均价) 83.0¢·当前 80.0¢ 份额 1.20·成本 $1.00·可赢利 $0.20" [ref=e99]:
+                  - generic [ref=e103]:
+                    - link "Will the highest temperature in Seoul…" [ref=e104] [cursor=pointer]:
+                      - /url: https://polymarket.com/search?q=Will+the+highest+temperature+in+Seoul+be+26%C2%B0C+or+higher+on+May+17%3F
+                      - generic [ref=e105]: Will the highest temperature in Seoul…
+                      - img [ref=e106]
+                    - generic [ref=e110]: 买价(均价) 83.0¢·当前 80.0¢
+                    - generic [ref=e111]: 份额 1.20·成本 $1.00·可赢利 $0.20
+                - cell "Bid 80.0¢ $26 79.0¢ $33 78.0¢ $28 77.0¢ $10 Ask 84.0¢ $76 85.0¢ $119 86.0¢ $4 87.0¢ $53" [ref=e112]:
+                  - generic [ref=e113]:
+                    - generic [ref=e114]:
+                      - generic [ref=e115]: Bid
+                      - generic [ref=e116]: 80.0¢ $26
+                      - generic [ref=e117]: 79.0¢ $33
+                      - generic [ref=e118]: 78.0¢ $28
+                      - generic [ref=e119]: 77.0¢ $10
+                    - generic [ref=e120]:
+                      - generic [ref=e121]: Ask
+                      - generic [ref=e122]: 84.0¢ $76
+                      - generic [ref=e123]: 85.0¢ $119
+                      - generic [ref=e124]: 86.0¢ $4
+                      - generic [ref=e125]: 87.0¢ $53
+                - cell "高 81 ¢ 损% 20 触发 64.8¢ 应用" [ref=e126]:
+                  - generic [ref=e127]:
+                    - generic [ref=e128]:
+                      - generic [ref=e129]: 高
+                      - spinbutton [ref=e130]: "81"
+                      - generic [ref=e131]: ¢
+                    - generic [ref=e132]:
+                      - generic [ref=e133]: 损%
+                      - spinbutton [ref=e134]: "20"
+                    - generic [ref=e135]: 触发 64.8¢
+                    - button "应用" [ref=e136]
+                - cell "$0.96 −$0.04 (−3.6%)" [ref=e137]:
+                  - generic [ref=e138]: $0.96
+                  - generic [ref=e139]:
+                    - text: −$0.04
+                    - generic [ref=e140]: (−3.6%)
+                - cell "不再监控 卖出" [ref=e141]:
+                  - generic [ref=e142]:
+                    - button "不再监控" [ref=e143]:
+                      - img [ref=e144]
+                      - text: 不再监控
+                    - button "卖出" [ref=e149]
+        - generic [ref=e150]:
+          - generic [ref=e151]:
+            - generic [ref=e152]:
+              - heading "任务队列" [level=2] [ref=e153]
+              - button "清除已完成" [ref=e154]
+            - paragraph [ref=e155]:
+              - text: 止损触发与手动平仓均进入此队列；状态为
+              - code [ref=e156]: FAILED
+              - text: 时自动重试。
+          - generic [ref=e157]:
+            - generic [ref=e158]:
+              - generic [ref=e159]: 05-15T09:21
+              - generic [ref=e160]: close_position
+              - generic [ref=e161]: succeeded
+              - generic [ref=e162]: pos aa99a28e…
+              - generic [ref=e163]: "#0"
+            - generic [ref=e164]:
+              - generic [ref=e165]: 05-15T09:12
+              - generic [ref=e166]: close_position
+              - generic [ref=e167]: succeeded
+              - generic [ref=e168]: pos 2e3d4aad…
+              - generic [ref=e169]: "#0"
+            - generic [ref=e170]:
+              - generic [ref=e171]: 05-15T09:12
+              - generic [ref=e172]: close_position
+              - generic [ref=e173]: succeeded
+              - generic [ref=e174]: pos 597654fc…
+              - generic [ref=e175]: "#0"
+      - button "运行日志 (400)" [ref=e177]:
+        - generic [ref=e178]:
+          - img [ref=e179]
+          - text: 运行日志
+          - generic [ref=e181]: (400)
+        - img [ref=e182]
+  - region "Notifications alt+T"

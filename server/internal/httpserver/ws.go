@@ -105,6 +105,7 @@ func (h *Handler) handleWSRisk(c *gin.Context) {
 		switch ty {
 		case "ping":
 			conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+			_ = h.riskHub.WriteJSON(conn, map[string]any{"type": "pong"})
 			continue
 		case "subscribePolyBook":
 			tid, _ := m["tokenId"].(string)
@@ -195,6 +196,7 @@ func registerWS(r *gin.Engine, d Deps) {
 			switch ty {
 			case "ping":
 				conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+				_ = d.Hub.WriteJSON(conn, map[string]any{"type": "pong"})
 				continue
 			case "subscribePolyBook":
 				tid, _ := m["tokenId"].(string)

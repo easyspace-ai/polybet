@@ -8,6 +8,8 @@ import {
   type RiskTaskRow,
 } from '@/lib/api';
 import { riskWsBus, type BookLevel, type PositionUpdateMessage, type PolyBookFrame } from '@/lib/wsBus';
+import { getWSConfig } from '@/hooks/useWSConfig';
+import { getWSStatus } from '@/lib/api';
 
 interface RiskState {
   positions: RiskPositionRow[];
@@ -44,17 +46,36 @@ function subscribe(fn: (state: RiskState) => void) {
   return () => subscribers.delete(fn);
 }
 
-function getBestAskCents(frame: PolyBookFrame | undefined): number | null {
+/** Best bid in cents (what you can sell at now). */
+function getBestBidCentsFromFrame(frame: PolyBookFrame | undefined): number | null {
   if (!frame) return null;
-  // 优先使用后端传来的 bestBid（持仓卖出价）
-  if (typeof frame.bestBid === 'number' && frame.bestBid > 0) {
+  if (typeof frame.bestBid === "number" && frame.bestBid > 0) {
     return frame.bestBid;
   }
-  // fallback：从 asks 中取最小 odds（卖一价）
+  if (frame.bids && frame.bids.length > 0) {
+    return frame.bids[0].odds * 100;
+  }
+  return null;
+}
+
+/** Best ask in cents (lowest offer). */
+function getBestAskCentsFromFrame(frame: PolyBookFrame | undefined): number | null {
+  if (!frame) return null;
+  if (typeof frame.bestAsk === "number" && frame.bestAsk > 0) {
+    return frame.bestAsk;
+  }
   if (frame.asks && frame.asks.length > 0) {
     return frame.asks[0].odds * 100;
   }
   return null;
+}
+
+/** Top of book “high” for trailing watermark — matches server max(bid, ask). */
+function getTopOfBookMarkCents(frame: PolyBookFrame | undefined): number | null {
+  const b = getBestBidCentsFromFrame(frame);
+  const a = getBestAskCentsFromFrame(frame);
+  if (b == null && a == null) return null;
+  return Math.max(b ?? 0, a ?? 0);
 }
 
 /** Aligns with server `normalizeTokenID` (poly_ws / httpserver): decimal CLOB ids → 0x + 64 hex. */
@@ -131,22 +152,26 @@ function updatePositionsFromBook() {
       changed = true;
     }
 
-    const newAsk = getBestAskCents(frame);
-    if (newAsk !== null && newAsk !== pos.currentCents) {
-      pos.currentCents = newAsk;
-      const hw = pos.highWaterCents;
-      const trail = hw * (1 - pos.stopLossPct / 100);
+    const bid = getBestBidCentsFromFrame(frame);
+    const mark = getTopOfBookMarkCents(frame);
+    const nextCurrent = bid ?? mark;
+    if (nextCurrent != null && nextCurrent !== pos.currentCents) {
+      pos.currentCents = nextCurrent;
+      changed = true;
+    }
+    const effHw = Math.max(pos.highWaterCents, mark ?? 0);
+    const trail = effHw * (1 - pos.stopLossPct / 100);
+    if (pos.trailingStopCents !== trail) {
       pos.trailingStopCents = trail;
       changed = true;
+    }
 
-      // 双保险机制：前端止损冗余触发
-      // 如果当前价跌破止损价，且后端尚未执行平仓（status 仍为 open），前端发起平仓请求
-      if (newAsk <= trail && pos.status === "open") {
-        console.warn(`[Risk Insurance] Frontend detected stop-loss trigger for ${pos.title}: current ${newAsk} <= trail ${trail}. Triggering close...`);
-        void postRiskClosePosition(pos.id).catch((err) => {
-          console.error(`[Risk Insurance] Frontend stop-loss trigger failed for ${pos.id}:`, err);
-        });
-      }
+    const triggerPx = bid != null && bid > 0 ? bid : (mark ?? 0);
+    if (triggerPx > 0 && triggerPx <= trail && pos.status === "open") {
+      console.warn(`[Risk Insurance] Frontend detected stop-loss trigger for ${pos.title}: ref ${triggerPx} <= trail ${trail}. Triggering close...`);
+      void postRiskClosePosition(pos.id).catch((err) => {
+        console.error(`[Risk Insurance] Frontend stop-loss trigger failed for ${pos.id}:`, err);
+      });
     }
   }
   if (changed) {
@@ -158,9 +183,10 @@ function updatePositionsFromBook() {
 async function refreshPositions() {
   try {
     const p = await getRiskPositions();
+    const rows = p.positions ?? [];
     // 使用 tokenId + sideLabel 确保业务逻辑上的仓位唯一性，防止显示重复
     const posMap = new Map<string, RiskPositionRow>();
-    for (const pos of p.positions) {
+    for (const pos of rows) {
       if (!pos.tokenId) continue;
       // 必须标准化 Token ID，防止大小写或前缀不一致导致的重复
       const tid = normalizeTokenId(pos.tokenId);
@@ -191,7 +217,8 @@ function fetchRiskData(silent = false) {
   Promise.all([getRiskPositions(), getRiskTasks(50)])
     .then(([p, t]) => {
       const posMap = new Map<string, RiskPositionRow>();
-      for (const pos of p.positions) {
+      const positionRows = p.positions ?? [];
+      for (const pos of positionRows) {
         if (!pos.tokenId) continue;
         const tid = normalizeTokenId(pos.tokenId);
         const key = `${tid}_${pos.sideLabel || 'default'}`;
@@ -202,7 +229,7 @@ function fetchRiskData(silent = false) {
       }
       cache.positions = Array.from(posMap.values());
       cache.meta = p.meta ?? null;
-      cache.tasks = t.tasks;
+      cache.tasks = Array.isArray(t.tasks) ? t.tasks : [];
       cache.lastRefresh = new Date();
       cache.loading = false;
       cache.error = null;
@@ -251,6 +278,10 @@ export function refreshRiskData() {
   fetchRiskData(false);
 }
 
+export function getOpenRiskPositionCount(): number {
+  return cache.positions.filter((p) => p.status === "open" && p.tokenId).length;
+}
+
 export function useRiskControlCache() {
   const [, setTick] = useState(0);
 
@@ -260,8 +291,12 @@ export function useRiskControlCache() {
       void refreshPositions();
     });
     const unsubStatus = riskWsBus.onPolyStatus((msg) => {
-      cache.polyOrderbookConnected = msg.polyOrderbookConnected ?? cache.polyOrderbookConnected;
-      cache.polyUserConnected = msg.polyUserConnected ?? cache.polyUserConnected;
+      if (msg.polyOrderbookConnected !== undefined) {
+        cache.polyOrderbookConnected = msg.polyOrderbookConnected;
+      }
+      if (msg.polyUserConnected !== undefined) {
+        cache.polyUserConnected = msg.polyUserConnected;
+      }
       setTick((t) => t + 1);
     });
 
@@ -270,11 +305,28 @@ export function useRiskControlCache() {
     });
 
     const sub = subscribe(() => setTick((t) => t + 1));
+
+    const poll = setInterval(async () => {
+      try {
+        const st = await getWSStatus();
+        if (st.polyOrderbookConnected !== undefined) cache.polyOrderbookConnected = st.polyOrderbookConnected;
+        if (st.polyUserConnected !== undefined) cache.polyUserConnected = st.polyUserConnected;
+        const relayBad = riskWsBus.getConnectionState() !== "CONNECTED";
+        if (relayBad || !cache.polyOrderbookConnected || !cache.polyUserConnected) {
+          await refreshPositions();
+        }
+        setTick((t) => t + 1);
+      } catch {
+        /* ignore */
+      }
+    }, getWSConfig().wsRiskPollIntervalSec * 1000);
+
     return () => {
       unsubPos();
       unsubStatus();
       unsubDashStatus();
       sub();
+      clearInterval(poll);
     };
   }, []);
 

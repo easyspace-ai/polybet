@@ -23,6 +23,8 @@ type TokenMarketDisplay struct {
 	Image       string // Gamma `image` (market or nested event)
 	Icon        string // Gamma `icon` (often same URL as Image)
 	Category    string // e.g. sports league bucket when present
+	Active      bool
+	Closed      bool
 }
 
 type gammaMarketJSON struct {
@@ -32,6 +34,8 @@ type gammaMarketJSON struct {
 	Image         string          `json:"image"`
 	Icon          string          `json:"icon"`
 	Category      string          `json:"category"`
+	Active        bool            `json:"active"`
+	Closed        bool            `json:"closed"`
 	ClobTokenIDs  json.RawMessage `json:"clobTokenIds"`
 	Events        json.RawMessage `json:"events"`
 }
@@ -101,13 +105,17 @@ func firstEventSlug(events json.RawMessage) string {
 		return ""
 	}
 	var evs []gammaEventMini
-	if err := json.Unmarshal(events, &evs); err != nil {
+	if err := json.Unmarshal(events, &evs); err == nil {
+		for _, e := range evs {
+			if s := strings.TrimSpace(e.Slug); s != "" {
+				return s
+			}
+		}
 		return ""
 	}
-	for _, e := range evs {
-		if s := strings.TrimSpace(e.Slug); s != "" {
-			return s
-		}
+	var one gammaEventMini
+	if err := json.Unmarshal(events, &one); err == nil {
+		return strings.TrimSpace(one.Slug)
 	}
 	return ""
 }
@@ -218,6 +226,8 @@ func fillOutFromMarkets(markets []gammaMarketJSON, want map[string]struct{}, out
 				Image:       img,
 				Icon:        icn,
 				Category:    strings.TrimSpace(strings.ToLower(m.Category)),
+				Active:      m.Active,
+				Closed:      m.Closed,
 			}
 		}
 	}

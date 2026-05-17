@@ -3,7 +3,10 @@
 package riskruntime
 
 import (
+	"encoding/json"
 	"math"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -17,16 +20,16 @@ const DefaultRingCap = 400
 
 // Envelope matches docs/runtime-observability.md §2 (WebSocket wraps this in { type, data }).
 type Envelope struct {
-	Seq             uint64         `json:"seq"`
-	Ts              string         `json:"ts"`
-	Type            string         `json:"type"`
-	Category        string         `json:"category"`
-	Severity        string         `json:"severity"`
-	AccountID       *string        `json:"accountId"`
-	MarketID        *string        `json:"marketId"`
-	TokenID         *string        `json:"tokenId"`
-	CorrelationID   string         `json:"correlationId"`
-	Detail          map[string]any `json:"detail"`
+	Seq           uint64         `json:"seq"`
+	Ts            string         `json:"ts"`
+	Type          string         `json:"type"`
+	Category      string         `json:"category"`
+	Severity      string         `json:"severity"`
+	AccountID     *string        `json:"accountId"`
+	MarketID      *string        `json:"marketId"`
+	TokenID       *string        `json:"tokenId"`
+	CorrelationID string         `json:"correlationId"`
+	Detail        map[string]any `json:"detail"`
 }
 
 // Bus is a single-writer-safe ring of recent events plus throttled market_data lines.
@@ -39,6 +42,8 @@ type Bus struct {
 	bookMu   sync.Mutex
 	bookLast map[string]time.Time
 	bookPrev map[string]struct{ bid, ask float64 }
+	diskMu   sync.Mutex
+	disk     *os.File
 }
 
 // NewBus returns a bus that broadcasts JSON { "type": "risk_runtime_log", "data": Envelope } to hub.
@@ -51,6 +56,40 @@ func NewBus(hub *wsrelay.Hub, maxEntries int) *Bus {
 		max:      maxEntries,
 		bookLast: make(map[string]time.Time),
 		bookPrev: make(map[string]struct{ bid, ask float64 }),
+	}
+}
+
+// EnableJSONLLog appends every published envelope as one JSON line to path (NDJSON).
+func (b *Bus) EnableJSONLLog(path string) error {
+	if b == nil {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	b.diskMu.Lock()
+	defer b.diskMu.Unlock()
+	if b.disk != nil {
+		_ = b.disk.Close()
+	}
+	b.disk = f
+	return nil
+}
+
+// CloseJSONLLog closes the NDJSON sink if open.
+func (b *Bus) CloseJSONLLog() {
+	if b == nil {
+		return
+	}
+	b.diskMu.Lock()
+	defer b.diskMu.Unlock()
+	if b.disk != nil {
+		_ = b.disk.Close()
+		b.disk = nil
 	}
 }
 
@@ -94,6 +133,14 @@ func (b *Bus) Publish(category, severity, eventType string, accountID, marketID,
 	}
 	b.mu.Unlock()
 
+	if line, err := json.Marshal(env); err == nil {
+		b.diskMu.Lock()
+		if b.disk != nil {
+			_, _ = b.disk.Write(append(line, '\n'))
+		}
+		b.diskMu.Unlock()
+	}
+
 	b.hub.BroadcastJSON(map[string]any{
 		"type": "risk_runtime_log",
 		"data": env,
@@ -125,9 +172,9 @@ func (b *Bus) MaybePublishMarketBookSummary(tokenID string, accountID string, be
 	b.bookMu.Unlock()
 
 	detail := map[string]any{
-		"bestBid":  bestBidCents,
-		"bestAsk":  bestAskCents,
-		"spread":   spread,
+		"bestBid":       bestBidCents,
+		"bestAsk":       bestAskCents,
+		"spread":        spread,
 		"schemaVersion": 1,
 	}
 	b.Publish("market_data", "info", "market.book.summary_tick", accountID, "", tokenID, "", detail)

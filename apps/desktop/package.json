@@ -18,7 +18,8 @@
   "scripts": {
     "bundle-cli": "node scripts/bundle-cli.mjs",
     "brand-dev-electron": "node scripts/brand-dev-electron.mjs",
-    "dev": "pnpm run bundle-cli && pnpm run brand-dev-electron && electron-vite dev",
+    "embed-dashboard": "pnpm --filter dashboard embed",
+    "dev": "pnpm run embed-dashboard && pnpm run bundle-cli && pnpm run brand-dev-electron && electron-vite dev",
     "dev:staging": "pnpm run bundle-cli && pnpm run brand-dev-electron && electron-vite dev --mode staging",
     "build": "pnpm run bundle-cli && electron-vite build",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",

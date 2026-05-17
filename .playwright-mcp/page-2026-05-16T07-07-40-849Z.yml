@@ -1,0 +1,135 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - img [ref=e7]
+      - navigation [ref=e9]:
+        - link "风控" [ref=e10] [cursor=pointer]:
+          - /url: /risk
+          - img [ref=e11]
+          - generic [ref=e13]: 风控
+        - link "市场" [ref=e14] [cursor=pointer]:
+          - /url: /market
+          - img [ref=e16]
+          - generic [ref=e19]: 市场
+        - link "历史" [ref=e20] [cursor=pointer]:
+          - /url: /history
+          - img [ref=e21]
+          - generic [ref=e25]: 历史
+        - link "账号" [ref=e26] [cursor=pointer]:
+          - /url: /accounts
+          - img [ref=e27]
+          - generic [ref=e30]: 账号
+        - link "设置" [ref=e31] [cursor=pointer]:
+          - /url: /settings
+          - img [ref=e32]
+          - generic [ref=e35]: 设置
+      - generic [ref=e37]:
+        - paragraph [ref=e38]: fuck8
+        - generic [ref=e40]: $0.61
+    - main [ref=e41]:
+      - generic [ref=e42]:
+        - generic [ref=e43]:
+          - heading "市场" [level=1] [ref=e44]
+          - generic [ref=e46]:
+            - generic [ref=e47]: WS 已连接
+            - generic [ref=e49]: ·
+            - generic [ref=e50]: 实时
+            - generic [ref=e51]: ·
+            - generic [ref=e52]: 推送 0秒
+        - generic [ref=e53]:
+          - generic [ref=e54]:
+            - img [ref=e55]
+            - generic [ref=e59]: 已连接
+            - img [ref=e60]
+          - button "刷新" [ref=e62]:
+            - img [ref=e63]
+            - text: 刷新
+          - generic [ref=e68]:
+            - img [ref=e69]
+            - text: POLY
+          - button "切换主题" [ref=e71]:
+            - img [ref=e72]
+      - generic [ref=e74]:
+        - generic [ref=e76]:
+          - complementary [ref=e77]:
+            - generic [ref=e79]:
+              - img [ref=e80]
+              - textbox "搜索联赛" [ref=e83]
+            - generic [ref=e84]: 联赛
+            - navigation [ref=e85]:
+              - button "nba 3" [ref=e86]:
+                - generic [ref=e87]: nba
+                - generic [ref=e88]: "3"
+              - button "nhl 4" [ref=e89]:
+                - generic [ref=e90]: nhl
+                - generic [ref=e91]: "4"
+            - generic [ref=e92]:
+              - generic [ref=e93]:
+                - generic [ref=e94]:
+                  - img [ref=e95]
+                  - text: WebSocket
+                - generic [ref=e97]: 已连接
+              - img [ref=e98]
+          - generic [ref=e100]:
+            - generic [ref=e101]:
+              - generic [ref=e102]:
+                - heading "5月15日星期五" [level=2] [ref=e103]
+                - generic [ref=e104]: 1 场
+                - generic [ref=e106]: 独赢
+              - generic [ref=e108]:
+                - generic [ref=e109]: 21:30
+                - link "Timberwolves Spurs" [ref=e110] [cursor=pointer]:
+                  - /url: https://polymarket.com/event/nba-sas-min-2026-05-15
+                  - generic:
+                    - generic: Timberwolves
+                    - generic: Spurs
+                  - img [ref=e111]
+                - generic [ref=e115]: —
+                - generic [ref=e116]:
+                  - button "Timberwolves 3.6¢" [ref=e117]:
+                    - generic [ref=e118]: Timberwolves
+                    - generic [ref=e119]: 3.6¢
+                  - button "Spurs 96.6¢" [ref=e120]:
+                    - generic [ref=e121]: Spurs
+                    - generic [ref=e122]: 96.6¢
+            - generic [ref=e123]:
+              - generic [ref=e124]:
+                - heading "5月17日星期日" [level=2] [ref=e125]
+                - generic [ref=e126]: 2 场
+                - generic [ref=e128]: 独赢
+              - generic [ref=e129]:
+                - generic [ref=e130]:
+                  - generic [ref=e131]: 0:00
+                  - link "Spurs Timberwolves" [ref=e132] [cursor=pointer]:
+                    - /url: https://polymarket.com/event/nba-min-sas-2026-05-17
+                    - generic:
+                      - generic: Spurs
+                      - generic: Timberwolves
+                    - img [ref=e133]
+                  - generic [ref=e137]: —
+                  - generic [ref=e138]:
+                    - button "Spurs 51.2¢" [ref=e139]:
+                      - generic [ref=e140]: Spurs
+                      - generic [ref=e141]: 51.2¢
+                    - button "Timberwolves 50.2¢" [ref=e142]:
+                      - generic [ref=e143]: Timberwolves
+                      - generic [ref=e144]: 50.2¢
+                - generic [ref=e145]:
+                  - generic [ref=e146]: 0:00
+                  - link "Pistons Cavaliers" [ref=e147] [cursor=pointer]:
+                    - /url: https://polymarket.com/event/nba-cle-det-2026-05-17
+                    - generic:
+                      - generic: Pistons
+                      - generic: Cavaliers
+                    - img [ref=e148]
+                  - generic [ref=e152]: —
+                  - generic [ref=e153]:
+                    - button "Pistons 63.2¢" [ref=e154]:
+                      - generic [ref=e155]: Pistons
+                      - generic [ref=e156]: 63.2¢
+                    - button "Cavaliers 38.2¢" [ref=e157]:
+                      - generic [ref=e158]: Cavaliers
+                      - generic [ref=e159]: 38.2¢
+        - complementary [ref=e160]:
+          - generic [ref=e162]: 点击赔率以加入投注单
+  - region "Notifications alt+T"

@@ -193,10 +193,46 @@ func (s *Store) SeedDefaultConfig(ctx context.Context) error {
 		{"minOpenRiskShares", "1"},
 		{"onboardingComplete", "false"},
 	}
-	for _, r := range rows {
+	for _, r := range append(rows, wsConfigSeedRows()...) {
 		if err := s.InsertBotConfigDefault(ctx, r.k, r.v); err != nil {
 			return fmt.Errorf("seed %s: %w", r.k, err)
 		}
 	}
 	return nil
+}
+
+func wsConfigSeedRows() []struct{ k, v string } {
+	out := make([]struct{ k, v string }, 0, 24)
+	// Inline defaults to avoid import cycle with wsconfig package.
+	seed := []struct{ k, v string }{
+		{"wsClobPingIntervalSec", "20"},
+		{"wsClobPongTimeoutSec", "60"},
+		{"wsClobBackoffBaseSec", "1"},
+		{"wsClobBackoffMaxSec", "60"},
+		{"wsClobBackoffJitterPct", "30"},
+		{"wsClobReconnectStableSec", "120"},
+		{"wsClobMaxReconnectAttempts", "0"},
+		{"wsClobSleepThresholdSec", "5"},
+		{"wsHealthCheckIntervalSec", "30"},
+		{"wsBookStaleThresholdSec", "45"},
+		{"wsPositionsReconcileOpenSec", "20"},
+		{"wsPositionsReconcileIdleSec", "60"},
+		{"wsRestTradesIntervalSec", "45"},
+		{"wsStoplossReconcileSec", "2"},
+		{"wsDashPingIntervalSec", "20"},
+		{"wsDashPongTimeoutSec", "10"},
+		{"wsDashBackoffBaseSec", "1"},
+		{"wsDashBackoffMaxSec", "60"},
+		{"wsDashBackoffJitterPct", "30"},
+		{"wsDashSleepThresholdSec", "5"},
+		{"wsRiskPollIntervalSec", "30"},
+		{"wsAutoReconnectOnDisconnect", "true"},
+		{"wsAutoRequestUpstreamReconnect", "true"},
+		{"desktopSidecarWatchdogSec", "30"},
+		{"desktopSidecarWatchdogFailThreshold", "2"},
+		{"desktopSidecarWatchdogHttpTimeoutSec", "5"},
+		{"desktopSidecarMaxRetries", "0"},
+		{"desktopSidecarKillGraceSec", "5"},
+	}
+	return append(out, seed...)
 }

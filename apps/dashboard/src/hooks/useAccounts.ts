@@ -33,7 +33,7 @@ function fetchAccounts(): Promise<void> {
 
   return listPolymarketAccounts()
     .then((data) => {
-      cache.accounts = data;
+      cache.accounts = Array.isArray(data) ? data : [];
       cache.loading = false;
       cache.error = null;
     })
@@ -77,5 +77,13 @@ export function useAccounts() {
     await fetchAccounts();
   }, []);
 
-  return { accounts: state.accounts, loading: state.loading, error: state.error, refresh, create, activate, remove };
+  return {
+    accounts: state.accounts ?? [],
+    loading: state.loading,
+    error: state.error,
+    refresh,
+    create,
+    activate,
+    remove,
+  };
 }

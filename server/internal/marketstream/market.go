@@ -40,6 +40,12 @@ type MarketStream struct {
 	lastPong   time.Time
 	lastPongMu sync.RWMutex
 
+	connectedAt   time.Time
+	connectedAtMu sync.Mutex
+
+	sleepW *sleepWatchdog
+	pongW  *sleepWatchdog
+
 	onBook           BookHandler
 	onPriceChange    PriceChangeHandler
 	onLastTradePrice LastTradePriceHandler
@@ -110,6 +116,7 @@ func (s *MarketStream) Start(ctx context.Context) error {
 	go s.readLoop()
 	go s.pingLoop()
 	go s.reconnector()
+	s.startWatchdogs()
 
 	logrus.WithField("url", s.url).Info("市场订单簿 WebSocket：已启动")
 	return nil
@@ -127,6 +134,7 @@ func (s *MarketStream) Stop() {
 
 	s.cancel()
 	close(s.stopCh)
+	s.stopWatchdogs()
 
 	s.connMu.Lock()
 	if s.conn != nil {
@@ -307,9 +315,85 @@ func (s *MarketStream) connect() error {
 	s.reconnectMu.Lock()
 	s.reconnectAttempts = 0
 	s.reconnectMu.Unlock()
+	s.connectedAtMu.Lock()
+	s.connectedAt = time.Now()
+	s.connectedAtMu.Unlock()
+	s.lastPongMu.Lock()
+	s.lastPong = time.Now()
+	s.lastPongMu.Unlock()
 
 	_ = conn.SetReadDeadline(time.Now().Add(s.config.PongTimeout))
 	return nil
+}
+
+// ForceReconnect closes the current connection and schedules a reconnect.
+func (s *MarketStream) ForceReconnect() {
+	s.connMu.Lock()
+	if s.conn != nil {
+		_ = s.conn.Close()
+		s.conn = nil
+	}
+	s.connMu.Unlock()
+	if s.config.ReconnectEnabled {
+		s.triggerReconnect()
+	}
+}
+
+func (s *MarketStream) startWatchdogs() {
+	s.stopWatchdogs()
+	th := s.config.SleepThreshold
+	if th <= 0 {
+		th = 5 * time.Second
+	}
+	s.sleepW = startSleepWatchdog(th, func() {
+		logrus.Printf("%s sleep/wake detected, forcing reconnect", clobLogMarket)
+		s.ForceReconnect()
+	})
+	s.pongW = startPongWatchdog(s.config,
+		func() *websocket.Conn {
+			s.connMu.Lock()
+			defer s.connMu.Unlock()
+			return s.conn
+		},
+		func() time.Time {
+			s.lastPongMu.RLock()
+			defer s.lastPongMu.RUnlock()
+			return s.lastPong
+		},
+		func() {
+			logrus.Printf("%s pong watchdog stale, forcing reconnect", clobLogMarket)
+			s.ForceReconnect()
+		},
+	)
+}
+
+func (s *MarketStream) stopWatchdogs() {
+	if s.sleepW != nil {
+		s.sleepW.stop()
+		s.sleepW = nil
+	}
+	if s.pongW != nil {
+		s.pongW.stop()
+		s.pongW = nil
+	}
+}
+
+func (s *MarketStream) maybeResetReconnectAttempts() {
+	stable := s.config.ReconnectStable
+	if stable <= 0 {
+		return
+	}
+	s.connectedAtMu.Lock()
+	at := s.connectedAt
+	s.connectedAtMu.Unlock()
+	if at.IsZero() || time.Since(at) < stable {
+		return
+	}
+	s.reconnectMu.Lock()
+	if s.reconnectAttempts > 0 {
+		s.reconnectAttempts = 0
+	}
+	s.reconnectMu.Unlock()
 }
 
 func (s *MarketStream) sendSubscription(assetIDs []string, operation string) error {
@@ -422,6 +506,7 @@ func (s *MarketStream) readLoop() {
 		}
 
 		_ = conn.SetReadDeadline(time.Now().Add(s.config.PongTimeout))
+		s.maybeResetReconnectAttempts()
 
 		s.handleMessage(message)
 	}
@@ -476,7 +561,7 @@ func (s *MarketStream) reconnector() {
 			attempts := s.reconnectAttempts
 			s.reconnectMu.Unlock()
 
-			if attempts > s.config.MaxReconnectAttempts {
+			if maxReconnectExceeded(s.config, attempts) {
 				select {
 				case s.errChan <- fmt.Errorf("max reconnect attempts reached (%d)", s.config.MaxReconnectAttempts):
 				default:
@@ -484,14 +569,17 @@ func (s *MarketStream) reconnector() {
 				continue
 			}
 
-			delay := s.config.ReconnectDelay * time.Duration(attempts)
-			if delay > s.config.MaxReconnectDelay {
-				delay = s.config.MaxReconnectDelay
+			delay := ReconnectDelayForAttempt(s.config, attempts)
+			nextAt := time.Now().Add(delay)
+			if s.config.OnReconnectScheduled != nil {
+				s.config.OnReconnectScheduled(attempts, nextAt)
 			}
-			jitter := time.Duration(float64(time.Second) * (float64(time.Now().UnixNano()%1000) / 1000.0))
-			delay += jitter
 
-			logrus.Printf("%s reconnecting in %v (attempt %d/%d)...", clobLogMarket, delay, attempts, s.config.MaxReconnectAttempts)
+			maxLabel := "∞"
+			if s.config.MaxReconnectAttempts > 0 {
+				maxLabel = fmt.Sprintf("%d", s.config.MaxReconnectAttempts)
+			}
+			logrus.Printf("%s reconnecting in %v (attempt %d/%s)...", clobLogMarket, delay, attempts, maxLabel)
 
 			select {
 			case <-s.connCtx.Done():

@@ -23,8 +23,8 @@ export function useWsStatus() {
     return unsub;
   }, []);
 
-  const polyOrderbookConnected = polyStatus?.polyOrderbookConnected ?? true;
-  const polyUserConnected = polyStatus?.polyUserConnected ?? true;
+  const polyOrderbookConnected = polyStatus?.polyOrderbookConnected ?? false;
+  const polyUserConnected = polyStatus?.polyUserConnected ?? false;
 
   return {
     dashConnected,

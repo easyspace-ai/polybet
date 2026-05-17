@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/homesettings"
 	"github.com/easyspace-ai/polybet/internal/httpserver"
 	"github.com/easyspace-ai/polybet/internal/logx"
+	"github.com/easyspace-ai/polybet/internal/marketstream"
 	"github.com/easyspace-ai/polybet/internal/memcache"
 	"github.com/easyspace-ai/polybet/internal/riskruntime"
 	"github.com/easyspace-ai/polybet/internal/service/balancesvc"
@@ -30,6 +32,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/store"
 	marketsync "github.com/easyspace-ai/polybet/internal/sync"
 	"github.com/easyspace-ai/polybet/internal/tg"
+	"github.com/easyspace-ai/polybet/internal/wsconfig"
 	"github.com/easyspace-ai/polybet/internal/wsrelay"
 )
 
@@ -39,7 +42,7 @@ import (
 // A stuck SQLite lock or blocking syscall can use the full drain window.
 const (
 	shutdownHTTPTimeout = 10 * time.Second
-	shutdownWorkerDrain = 25 * time.Second
+	shutdownWorkerDrain = 8 * time.Second
 )
 
 type App struct {
@@ -60,6 +63,8 @@ type App struct {
 	InitService  *initsvc.Service
 	LogService   *logsvc.Service
 	StopLoss     *stoplossengine.Engine
+	userStreamMu sync.Mutex
+	activeUserWS *marketstream.UserStream
 	httpSrv      *http.Server
 	publicSrv    *http.Server
 	wg           sync.WaitGroup
@@ -90,6 +95,14 @@ func New(cfg *config.Config, db *sql.DB, log *logrus.Logger) *App {
 	}
 	dataClient := data.NewClient(transport.NewClient(httpDoer, data.BaseURL))
 	riskRuntime := riskruntime.NewBus(riskHub, riskruntime.DefaultRingCap)
+	if logDir := logx.PolybetLogsDir(); logDir != "" {
+		p := filepath.Join(logDir, "risk-runtime.jsonl")
+		if err := riskRuntime.EnableJSONLLog(p); err != nil {
+			log.WithFields(logx.Pairs("path", p, "err", err.Error())).Warn("风控运行时 JSONL 落盘失败")
+		} else {
+			log.WithFields(logx.Pairs("path", p)).Info("风控运行时事件将追加写入磁盘")
+		}
+	}
 	risk := risksvc.New(cfg, st, cache, dataClient, log, riskRuntime)
 	sportsCache := marketsync.NewSportsCache(cfg.HTTPPlatformProxy, time.Hour)
 	syncEng := marketsync.NewEngine(cfg, st, cache, sportsCache, log)
@@ -107,7 +120,10 @@ func New(cfg *config.Config, db *sql.DB, log *logrus.Logger) *App {
 		LogService: logSvc,
 		restartCh:  make(chan struct{}, 1),
 	}
-	a.StopLoss = stoplossengine.New(cfg, st, cache, risk, a.Debounce, hub, riskHub, riskRuntime, log, func() { a.rebuildAndBroadcastCache() })
+	a.StopLoss = stoplossengine.New(cfg, st, cache, risk, a.Debounce, hub, riskHub, riskRuntime, log,
+		func() { a.rebuildAndBroadcastCache() },
+		func() { a.broadcastPolyStatus() },
+	)
 	return a
 }
 
@@ -130,12 +146,18 @@ func (a *App) Run(ctx context.Context) error {
 		Cfg: a.Cfg, DB: a.DB, Store: a.Store, Cache: a.Cache, Hub: a.Hub, RiskHub: a.RiskHub, Risk: a.Risk, Debounce: a.Debounce,
 		BalanceCache: a.BalanceCache, RiskCache: a.RiskCache, InitService: a.InitService, LogService: a.LogService,
 		SportsCache: a.SportsCache, RiskRuntime: a.RiskRuntime,
-		App:         a,
+		App: a,
 	}
 	engine := httpserver.NewRouter(deps)
-	a.httpSrv = &http.Server{Addr: a.Cfg.Host + ":" + a.Cfg.Port, Handler: engine, ReadHeaderTimeout: 10 * time.Second}
+	a.httpSrv = &http.Server{
+		Addr: a.Cfg.Host + ":" + a.Cfg.Port, Handler: engine, ReadHeaderTimeout: 10 * time.Second,
+		BaseContext: serverBaseContext(ctx),
+	}
 	if a.Cfg.PublicPort != "" {
-		a.publicSrv = &http.Server{Addr: a.Cfg.Host + ":" + a.Cfg.PublicPort, Handler: httpserver.NewPublicRouter(deps), ReadHeaderTimeout: 10 * time.Second}
+		a.publicSrv = &http.Server{
+			Addr: a.Cfg.Host + ":" + a.Cfg.PublicPort, Handler: httpserver.NewPublicRouter(deps),
+			ReadHeaderTimeout: 10 * time.Second, BaseContext: serverBaseContext(ctx),
+		}
 	}
 	a.wg.Add(1)
 	go func() {
@@ -173,21 +195,25 @@ func (a *App) Run(ctx context.Context) error {
 		defer a.wg.Done()
 		syncCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
-		if err := a.SyncEngine.Once(syncCtx, false); err != nil {
-			a.Log.WithFields(logx.Pairs("err", err)).Warn("启动阶段市场同步未完成")
-		} else {
+		_ = callCtx(syncCtx, func() error {
+			if err := a.SyncEngine.Once(syncCtx, false); err != nil {
+				a.Log.WithFields(logx.Pairs("err", err)).Warn("启动阶段市场同步未完成")
+				return err
+			}
 			a.Log.Info("启动阶段市场同步成功")
-		}
-		var sportIcons map[string]string
-		if sports, err := a.SportsCache.Get(ctx); err == nil {
-			sportIcons = marketsvc.BuildSportIconMap(sports)
-		}
-		if markets, err := marketsvc.BuildMarketsPayload(ctx, a.Store, a.Cache, sportIcons); err != nil {
-			a.Log.WithFields(logx.Pairs("err", err)).Warn("启动阶段市场快照构建失败")
-		} else {
+			var sportIcons map[string]string
+			if sports, err := a.SportsCache.Get(syncCtx); err == nil {
+				sportIcons = marketsvc.BuildSportIconMap(sports)
+			}
+			markets, err := marketsvc.BuildMarketsPayload(syncCtx, a.Store, a.Cache, sportIcons)
+			if err != nil {
+				a.Log.WithFields(logx.Pairs("err", err)).Warn("启动阶段市场快照构建失败")
+				return err
+			}
 			a.Log.WithFields(logx.Pairs("count", len(markets))).Info("启动阶段已向 Dashboard 推送市场快照")
 			a.Hub.BroadcastJSON(map[string]any{"type": "marketsSnapshot", "data": markets})
-		}
+			return nil
+		})
 	}()
 
 	a.wg.Add(1)
@@ -198,6 +224,8 @@ func (a *App) Run(ctx context.Context) error {
 	go a.restTradesTicker(ctx)
 	a.wg.Add(1)
 	go a.positionsReconcileTicker(ctx)
+	a.wg.Add(1)
+	go a.wsHealthTicker(ctx)
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
@@ -212,20 +240,14 @@ func (a *App) Run(ctx context.Context) error {
 	}()
 	select {
 	case <-ctx.Done():
+		a.Log.Info("收到退出信号，开始优雅关闭")
 	case <-a.restartCh:
 		a.Log.Info("收到 API 触发的优雅重启请求")
 	}
-	shCtx, cancel := context.WithTimeout(context.Background(), shutdownHTTPTimeout)
-	if err := a.httpSrv.Shutdown(shCtx); err != nil {
-		a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("HTTP 主服务 Shutdown 未在超时内完成")
-	}
-	cancel()
+	a.beginShutdown()
+	a.shutdownHTTPServer(a.httpSrv, "main")
 	if a.publicSrv != nil {
-		pubCtx, pubCancel := context.WithTimeout(context.Background(), shutdownHTTPTimeout)
-		if err := a.publicSrv.Shutdown(pubCtx); err != nil {
-			a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("HTTP 公开服务 Shutdown 未在超时内完成")
-		}
-		pubCancel()
+		a.shutdownHTTPServer(a.publicSrv, "public")
 	}
 
 	waitDone := make(chan struct{})
@@ -267,7 +289,12 @@ func (a *App) riskTicker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_ = a.Risk.ProcessRiskTasksOnce(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+			_ = callCtx(ctx, func() error {
+				return a.Risk.ProcessRiskTasksOnce(ctx)
+			})
 		}
 	}
 }
@@ -312,8 +339,13 @@ func (a *App) syncTicker(ctx context.Context) {
 			t.Stop()
 			return
 		case <-t.C:
+			if ctx.Err() != nil {
+				return
+			}
 			a.Log.WithFields(logx.Pairs("interval_min", iv)).Info("定时市场同步触发")
-			_ = a.SyncAndBroadcastMarkets(ctx, false)
+			_ = callCtx(ctx, func() error {
+				return a.SyncAndBroadcastMarkets(ctx, false)
+			})
 		}
 	}
 }
@@ -352,16 +384,17 @@ func (a *App) broadcastBalanceUpdateIfChanged(ctx context.Context, summary *bala
 
 func (a *App) positionsReconcileNextInterval() time.Duration {
 	ctx := context.Background()
+	ws := wsconfig.Load(ctx, a.Store)
 	acct, _ := a.Store.GetActivePolymarketAccount(ctx)
 	if acct == nil {
-		return 60 * time.Second
+		return time.Duration(ws.PositionsReconcileIdleSec) * time.Second
 	}
 	minShares := a.Store.GetBotConfigFloat(ctx, "minOpenRiskShares", 1)
 	n, err := a.Store.CountOpenRiskPositionsMinShares(ctx, minShares, acct.ID)
 	if err != nil || n == 0 {
-		return 60 * time.Second
+		return time.Duration(ws.PositionsReconcileIdleSec) * time.Second
 	}
-	return 20 * time.Second
+	return time.Duration(ws.PositionsReconcileOpenSec) * time.Second
 }
 
 func (a *App) positionsReconcileTicker(ctx context.Context) {
@@ -382,31 +415,42 @@ func (a *App) positionsReconcileTicker(ctx context.Context) {
 			a.Log.Debug("定时持仓对账：上一轮仍在执行，跳过")
 			continue
 		}
-		func() {
+		_ = callCtx(ctx, func() error {
 			defer flight.Unlock()
-			acct, _ := a.Store.GetActivePolymarketAccount(context.Background())
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			acct, _ := a.Store.GetActivePolymarketAccount(ctx)
 			if acct == nil {
-				return
+				return nil
 			}
 			if err := a.Risk.SyncPositionsFromDataAPI(ctx, acct.ID); err != nil {
 				a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("定时持仓对账：Data API 同步失败")
-				return
+				return err
 			}
 			a.rebuildAndBroadcastCache()
-		}()
+			return nil
+		})
 	}
 }
 
 func (a *App) restTradesTicker(ctx context.Context) {
 	defer a.wg.Done()
-	t := time.NewTicker(45 * time.Second)
-	defer t.Stop()
 	for {
+		ws := wsconfig.Load(ctx, a.Store)
+		t := time.NewTicker(time.Duration(ws.RestTradesIntervalSec) * time.Second)
 		select {
 		case <-ctx.Done():
+			t.Stop()
 			return
 		case <-t.C:
-			_ = a.Risk.SyncRiskFromRESTTrades(ctx)
+			t.Stop()
+			if ctx.Err() != nil {
+				return
+			}
+			_ = callCtx(ctx, func() error {
+				return a.Risk.SyncRiskFromRESTTrades(ctx)
+			})
 		}
 	}
 }

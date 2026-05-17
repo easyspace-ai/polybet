@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
+import { PolymarketTitleLink } from "@/components/PolymarketTitleLink";
 import { cn } from "@/lib/utils";
 import { getStopLossHistory, getTradeHistory } from "@/lib/api";
 import type { StopLossHistoryTask, OfficialTrade } from "@/lib/api";
@@ -40,8 +41,8 @@ export default function HistoryPage() {
         getStopLossHistory(50),
         getTradeHistory(50),
       ]);
-      setStopLossTasks(sl.tasks);
-      setOfficialTrades(tr.trades);
+      setStopLossTasks(Array.isArray(sl.tasks) ? sl.tasks : []);
+      setOfficialTrades(Array.isArray(tr.trades) ? tr.trades : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载历史失败');
     } finally {
@@ -124,7 +125,7 @@ export default function HistoryPage() {
               <table className="w-full text-[12px]">
                 <thead className="text-[10px] uppercase tracking-widest text-muted-foreground bg-background/40">
                   <tr>
-                    {["时间", "持仓 ID", "状态", "尝试次数", ""].map((h) => (
+                    {["时间", "市场", "持仓 ID", "状态", "尝试次数", ""].map((h) => (
                       <th key={h} className="px-4 py-2.5 font-medium text-left">{h}</th>
                     ))}
                   </tr>
@@ -133,6 +134,17 @@ export default function HistoryPage() {
                   {stopLossTasks.map((t) => (
                     <tr key={t.id} className="hover:bg-accent/30 transition-colors">
                       <td className="px-4 py-3 text-muted-foreground">{t.updatedAt.slice(0, 16).replace('T', ' ')}</td>
+                      <td className="px-4 py-3 max-w-[220px]">
+                        {t.title ? (
+                          <PolymarketTitleLink
+                            title={t.title}
+                            officialUrl={t.officialUrl}
+                            titleClassName="text-[12px] font-medium"
+                          />
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 font-mono text-muted-foreground">
                         {t.positionId ? `${t.positionId.slice(0, 12)}…` : '—'}
                       </td>
@@ -200,7 +212,12 @@ export default function HistoryPage() {
                         </div>
                       )}
                       <div className="min-w-0">
-                        <p className="text-[13px] font-medium truncate">{t.title}</p>
+                        <PolymarketTitleLink
+                          title={t.title}
+                          officialUrl={t.officialUrl}
+                          polySlug={t.polySlug}
+                          titleClassName="text-[13px] font-medium"
+                        />
                         <div className="mt-0.5 flex items-center gap-2">
                           <span className={cn(
                             "text-[11px] px-1.5 py-0.5 rounded font-medium",

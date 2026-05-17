@@ -37,5 +37,7 @@ type Deps struct {
 		InvalidateAndRebuildCache()
 		SyncAndBroadcastMarkets(ctx context.Context, force bool) error
 		RequestRestart()
+		ForceWSReconnect(channel string)
+		OpenRiskPositionCount(ctx context.Context) int
 	}
 }

@@ -21,8 +21,9 @@ export function AppSidebar() {
   const { balance, loading: balanceLoading } = useBalanceCache();
   const { accounts } = useAccounts();
 
-  const activeAccount = accounts.find((a) => a.isActive);
-  const accountName = activeAccount?.name ?? accounts[0]?.name ?? "—";
+  const accountList = accounts ?? [];
+  const activeAccount = accountList.find((a) => a.isActive);
+  const accountName = activeAccount?.name ?? accountList[0]?.name ?? "—";
   const activeAccountBal = balance?.polymarketAccounts?.find((a) => a.isActive)?.polymarket;
   const totalBalance = balance?.polymarket ?? activeAccountBal ?? null;
 

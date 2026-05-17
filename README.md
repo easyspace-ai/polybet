@@ -71,6 +71,8 @@ pnpm dev:web
 
 ### Desktop Build
 
+Release and smoke workflows run, in order: install workspace deps (`pnpm install`), embed the operator dashboard into the Go tree (`make dashboard-embed`), then package Electron (`apps/desktop/scripts/package.mjs`). Locally, `make desktop-package` runs that full chain.
+
 ```bash
 # Build with embedded Go server
 make desktop-package

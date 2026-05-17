@@ -77,6 +77,13 @@ jobs:
   #     `electron-builder.yml` so `latest-mac.yml` prefers the zip URL)
   #
   # Unsigned builds by default; enable signing/notarization via CSC_* / APPLE_*.
+  #
+  # Desktop build order (must stay in this sequence):
+  #   1. pnpm install — workspace deps for dashboard + desktop scripts
+  #   2. make dashboard-embed — `pnpm --filter dashboard build`, copy dist →
+  #      server/internal/webui/dashboard-dist (compiled into Go via go:embed)
+  #   3. node scripts/package.mjs — bundle-cli (cross-compile polybet into
+  #      resources) + electron-vite + electron-builder (see Makefile desktop-*)
   desktop:
     needs: release
     strategy:

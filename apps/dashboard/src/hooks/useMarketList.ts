@@ -64,9 +64,10 @@ export function useMarketList(): MarketListState & { refresh: () => Promise<void
   const doFetchFromREST = useCallback((afterErrorStillStopLoading: boolean) => {
     getMarkets()
       .then((data) => {
-        if (data.length > 0) {
+        const markets = Array.isArray(data) ? data : [];
+        if (markets.length > 0) {
           snapshotReceived.current = true;
-          applyFullSnapshot(data);
+          applyFullSnapshot(markets);
         }
         setState(prev => ({ ...prev, loading: false }));
       })

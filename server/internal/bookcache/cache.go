@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Level matches dashboard poly book ladder (fee-adjusted taker odds, USDC size).
@@ -121,6 +122,34 @@ func (c *Cache) ApplyPriceChange(tokenID string, side string, price string, size
 		target[strings.TrimSpace(price)] = sz
 	}
 	tb.ts = ts
+}
+
+// BookAge returns time since last book update for tokenID.
+func (c *Cache) BookAge(tokenID string) (time.Duration, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	tb := c.books[tokenID]
+	if tb == nil || tb.ts <= 0 {
+		return 0, false
+	}
+	updated := time.UnixMilli(tb.ts)
+	if tb.ts < 1_000_000_000_000 {
+		updated = time.Unix(tb.ts, 0)
+	}
+	return time.Since(updated), true
+}
+
+// LastBookUpdateMs returns the latest book timestamp across all tokens (ms), or 0.
+func (c *Cache) LastBookUpdateMs() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var max int64
+	for _, tb := range c.books {
+		if tb != nil && tb.ts > max {
+			max = tb.ts
+		}
+	}
+	return max
 }
 
 func (c *Cache) GetLevels(tokenID string) []Level {

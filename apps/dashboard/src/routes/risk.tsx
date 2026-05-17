@@ -5,6 +5,7 @@ import { RiskRuntimeLogPanel } from "@/components/RiskRuntimeLogPanel";
 import { RefreshCw, AlertTriangle, ExternalLink, EyeOff } from "lucide-react";
 import { useRiskControlCache } from "@/hooks/useRiskControlCache";
 import { postRiskClosePosition, postRiskCloseAll, patchRiskPosition, postRiskOfficialRefresh, postRiskHidePosition, postRiskTasksClear } from "@/lib/api";
+import { resolvePolymarketEventUrl } from "@/lib/polymarketLinks";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -44,7 +45,7 @@ function relAgeShort(iso: string | null): string {
 }
 
 function RiskPage() {
-  const { positions, meta, tasks, loading, error, refresh, polyOrderbookConnected, polyUserConnected, lastRefresh } = useRiskControlCache();
+  const { positions, meta, tasks, loading, error, refresh, lastRefresh } = useRiskControlCache();
   const [closingId, setClosingId] = useState<string | null>(null);
   const [closingAll, setClosingAll] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, { sl: string; hw: string }>>({});
@@ -187,16 +188,6 @@ function RiskPage() {
         title="风控"
         subtitle={
           <>
-            <span className="flex items-center gap-1.5" title="服务端 Polymarket 盘口上游（经本机 WS 推送）">
-              <span className={`size-1.5 rounded-full ${polyOrderbookConnected ? 'bg-success animate-breathe' : 'bg-warning'}`} />
-              OB {polyOrderbookConnected ? '已连接' : '未连接'}
-            </span>
-            <span className="text-border">·</span>
-            <span className="flex items-center gap-1.5" title="服务端 Polymarket 用户订单/成交上游（经本机 WS 推送）">
-              <span className={`size-1.5 rounded-full ${polyUserConnected ? 'bg-success animate-breathe' : 'bg-warning'}`} />
-              USER {polyUserConnected ? '已连接' : '未连接'}
-            </span>
-            <span className="text-border">·</span>
             {lastRefresh && (
               <>
                 <span className="text-muted-foreground">更新 {relAgeShort(lastRefresh.toISOString())}</span>
@@ -280,7 +271,7 @@ function RiskPage() {
                     {positions.map((p) => {
                       const pnlPct = p.pnlUsd != null && p.costUsd > 0 ? (p.pnlUsd / p.costUsd) * 100 : null;
                       const display = (p.displayTitle?.trim() || p.title).trim();
-                      const href = p.officialUrl || p.officialSearchUrl;
+                      const href = resolvePolymarketEventUrl(p.officialUrl, p.polySlug) ?? undefined;
                       const titleShort = truncTitle(display, 38);
 
                       return (

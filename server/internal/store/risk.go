@@ -16,6 +16,8 @@ type RiskPosition struct {
 	TokenID        string
 	Title          string
 	SideLabel      string
+	PolyEventSlug  string
+	PolyMarketSlug string
 	AvgEntryCents  float64
 	SizeShares     float64
 	CostUSD        float64
@@ -133,7 +135,9 @@ func (s *Store) ListOpenOrClosingRiskPositions(ctx context.Context, accountID st
 }
 
 func (s *Store) listRiskPositionsWhere(ctx context.Context, clause string, args ...any) ([]RiskPosition, error) {
-	q := `SELECT rp.id, rp.platform, rp.outcome_id, rp.token_id, rp.title, rp.side_label, rp.avg_entry_cents, rp.size_shares, rp.cost_usd,
+	q := `SELECT rp.id, rp.platform, rp.outcome_id, rp.token_id, rp.title, rp.side_label,
+		COALESCE(rp.poly_event_slug, ''), COALESCE(rp.poly_market_slug, ''),
+		rp.avg_entry_cents, rp.size_shares, rp.cost_usd,
 		COALESCE(rpc.high_water_cents, rp.avg_entry_cents) as high_water_cents,
 		COALESCE(rpc.stop_loss_pct, 10) as stop_loss_pct,
 		rp.source, rp.status, rp.created_at, rp.updated_at
@@ -154,7 +158,7 @@ func scanRiskPositions(rows *sql.Rows) ([]RiskPosition, error) {
 		var p RiskPosition
 		var oc sql.NullString
 		var ca, ua string
-		if err := rows.Scan(&p.ID, &p.Platform, &oc, &p.TokenID, &p.Title, &p.SideLabel, &p.AvgEntryCents, &p.SizeShares, &p.CostUSD, &p.HighWaterCents, &p.StopLossPct, &p.Source, &p.Status, &ca, &ua); err != nil {
+		if err := rows.Scan(&p.ID, &p.Platform, &oc, &p.TokenID, &p.Title, &p.SideLabel, &p.PolyEventSlug, &p.PolyMarketSlug, &p.AvgEntryCents, &p.SizeShares, &p.CostUSD, &p.HighWaterCents, &p.StopLossPct, &p.Source, &p.Status, &ca, &ua); err != nil {
 			return nil, err
 		}
 		p.OutcomeID = oc
@@ -166,7 +170,9 @@ func scanRiskPositions(rows *sql.Rows) ([]RiskPosition, error) {
 }
 
 func (s *Store) GetRiskPosition(ctx context.Context, id string) (*RiskPosition, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT rp.id, rp.platform, rp.outcome_id, rp.token_id, rp.title, rp.side_label, rp.avg_entry_cents, rp.size_shares, rp.cost_usd,
+	row := s.db.QueryRowContext(ctx, `SELECT rp.id, rp.platform, rp.outcome_id, rp.token_id, rp.title, rp.side_label,
+		COALESCE(rp.poly_event_slug, ''), COALESCE(rp.poly_market_slug, ''),
+		rp.avg_entry_cents, rp.size_shares, rp.cost_usd,
 		COALESCE(rpc.high_water_cents, rp.avg_entry_cents) as high_water_cents,
 		COALESCE(rpc.stop_loss_pct, 10) as stop_loss_pct,
 		rp.source, rp.status, rp.created_at, rp.updated_at
@@ -176,7 +182,7 @@ func (s *Store) GetRiskPosition(ctx context.Context, id string) (*RiskPosition, 
 	var p RiskPosition
 	var oc sql.NullString
 	var ca, ua string
-	if err := row.Scan(&p.ID, &p.Platform, &oc, &p.TokenID, &p.Title, &p.SideLabel, &p.AvgEntryCents, &p.SizeShares, &p.CostUSD, &p.HighWaterCents, &p.StopLossPct, &p.Source, &p.Status, &ca, &ua); err != nil {
+	if err := row.Scan(&p.ID, &p.Platform, &oc, &p.TokenID, &p.Title, &p.SideLabel, &p.PolyEventSlug, &p.PolyMarketSlug, &p.AvgEntryCents, &p.SizeShares, &p.CostUSD, &p.HighWaterCents, &p.StopLossPct, &p.Source, &p.Status, &ca, &ua); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -186,6 +192,18 @@ func (s *Store) GetRiskPosition(ctx context.Context, id string) (*RiskPosition, 
 	p.CreatedAt = parseSQLiteTime(ca)
 	p.UpdatedAt = parseSQLiteTime(ua)
 	return &p, nil
+}
+
+func (s *Store) UpdateRiskPositionPolySlugs(ctx context.Context, id, eventSlug, marketSlug string) error {
+	eventSlug = strings.Trim(strings.TrimPrefix(strings.TrimSpace(eventSlug), "event/"), "/")
+	marketSlug = strings.Trim(strings.TrimPrefix(strings.TrimSpace(marketSlug), "event/"), "/")
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE risk_positions SET
+			poly_event_slug = COALESCE(NULLIF(?, ''), poly_event_slug),
+			poly_market_slug = COALESCE(NULLIF(?, ''), poly_market_slug),
+			updated_at = datetime('now')
+		WHERE id = ?`, eventSlug, marketSlug, id)
+	return err
 }
 
 func (s *Store) UpdateRiskPositionHighWater(ctx context.Context, id string, hw float64) error {
@@ -285,9 +303,12 @@ func (s *Store) createRiskPositionOnce(ctx context.Context, p *RiskPosition, ret
 		_, err = tx.ExecContext(ctx, `
 			UPDATE risk_positions SET
 				platform = ?, outcome_id = ?, title = ?, avg_entry_cents = ?, size_shares = ?, cost_usd = ?,
+				poly_event_slug = COALESCE(NULLIF(?, ''), poly_event_slug),
+				poly_market_slug = COALESCE(NULLIF(?, ''), poly_market_slug),
 				source = ?, status = ?, updated_at = ?
 			WHERE id = ?`,
 			p.Platform, sqlNullable(p.OutcomeID), p.Title, p.AvgEntryCents, p.SizeShares, p.CostUSD,
+			strings.TrimSpace(p.PolyEventSlug), strings.TrimSpace(p.PolyMarketSlug),
 			p.Source, p.Status, now, existingID)
 		if err != nil {
 			return err
@@ -318,9 +339,11 @@ func (s *Store) createRiskPositionOnce(ctx context.Context, p *RiskPosition, ret
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO risk_positions(id, platform, account_id, outcome_id, token_id, title, side_label, avg_entry_cents, size_shares, cost_usd, source, status, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		p.ID, p.Platform, p.AccountID, sqlNullable(p.OutcomeID), p.TokenID, p.Title, p.SideLabel, p.AvgEntryCents, p.SizeShares, p.CostUSD, p.Source, p.Status, now, now)
+		INSERT INTO risk_positions(id, platform, account_id, outcome_id, token_id, title, side_label, poly_event_slug, poly_market_slug, avg_entry_cents, size_shares, cost_usd, source, status, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		p.ID, p.Platform, p.AccountID, sqlNullable(p.OutcomeID), p.TokenID, p.Title, p.SideLabel,
+		nullIfEmptyString(strings.TrimSpace(p.PolyEventSlug)), nullIfEmptyString(strings.TrimSpace(p.PolyMarketSlug)),
+		p.AvgEntryCents, p.SizeShares, p.CostUSD, p.Source, p.Status, now, now)
 	if err != nil {
 		if retryOnUnique && retryOnUniqueOpenRisk(err) {
 			_ = tx.Rollback()
@@ -452,6 +475,13 @@ func (s *Store) SetRiskTaskFailed(ctx context.Context, id string, attempts int, 
 
 func (s *Store) SetRiskTaskSucceeded(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE risk_tasks SET status = 'succeeded', last_error = NULL, updated_at = datetime('now') WHERE id = ?`, id)
+	return err
+}
+
+func (s *Store) SetRiskTaskCancelled(ctx context.Context, id, reason string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE risk_tasks SET status = 'cancelled', last_error = ?, updated_at = datetime('now') WHERE id = ?`,
+		reason, id)
 	return err
 }
 

@@ -1,5 +1,8 @@
 name: CI
 
+# Desktop packaging (pnpm install → make dashboard-embed → apps/desktop/package.mjs)
+# runs in release.yml and desktop-smoke.yml only; this workflow covers frontend turbo + Go.
+
 on:
   push:
     branches: [main]

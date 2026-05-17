@@ -8,6 +8,10 @@ permissions:
 
 # Mirrors release desktop targets: mac arm64 (dmg + zip) and Windows x64
 # (NSIS + zip). No Linux job — see `.github/workflows/release.yml`.
+#
+# Same build order as release.yml desktop job: pnpm install → make
+# dashboard-embed (dashboard Vite build + copy into Go embed dir) →
+# apps/desktop node scripts/package.mjs.
 jobs:
   desktop:
     strategy:

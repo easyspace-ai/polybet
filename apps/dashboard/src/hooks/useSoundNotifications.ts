@@ -194,7 +194,7 @@ export function useSoundNotifications() {
     });
 
     const unsubPosition = wsBus.onPositionUpdate((msg: PositionUpdateMessage) => {
-      const newPositions = msg.data as RiskPositionRow[];
+      const newPositions = Array.isArray(msg.data) ? (msg.data as RiskPositionRow[]) : [];
       const oldPositions = previousPositionsRef.current;
 
       if (oldPositions.length > 0) {

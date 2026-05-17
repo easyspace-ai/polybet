@@ -10,6 +10,7 @@ import { useConfig } from "@/hooks/useConfig";
 import { groupMarkets, formatDateHeader, localDateKey, isAmericanSport, get1X2, getSpreadMLTotal, type MatchGroup, type OutcomeRow } from "@/lib/marketUtils";
 import { DEFAULT_EVENT_CLASSIFICATION_TAGS, parseEventClassificationTags } from "@/lib/eventClassification";
 import { getOrderBook, postTrade, type Market, type OrderBookLevel } from "@/lib/api";
+import { polymarketEventUrl } from "@/lib/polymarketLinks";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/market")({ component: MarketsPage });
@@ -114,7 +115,7 @@ function MatchRow({ group, selectedOutcomeId, onSelect }: { group: MatchGroup; s
   const homeOutcome = american ? mlHome : home;
   const awayOutcome = american ? mlAway : away;
 
-  const eventUrl = group.polySlug ? `https://polymarket.com/event/${group.polySlug}` : null;
+  const eventUrl = polymarketEventUrl(group.polySlug);
 
   return (
     <div className="grid grid-cols-[80px_1fr_auto_auto] items-center gap-4 px-5 py-4 hover:bg-accent/30 transition-colors">
@@ -483,7 +484,7 @@ function MarketsPage() {
   }, [allGroups, configuredTags]);
 
   const selectedOutcome = useMemo(
-    () => allGroups.flatMap(g => g.outcomes).find(o => o.outcomeId === selection?.outcomeId) ?? null,
+    () => allGroups.flatMap(g => g.outcomes ?? []).find(o => o.outcomeId === selection?.outcomeId) ?? null,
     [allGroups, selection?.outcomeId],
   );
 

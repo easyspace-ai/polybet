@@ -99,6 +99,9 @@ func (e *Engine) Once(ctx context.Context, force bool) error {
 	skippedUpsertErr := 0
 
 	for _, lg := range leagues {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		e.logger.WithFields(logx.Pairs("league", lg.League, "series_id", lg.SeriesID, "sport", lg.Sport)).Info("市场同步：拉取联赛页")
 		events, err := fetchGammaEvents(ctx, e.cfg.HTTPPlatformProxy, lg.SeriesID)
 		if err != nil {
@@ -109,6 +112,9 @@ func (e *Engine) Once(ctx context.Context, force bool) error {
 		e.logger.WithFields(logx.Pairs("league", lg.League, "events", len(events))).Info("市场同步：Gamma 返回事件数")
 
 		for _, ev := range events {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if stringsContainsGameLinesKeyword(ev.Title) {
 				skippedGameLines++
 				e.logger.WithFields(logx.Pairs("event_id", ev.ID, "title", ev.Title)).Debug("市场同步：跳过子市场标题")

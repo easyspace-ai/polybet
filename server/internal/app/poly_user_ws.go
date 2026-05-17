@@ -14,6 +14,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/service/balancesvc"
 	"github.com/easyspace-ai/polybet/internal/service/polysession"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
+	"github.com/easyspace-ai/polybet/internal/wsconfig"
 )
 
 func (a *App) polyUserWSLoop(ctx context.Context) {
@@ -52,12 +53,14 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 		}
 
 		msCfg := a.polymarketMarketstreamConfig()
+		msCfg.OnReconnectScheduled = a.clobOnReconnectScheduled("user")
 		creds := &marketstream.APICreds{
 			APIKey:        cl.APIKey.Key,
 			APISecret:     cl.APIKey.Secret,
 			APIPassphrase: cl.APIKey.Passphrase,
 		}
 		user := marketstream.NewUserStreamWithConfig(creds, msCfg)
+		a.setActiveUserStream(user)
 
 		subCtx, cancel := context.WithCancel(ctx)
 
@@ -182,18 +185,21 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 					if a.RiskRuntime != nil {
 						a.RiskRuntime.Publish("transport", "warn", "ws.user.error", accountID, "", "", "", map[string]any{"err": err.Error()})
 					}
-					if strings.Contains(err.Error(), "max reconnect attempts") {
-						cancel()
-						return
+					if a.Risk.WSMeta != nil {
+						a.Risk.WSMeta.Record("user", "warn", err.Error())
 					}
+					a.broadcastPolyStatus()
 				}
 			}
 		}()
 
 		a.Risk.SetUserWSState(false, true, "")
-		stOk := map[string]any{"type": "poly_status", "polyUserConnected": true}
-		a.Hub.BroadcastJSON(stOk)
-		a.RiskHub.BroadcastJSON(stOk)
+		if a.Risk.WSMeta != nil {
+			a.Risk.WSMeta.ClearReconnectSchedule("user")
+			a.Risk.WSMeta.Record("user", "info", "connected")
+		}
+		a.StopLoss.NotifyPositionsChanged()
+		a.broadcastPolyStatus()
 		if a.RiskRuntime != nil {
 			a.RiskRuntime.Publish("transport", "info", "ws.user.connected", accountID, "", "", "", map[string]any{})
 		}
@@ -204,13 +210,15 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 
 		<-subCtx.Done()
 		user.Stop()
+		a.clearActiveUserStream()
 		cancel()
 
 		a.Log.WithFields(logx.Pairs("reason", "disconnected")).Info("用户 CLOB WS：连接已结束")
 		a.Risk.SetUserWSState(false, false, "disconnected")
-		stOff := map[string]any{"type": "poly_status", "polyUserConnected": false}
-		a.Hub.BroadcastJSON(stOff)
-		a.RiskHub.BroadcastJSON(stOff)
+		if a.Risk.WSMeta != nil {
+			a.Risk.WSMeta.Record("user", "warn", "disconnected")
+		}
+		a.broadcastPolyStatus()
 		if a.RiskRuntime != nil {
 			a.RiskRuntime.Publish("transport", "info", "ws.user.disconnected", accountID, "", "", "", map[string]any{"reason": "disconnected"})
 		}
@@ -222,11 +230,13 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 			return
 		}
 
+		ws := wsconfig.Load(ctx, a.Store)
+		delay := time.Duration(ws.ClobBackoffBaseSec) * time.Second
 		if a.RiskRuntime != nil {
-			a.RiskRuntime.Publish("transport", "info", "ws.user.reconnect_scheduled", accountID, "", "", "", map[string]any{"backoffMs": 2000})
+			a.RiskRuntime.Publish("transport", "info", "ws.user.reconnect_scheduled", accountID, "", "", "", map[string]any{"backoffMs": delay.Milliseconds()})
 		}
-		a.Log.WithFields(logx.Pairs("delay_sec", 2)).Info("用户 CLOB WS：等待重连")
-		sleepCtx(ctx, 2*time.Second)
+		a.Log.WithFields(logx.Pairs("delay_sec", delay.Seconds())).Info("用户 CLOB WS：等待重连")
+		sleepCtx(ctx, delay)
 	}
 }
 

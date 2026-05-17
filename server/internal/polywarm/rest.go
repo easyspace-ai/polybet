@@ -107,3 +107,54 @@ func BestBidCents(ctx context.Context, clobBaseURL, httpProxy, tokenID string) (
 	}
 	return best * 100, nil
 }
+
+// BestBidAskCents returns best bid and best ask in cents (probability × 100) from one /book fetch.
+// Best bid = highest buy price; best ask = lowest sell price.
+func BestBidAskCents(ctx context.Context, clobBaseURL, httpProxy, tokenID string) (bidCents, askCents float64, err error) {
+	u := strings.TrimRight(clobBaseURL, "/") + "/book?token_id=" + url.QueryEscape(tokenID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	tr := http.DefaultTransport
+	if strings.TrimSpace(httpProxy) != "" {
+		pu, _ := url.Parse(httpProxy)
+		tr = &http.Transport{Proxy: http.ProxyURL(pu)}
+	}
+	client := &http.Client{Transport: tr, Timeout: 12 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return 0, 0, fmt.Errorf("book %d", res.StatusCode)
+	}
+	var book clobBook
+	if err := json.NewDecoder(res.Body).Decode(&book); err != nil {
+		return 0, 0, err
+	}
+	var bestBid, bestAsk float64
+	for _, b := range book.Bids {
+		p, err := strconv.ParseFloat(strings.TrimSpace(b.Price), 64)
+		if err != nil || p <= 0 {
+			continue
+		}
+		if bestBid == 0 || p > bestBid {
+			bestBid = p
+		}
+	}
+	for _, a := range book.Asks {
+		p, err := strconv.ParseFloat(strings.TrimSpace(a.Price), 64)
+		if err != nil || p <= 0 {
+			continue
+		}
+		if bestAsk == 0 || p < bestAsk {
+			bestAsk = p
+		}
+	}
+	if bestBid <= 0 && bestAsk <= 0 {
+		return 0, 0, fmt.Errorf("empty_book")
+	}
+	return bestBid * 100, bestAsk * 100, nil
+}

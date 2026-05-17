@@ -93,7 +93,7 @@ export function groupMarkets(markets: Market[]): MatchGroup[] {
     }
     const group = byKey.get(key)!;
 
-    for (const o of m.outcomes) {
+    for (const o of m.outcomes ?? []) {
       const key = outcomeMergeKey(o.canonicalKey, m.betType, m.line, o.label);
       let existing = group.outcomes.find(
         (x) => outcomeMergeKey(x.canonicalKey, x.betType, x.line, x.label) === key,

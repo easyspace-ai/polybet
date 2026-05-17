@@ -7,6 +7,7 @@ import { applyPolybetProjectConfigToEnv } from "../shared/polybet-project-config
 import type { PolybetProjectConfig } from "../shared/polybet-project-config";
 import { getBundledPolybetBinaryPath } from "./polybet-binary-path";
 import { getPolybetEmbeddedServerDataDir } from "./polybet-embedded-dir";
+import { loadSidecarWatchdogSettings } from "./sidecar-watchdog-settings";
 import {
   getAppUserDataDir,
   isPathUnderUserProfile,
@@ -22,11 +23,16 @@ let child: ChildProcess | null = null;
 let dashboardOrigin: string | null = null;
 let beforeQuitHooked = false;
 let statusCallback: ((status: SidecarStatus) => void) | null = null;
+let activeProject: PolybetProjectConfig | null = null;
 
-const MAX_RETRIES = 5;
 const BASE_RETRY_MS = 1_000;
 let retryCount = 0;
 let restartTimeout: ReturnType<typeof setTimeout> | null = null;
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+let watchdogFailStreak = 0;
+let watchdogRestartInFlight = false;
+let intentionalChildStop = false;
+let maxRetries = 0;
 
 export function setSidecarStatusCallback(cb: (status: SidecarStatus) => void): void {
   statusCallback = cb;
@@ -40,27 +46,96 @@ export function getLocalDashboardURL(): string | null {
   return dashboardOrigin;
 }
 
+function stopWatchdog(): void {
+  if (watchdogTimer) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = null;
+  }
+  watchdogFailStreak = 0;
+}
+
+async function probeHealth(origin: string, timeoutMs: number): Promise<boolean> {
+  try {
+    const res = await fetch(`${origin}/api/health`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function waitHealth(base: string, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`${base}/api/health`, {
-        signal: AbortSignal.timeout(900),
-      });
-      if (res.ok) return true;
-    } catch {
-      /* retry */
-    }
+    if (await probeHealth(base, 900)) return true;
     await new Promise((r) => setTimeout(r, 250));
   }
   return false;
 }
 
-function spawnSidecar(bin: string, cwd: string, env: Record<string, string | undefined>, project: PolybetProjectConfig, _origin?: string): void {
+function startWatchdog(origin: string): void {
+  stopWatchdog();
+  const settings = loadSidecarWatchdogSettings();
+  maxRetries = settings.maxRetries;
+
+  watchdogTimer = setInterval(() => {
+    void (async () => {
+      if (watchdogRestartInFlight || !activeProject) return;
+
+      if (!child || child.killed) {
+        watchdogFailStreak++;
+        if (watchdogFailStreak >= settings.failThreshold) {
+          await restartSidecarFromWatchdog("process not running");
+        }
+        return;
+      }
+
+      const ok = await probeHealth(origin, settings.httpTimeoutMs);
+      if (ok) {
+        watchdogFailStreak = 0;
+        return;
+      }
+
+      watchdogFailStreak++;
+      if (watchdogFailStreak >= settings.failThreshold) {
+        await restartSidecarFromWatchdog("health check failed");
+      }
+    })();
+  }, settings.intervalSec * 1000);
+}
+
+async function restartSidecarFromWatchdog(reason: string): Promise<void> {
+  if (watchdogRestartInFlight || !activeProject) return;
+  watchdogRestartInFlight = true;
+  watchdogFailStreak = 0;
+  stopWatchdog();
+
+  const settings = loadSidecarWatchdogSettings();
+  if (child && !child.killed) {
+    intentionalChildStop = true;
+    child.kill("SIGTERM");
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, settings.killGraceMs);
+      child?.once("exit", () => {
+        clearTimeout(t);
+        resolve();
+      });
+    });
+    if (child && !child.killed) {
+      child.kill("SIGKILL");
+    }
+    child = null;
+  }
+
+  watchdogRestartInFlight = false;
+  handleCrash(`watchdog: ${reason}`, activeProject);
+}
+
+function spawnSidecar(bin: string, cwd: string, env: Record<string, string | undefined>, project: PolybetProjectConfig): void {
   const opts: SpawnOptions = { cwd, env, stdio: "inherit" };
   if (process.platform === "win32") {
     opts.windowsHide = true;
-    // Packaged app: avoid attaching a console; dev keeps stdio for local logs.
     if (!is.dev) opts.stdio = "ignore";
   }
   child = spawn(bin, [], opts);
@@ -69,12 +144,19 @@ function spawnSidecar(bin: string, cwd: string, env: Record<string, string | und
   child.on("error", (err) => {
     console.error("[polybet] spawn error:", err);
     child = null;
+    if (intentionalChildStop) {
+      intentionalChildStop = false;
+      return;
+    }
     handleCrash(err.message, project);
   });
 
   child.on("exit", (code, signal) => {
+    if (intentionalChildStop) {
+      intentionalChildStop = false;
+      return;
+    }
     if (code === 0 || signal === "SIGTERM" || signal === "SIGKILL") {
-      // Intentional stop — not a crash
       return;
     }
     console.error(`[polybet] process exited unexpectedly (code=${code}, signal=${signal})`);
@@ -84,15 +166,17 @@ function spawnSidecar(bin: string, cwd: string, env: Record<string, string | und
 }
 
 function handleCrash(reason: string, project: PolybetProjectConfig): void {
-  if (retryCount >= MAX_RETRIES) {
+  stopWatchdog();
+  const limit = maxRetries > 0 ? maxRetries : Number.POSITIVE_INFINITY;
+  if (retryCount >= limit) {
     emitStatus({ state: "crashed", error: reason, willRestart: false, retryCount });
     return;
   }
   retryCount++;
-  const delay = BASE_RETRY_MS * Math.pow(2, retryCount - 1);
+  const delay = BASE_RETRY_MS * Math.pow(2, Math.min(retryCount - 1, 6));
   emitStatus({ state: "crashed", error: reason, willRestart: true, retryCount });
   restartTimeout = setTimeout(() => {
-    startWithRetry(project);
+    void startWithRetry(project);
   }, delay);
 }
 
@@ -102,6 +186,7 @@ async function startWithRetry(project: PolybetProjectConfig): Promise<void> {
     emitStatus({ state: "crashed", error: "binary disappeared", willRestart: false, retryCount });
     return;
   }
+  activeProject = project;
   const env = applyPolybetProjectConfigToEnv({ ...process.env }, project);
   const probeHost = env.HOST === "0.0.0.0" ? "127.0.0.1" : env.HOST ?? "127.0.0.1";
   const origin = `http://${probeHost}:${env.PORT}`;
@@ -115,7 +200,9 @@ async function startWithRetry(project: PolybetProjectConfig): Promise<void> {
     return;
   }
   dashboardOrigin = origin;
+  retryCount = 0;
   emitStatus({ state: "ready", origin });
+  startWatchdog(origin);
 }
 
 /**
@@ -133,6 +220,7 @@ export async function maybeStartSportsRouterSidecar(
     clearTimeout(restartTimeout);
     restartTimeout = null;
   }
+  stopWatchdog();
 
   if (!existsSync(bin)) {
     return false;
@@ -153,6 +241,10 @@ export async function maybeStartSportsRouterSidecar(
     );
   }
 
+  activeProject = project;
+  const settings = loadSidecarWatchdogSettings();
+  maxRetries = settings.maxRetries;
+
   const cwd = is.dev ? getPolybetEmbeddedServerDataDir() : userData;
   if (is.dev) {
     await mkdir(cwd, { recursive: true });
@@ -172,6 +264,7 @@ export async function maybeStartSportsRouterSidecar(
 
   dashboardOrigin = origin;
   emitStatus({ state: "ready", origin });
+  startWatchdog(origin);
 
   if (!beforeQuitHooked) {
     beforeQuitHooked = true;
@@ -185,15 +278,18 @@ export async function maybeStartSportsRouterSidecar(
 
 /** Stop the embedded Go server and clear the dashboard origin (e.g. after a failed outbound probe). */
 export function stopEmbeddedPolybetSidecar(): void {
+  stopWatchdog();
   if (restartTimeout) {
     clearTimeout(restartTimeout);
     restartTimeout = null;
   }
-  retryCount = MAX_RETRIES; // prevent auto-restart
+  retryCount = Number.MAX_SAFE_INTEGER;
+  intentionalChildStop = true;
   if (child && !child.killed) {
     child.kill("SIGTERM");
   }
   child = null;
   dashboardOrigin = null;
+  activeProject = null;
   emitStatus({ state: "stopped" });
 }

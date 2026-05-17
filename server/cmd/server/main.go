@@ -31,6 +31,12 @@ func main() {
 		os.Exit(1)
 	}
 	logx.Configure(cfg.LogLevel)
+	if err := logx.EnablePersistentLog(); err != nil {
+		logrus.WithFields(logx.Pairs("err", err.Error())).Warn("日志落盘未启用（仍输出到 stdout）")
+	} else if d := logx.PolybetLogsDir(); d != "" {
+		logrus.WithFields(logx.Pairs("log_dir", d)).Info("进程日志已追加写入磁盘")
+	}
+	defer logx.ClosePersistentLog()
 
 	sqlDB, err := db.Open(cfg.DatabaseURL)
 	if err != nil {
@@ -49,8 +55,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// ctx cancellation propagates to tickers, Gamma sync, and HTTP clients. Run stops HTTP
-	// then bounded-waits for background goroutines (timeouts in internal/app).
+	// Second Ctrl+C forces exit if graceful shutdown is still draining workers.
+	go func() {
+		<-ctx.Done()
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(sig)
+		<-sig
+		logrus.Error("再次收到退出信号，强制退出")
+		os.Exit(1)
+	}()
 
 	if err := a.Run(ctx); err != nil {
 		logrus.WithFields(logx.Pairs("err", err)).Error("服务退出异常")

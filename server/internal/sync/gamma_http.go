@@ -49,7 +49,11 @@ func fetchGammaEvents(ctx context.Context, httpProxy string, seriesID int) ([]ga
 		if attempt > 0 {
 			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
 			logrus.WithFields(logx.Pairs("attempt", attempt+1, "series_id", seriesID, "backoff", backoff.String())).Warn("Gamma HTTP：重试前等待")
-			time.Sleep(backoff)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
 		}
 
 		events, err := doFetchGammaEvents(ctx, httpProxy, seriesID)
@@ -91,6 +95,9 @@ func doFetchGammaEvents(ctx context.Context, httpProxy string, seriesID int) ([]
 	}
 	client := &http.Client{Transport: tr, Timeout: 60 * time.Second}
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		q := url.Values{}
 		q.Set("closed", "false")
 		q.Set("limit", strconv.Itoa(limit))

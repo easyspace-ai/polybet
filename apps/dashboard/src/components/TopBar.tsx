@@ -1,29 +1,12 @@
 import React from "react";
-import { Moon, Sun, Zap, Wifi, WifiOff } from "lucide-react";
+import { Moon, Sun } from "lucide-react";
 import { useTheme } from "@/lib/theme";
-import { useWsStatus } from "@/hooks/useWsStatus";
+import { GlobalWSStatusCluster } from "@/components/GlobalWSStatusCluster";
 
 interface Props {
   title: string;
   subtitle?: React.ReactNode;
   actions?: React.ReactNode;
-}
-
-function WsIndicator() {
-  const { dashConnected } = useWsStatus();
-  return (
-    <div className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-border bg-surface/50">
-      {dashConnected ? (
-        <Wifi className="size-3 text-success" />
-      ) : (
-        <WifiOff className="size-3 text-destructive" />
-      )}
-      <span className={`text-[10px] font-mono ${dashConnected ? "text-success" : "text-destructive"}`}>
-        {dashConnected ? "已连接" : "断开"}
-      </span>
-      <Zap className="size-3 text-warning ml-0.5" />
-    </div>
-  );
 }
 
 export function TopBar({ title, subtitle, actions }: Props) {
@@ -43,7 +26,7 @@ export function TopBar({ title, subtitle, actions }: Props) {
         )}
       </div>
       <div className="flex items-center gap-3" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
-        <WsIndicator />
+        <GlobalWSStatusCluster />
         {actions}
         <button
           onClick={toggle}

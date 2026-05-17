@@ -11,7 +11,7 @@ export function useConfig() {
     setLoading(true);
     setError(null);
     getConfig()
-      .then(setRows)
+      .then((data) => setRows(Array.isArray(data) ? data : []))
       .catch((err) => {
         setError(err instanceof Error ? err.message : '加载配置失败');
       })
@@ -23,7 +23,7 @@ export function useConfig() {
     try {
       await putConfig(key, value);
       // After save, refresh to get updated data
-      await getConfig().then(setRows);
+      await getConfig().then((data) => setRows(Array.isArray(data) ? data : []));
     } catch (err) {
       throw err; // Re-throw so caller can handle
     } finally {
@@ -35,5 +35,5 @@ export function useConfig() {
     refresh();
   }, [refresh]);
 
-  return { rows, loading, error, saving, refresh, save };
+  return { rows: rows ?? [], loading, error, saving, refresh, save };
 }

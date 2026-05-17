@@ -106,6 +106,7 @@ func Migrate(ctx context.Context, conn *sql.DB) error {
 		{4, "migrations/004_risk_configs.sql"},
 		{5, "migrations/005_risk_hidden_positions.sql"},
 		{6, "migrations/006_risk_positions_unique.sql"},
+		{7, "migrations/007_risk_position_poly_slugs.sql"},
 	}
 	for _, step := range steps {
 		if v >= step.version {

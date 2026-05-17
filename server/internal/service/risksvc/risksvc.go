@@ -3,6 +3,7 @@ package risksvc
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -46,6 +47,8 @@ type Service struct {
 	orderbookWSConnected  atomic.Bool
 	orderbookWSConnecting atomic.Bool
 
+	WSMeta *WSMetaCollector
+
 	// Gamma /markets cache for risk UI (token id → last fetch).
 	gammaMetaMu sync.Mutex
 	gammaMeta   map[string]gammaMetaCache
@@ -55,7 +58,7 @@ func New(cfg *config.Config, st *store.Store, cache *bookcache.Cache, dataClient
 	if log == nil {
 		log = logrus.StandardLogger()
 	}
-	return &Service{cfg: cfg, st: st, cache: cache, dataClient: dataClient, log: log, rt: rt}
+	return &Service{cfg: cfg, st: st, cache: cache, dataClient: dataClient, log: log, rt: rt, WSMeta: NewWSMetaCollector()}
 }
 
 // SetUserWSState updates dashboard-facing User WS meta (best-effort).
@@ -77,6 +80,13 @@ func (s *Service) OrderbookWSConnected() bool  { return s.orderbookWSConnected.L
 func (s *Service) OrderbookWSConnecting() bool { return s.orderbookWSConnecting.Load() }
 func (s *Service) UserWSConnected() bool       { return s.userWSConnected.Load() }
 func (s *Service) UserWSConnecting() bool      { return s.userWSConnecting.Load() }
+
+// UserWSLastIssue returns the last user-channel issue string.
+func (s *Service) UserWSLastIssue(out *string) {
+	s.userWSLastIssueMu.Lock()
+	*out = s.userWSLastIssue
+	s.userWSLastIssueMu.Unlock()
+}
 
 // TouchUserWSMessage marks receipt of a user-channel message (for dashboard meta).
 func (s *Service) TouchUserWSMessage() {
@@ -149,30 +159,63 @@ func minInt(a, b int) int {
 }
 
 func (s *Service) BestBidCents(ctx context.Context, tokenID string) (float64, bool) {
-	tokenID = strings.ToLower(strings.TrimSpace(tokenID))
-	bb, _, ok := s.cache.TopOfBook(tokenID)
-	if ok && bb > 0 {
-		return bb * 100, true
-	}
-	cents, err := polywarm.BestBidCents(ctx, s.cfg.PolymarketAPIURL, s.cfg.HTTPPlatformProxy, tokenID)
-	if err != nil {
-		return 0, false
-	}
-	return cents, true
+	bid, _, ok := s.BestBidAskCents(ctx, tokenID)
+	return bid, ok && bid > 0
 }
 
-func (s *Service) UpdateHighWaterAndMaybeQueueStop(ctx context.Context, p store.RiskPosition, bidCents float64) (hw float64, trail float64, cur *float64, err error) {
+// BestBidAskCents returns best bid and ask in cents from the in-memory book cache, or REST /book.
+func (s *Service) BestBidAskCents(ctx context.Context, tokenID string) (bidCents, askCents float64, ok bool) {
+	tid := strings.ToLower(strings.TrimSpace(tokenID))
+	bb, ba, topOk := s.cache.TopOfBook(tid)
+	bidCents, askCents = bb*100, ba*100
+	if topOk && (bidCents > 0 || askCents > 0) {
+		return bidCents, askCents, true
+	}
+	b, a, err := polywarm.BestBidAskCents(ctx, s.cfg.PolymarketAPIURL, s.cfg.HTTPPlatformProxy, tid)
+	if err != nil {
+		return 0, 0, false
+	}
+	return b, a, b > 0 || a > 0
+}
+
+func maxCentsRatchet(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// stopTriggerReferenceCents is the price used to compare against trailing stop: best bid when
+// present (executable), else top-of-book mark so empty-bid books still evaluate stops.
+func stopTriggerReferenceCents(bidCents, askCents float64) float64 {
+	if bidCents > 0 {
+		return bidCents
+	}
+	return maxCentsRatchet(bidCents, askCents)
+}
+
+// UpdateHighWaterAndMaybeQueueStop ratchets high-water using max(bid, ask) so it tracks the
+// top of the quoted range since open; stop-loss compares triggerCents (best bid, or mark if bid empty) to trail.
+func (s *Service) UpdateHighWaterAndMaybeQueueStop(ctx context.Context, p store.RiskPosition, bidCents, askCents float64) (hw float64, trail float64, cur *float64, err error) {
 	hw = p.HighWaterCents
-	if bidCents > hw {
-		hw = bidCents
+	mark := maxCentsRatchet(bidCents, askCents)
+	if mark > hw {
+		hw = mark
 		if err := s.st.UpdateRiskPositionHighWater(ctx, p.ID, hw); err != nil {
 			return 0, 0, nil, err
 		}
 	}
 	trail = hw * (1 - p.StopLossPct/100)
 	curVal := bidCents
+	if curVal <= 0 && askCents > 0 {
+		curVal = askCents
+	}
 	cur = &curVal
-	if p.Status == "open" && p.SizeShares >= s.minShares(ctx) && bidCents <= trail {
+	triggerCents := stopTriggerReferenceCents(bidCents, askCents)
+	if p.Status == "open" && p.SizeShares >= s.minShares(ctx) && triggerCents > 0 && triggerCents <= trail {
+		if s.log != nil && bidCents <= 0 && mark > 0 {
+			s.log.WithFields(logx.Pairs("position_id", p.ID, "token_id", p.TokenID, "trigger_cents", triggerCents, "trail", trail, "mark_cents", mark)).Info("风控：移动止损触发（无买盘，按盘口高点/卖价比较）")
+		}
 		if err := s.ensureCloseTask(ctx, p.ID, "stop_loss"); err != nil {
 			return hw, trail, cur, err
 		}
@@ -259,6 +302,9 @@ func formatCloseQueuedTelegram(reason string, pos *store.RiskPosition, positionI
 }
 
 func (s *Service) ProcessRiskTasksOnce(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	tasks, err := s.st.ListDueRiskTasks(ctx, 20)
 	if err != nil {
 		return err
@@ -300,14 +346,26 @@ func (s *Service) ProcessRiskTasksOnce(ctx context.Context) error {
 	// 并发执行 close_position 任务
 	runClosePosTask := func(t store.RiskTask) {
 		defer wg.Done()
+		if ctx.Err() != nil {
+			return
+		}
 		sem <- struct{}{}
 		defer func() { <-sem }()
+		if ctx.Err() != nil {
+			return
+		}
 
 		_ = s.st.SetRiskTaskRunning(ctx, t.ID)
 		s.log.WithFields(logx.Pairs("task_id", t.ID, "type", t.Type, "position_id", t.PositionID.String, "attempts", t.Attempts)).Info("风控：执行任务")
 
 		runErr := s.runClosePosition(ctx, cl, t, sellExtra)
 		if runErr != nil {
+			if errors.Is(runErr, errCloseTaskAborted) {
+				mu.Lock()
+				completed++
+				mu.Unlock()
+				return
+			}
 			att := t.Attempts + 1
 			delay := closeRetryMs(att)
 			msg := runErr.Error()
@@ -337,8 +395,14 @@ func (s *Service) ProcessRiskTasksOnce(ctx context.Context) error {
 		wg.Add(1)
 		go func(t store.RiskTask) {
 			defer wg.Done()
+			if ctx.Err() != nil {
+				return
+			}
 			sem <- struct{}{}
 			defer func() { <-sem }()
+			if ctx.Err() != nil {
+				return
+			}
 
 			_ = s.st.SetRiskTaskRunning(ctx, t.ID)
 			s.log.WithFields(logx.Pairs("task_id", t.ID, "type", t.Type, "attempts", t.Attempts)).Info("风控：执行 close_all 任务")
@@ -365,7 +429,16 @@ func (s *Service) ProcessRiskTasksOnce(ctx context.Context) error {
 		}(t)
 	}
 
-	wg.Wait()
+	waitDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	s.log.WithFields(logx.Pairs("completed", completed, "failed", failed)).Info("风控：批量任务处理结束")
 	return nil
 }
@@ -383,6 +456,9 @@ func (s *Service) runClosePosition(ctx context.Context, cl *polywiring.AuthedCLO
 		s.log.WithFields(logx.Pairs("task_id", taskID, "position_id", positionID, "reason", "missing_or_closed")).Info("风控：跳过平仓（已关闭或无持仓）")
 		return s.st.SetRiskTaskSucceeded(ctx, taskID)
 	}
+	if reason := s.evaluateCloseTaskAbort(ctx, pos, nil); reason != "" {
+		return s.abortCloseTask(ctx, taskID, positionID, pos, reason, nil)
+	}
 	if err := s.st.SetRiskPositionStatus(ctx, positionID, "closing"); err != nil {
 		s.log.WithFields(logx.Pairs("position_id", positionID, "err", err.Error())).Warn("风控：更新持仓状态为 closing 失败")
 		return err
@@ -396,6 +472,9 @@ func (s *Service) runClosePosition(ctx context.Context, cl *polywiring.AuthedCLO
 			s.rt.Publish("position", "warn", "position.close_failed", pos.AccountID, "", pos.TokenID, taskID, map[string]any{
 				"taskId": taskID, "err": err.Error(), "reason": queueReason,
 			})
+		}
+		if reason := s.evaluateCloseTaskAbort(ctx, pos, err); reason != "" {
+			return s.abortCloseTask(ctx, taskID, positionID, pos, reason, err)
 		}
 		return err
 	}
@@ -503,11 +582,11 @@ func (s *Service) RiskEvaluateTokenAfterBookUpdate(ctx context.Context, tokenID 
 		} else if hid {
 			continue
 		}
-		bid, ok := s.BestBidCents(ctx, tokenID)
+		bid, ask, ok := s.BestBidAskCents(ctx, tokenID)
 		if !ok {
 			continue
 		}
-		_, _, _, err := s.UpdateHighWaterAndMaybeQueueStop(ctx, p, bid)
+		_, _, _, err := s.UpdateHighWaterAndMaybeQueueStop(ctx, p, bid, ask)
 		if err != nil {
 			s.log.WithFields(logx.Pairs("err", err)).Warn("风控：评估止损失败")
 		}

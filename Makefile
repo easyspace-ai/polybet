@@ -22,6 +22,10 @@
 #   3) Electron starts polybet if that binary exists, waits for /api/health,
 #      then loads http://HOST:PORT/ (dashboard from the Go process). Otherwise it keeps
 #      the legacy cloud `polybet` daemon behaviour.
+#
+# GitHub Actions desktop jobs: `pnpm install --frozen-lockfile`, then
+# `make dashboard-embed` (step 1 above), then `node apps/desktop/scripts/package.mjs`
+# (bundle-cli + electron-vite + electron-builder; steps 2–3 above).
 
 SERVER := $(CURDIR)/server
 

@@ -79,34 +79,48 @@ func withPolymarketOutcomeQuery(eventURL, outcomeLabel string) string {
 	return u.String()
 }
 
-// polymarketLinks builds human-facing Polymarket URLs from local DB sync + live Gamma /markets.
-func polymarketLinks(dm store.RiskDisplayMeta, gm gammaclient.TokenMarketDisplay, title, outcomeLabel string) (eventURL, searchURL string) {
-	slug := strings.Trim(firstNonEmpty(dm.PolySlug, gm.EventSlug, gm.Slug), "/")
-	if slug != "" {
-		slug = strings.TrimPrefix(slug, "event/")
-		eventURL = "https://polymarket.com/event/" + slug
+func normalizePolySlug(slug string) string {
+	slug = strings.Trim(strings.TrimPrefix(strings.TrimSpace(slug), "event/"), "/")
+	return slug
+}
+
+func polymarketEventURL(slug string) string {
+	slug = normalizePolySlug(slug)
+	if slug == "" {
+		return ""
 	}
+	return "https://polymarket.com/event/" + slug
+}
+
+// polymarketLinks builds direct Polymarket event/market URLs (never search) from DB sync, Data API slugs, and Gamma.
+func polymarketLinks(dm store.RiskDisplayMeta, gm gammaclient.TokenMarketDisplay, title, outcomeLabel, posEventSlug, posMarketSlug string) (eventURL, searchURL string) {
+	_ = title
+	eventSlug := normalizePolySlug(firstNonEmpty(
+		dm.PolySlug,
+		posEventSlug,
+		gm.EventSlug,
+		posMarketSlug,
+	))
+	if eventSlug == "" {
+		eventSlug = normalizePolySlug(gm.Slug)
+	}
+	eventURL = polymarketEventURL(eventSlug)
 	if eventURL == "" {
 		cond := strings.TrimSpace(gm.ConditionID)
 		if strings.HasPrefix(strings.ToLower(cond), "0x") {
-			// TODO(polymarket): reliable per-outcome URL for conditionId-only markets not confirmed.
-			return "https://polymarket.com/market/" + cond, ""
+			eventURL = "https://polymarket.com/market/" + cond
 		}
 	}
 	if eventURL == "" {
 		if id := strings.Trim(strings.TrimSpace(dm.PolyEventID), "/"); id != "" {
-			eventURL = "https://polymarket.com/event/" + id
+			eventURL = polymarketEventURL(id)
 		}
 	}
 	eventURL = withPolymarketOutcomeQuery(eventURL, outcomeLabel)
 	if eventURL != "" {
 		return eventURL, ""
 	}
-	t := strings.TrimSpace(title)
-	if t != "" {
-		return "", "https://polymarket.com/search?q=" + url.QueryEscape(t)
-	}
-	return "", "https://polymarket.com/"
+	return "", ""
 }
 
 func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, accountID string) ([]map[string]any, Meta, error) {
@@ -152,12 +166,12 @@ func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 		}
 		seen[key] = p.ID
 
-		bid, ok := s.BestBidCents(ctx, tid)
+		bid, ask, ok := s.BestBidAskCents(ctx, tid)
 		var hw, trail float64
 		var curPtr *float64
 		var err error
 		if ok {
-			hw, trail, curPtr, err = s.UpdateHighWaterAndMaybeQueueStop(ctx, p, bid)
+			hw, trail, curPtr, err = s.UpdateHighWaterAndMaybeQueueStop(ctx, p, bid, ask)
 			if err != nil {
 				s.log.WithFields(logx.Pairs("err", err)).Warn("风控：更新高点/止损队列失败")
 			}
@@ -187,8 +201,8 @@ func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 		if sport != "" {
 			sport = strings.ToLower(sport)
 		}
-		eventURL, searchURL := polymarketLinks(dm, gm, displayTitle, p.SideLabel)
-		polySlug := strings.Trim(strings.TrimPrefix(strings.TrimSpace(firstNonEmpty(dm.PolySlug, gm.EventSlug, gm.Slug)), "event/"), "/")
+		eventURL, searchURL := polymarketLinks(dm, gm, displayTitle, p.SideLabel, p.PolyEventSlug, p.PolyMarketSlug)
+		polySlug := normalizePolySlug(firstNonEmpty(dm.PolySlug, p.PolyEventSlug, gm.EventSlug, p.PolyMarketSlug, gm.Slug))
 		image := strings.TrimSpace(gm.Image)
 		icon := strings.TrimSpace(gm.Icon)
 		if icon == "" {
@@ -251,6 +265,9 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 
 	// Upsert or update existing positions
 	for tokenID, pos := range officialByToken {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		size, _ := pos.Size.Float64()
 		if size <= 0 {
 			continue
@@ -278,6 +295,8 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 				TokenID:        tokenID,
 				Title:          strings.TrimSpace(pos.Title),
 				SideLabel:      strings.TrimSpace(pos.Outcome),
+				PolyEventSlug:  strings.TrimSpace(pos.EventSlug),
+				PolyMarketSlug: strings.TrimSpace(pos.Slug),
 				AvgEntryCents:  entryCents,
 				SizeShares:     size,
 				CostUSD:        costUsd,
@@ -301,6 +320,7 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 			if existing.Title != pos.Title {
 				_ = s.st.UpdateRiskPositionTitle(ctx, existing.ID, strings.TrimSpace(pos.Title), strings.TrimSpace(pos.Outcome))
 			}
+			_ = s.st.UpdateRiskPositionPolySlugs(ctx, existing.ID, pos.EventSlug, pos.Slug)
 		}
 	}
 
@@ -311,6 +331,9 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 		return err
 	}
 	for _, p := range openRows {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		tok := store.NormalizeRiskCLOBTokenID(p.TokenID)
 		if _, ok := officialByToken[tok]; !ok {
 			_ = s.st.CloseRiskPosition(ctx, p.ID)
@@ -345,19 +368,42 @@ func (s *Service) ListOfficialTrades(ctx context.Context, limit int) ([]map[stri
 	for _, t := range trades {
 		size, _ := t.Size.Float64()
 		price, _ := t.Price.Float64()
+		eventURL, _ := polymarketLinks(
+			store.RiskDisplayMeta{},
+			gammaclient.TokenMarketDisplay{},
+			t.Title,
+			t.Outcome,
+			t.EventSlug,
+			t.Slug,
+		)
+		polySlug := normalizePolySlug(firstNonEmpty(t.EventSlug, t.Slug))
 		out = append(out, map[string]any{
-			"id":         t.TransactionHash.Hex(),
-			"side":       strings.ToLower(string(t.Side)),
-			"title":      t.Title,
-			"outcome":    t.Outcome,
-			"size":       size,
-			"price":      price,
-			"priceCents": price * 100,
-			"timestamp":  time.Unix(t.Timestamp, 0).UTC().Format(time.RFC3339),
-			"icon":       t.Icon,
+			"id":           t.TransactionHash.Hex(),
+			"side":         strings.ToLower(string(t.Side)),
+			"title":        t.Title,
+			"outcome":      t.Outcome,
+			"size":         size,
+			"price":        price,
+			"priceCents":   price * 100,
+			"timestamp":    time.Unix(t.Timestamp, 0).UTC().Format(time.RFC3339),
+			"icon":         t.Icon,
+			"polySlug":     polySlug,
+			"officialUrl":  eventURL,
 		})
 	}
 	return out, nil
+}
+
+// OfficialURLForRiskPosition resolves a direct Polymarket link for a stored risk row.
+func (s *Service) OfficialURLForRiskPosition(ctx context.Context, p *store.RiskPosition) string {
+	if p == nil || strings.TrimSpace(p.TokenID) == "" {
+		return ""
+	}
+	disp, _ := s.st.RiskDisplayMetaForPositions(ctx, []store.RiskPosition{*p})
+	dm := disp[p.TokenID]
+	gm := s.gammaMetaBatch(ctx, []string{p.TokenID})[p.TokenID]
+	url, _ := polymarketLinks(dm, gm, p.Title, p.SideLabel, p.PolyEventSlug, p.PolyMarketSlug)
+	return url
 }
 
 // ParseUserWsTradePayload mirrors Node parseUserWsTradePayload (minimal).

@@ -29,14 +29,17 @@ import {
   Download,
   CheckCircle,
   ChevronsUpDown,
+  Radio,
 } from "lucide-react";
+import { applyWSConfigPatch } from "@/hooks/useWSConfig";
 
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
 
-type SettingsTab = "general" | "proxy" | "telegram" | "tags" | "prices" | "sound" | "about";
+type SettingsTab = "general" | "connection" | "proxy" | "telegram" | "tags" | "prices" | "sound" | "about";
 
 const TABS: { id: SettingsTab; icon: typeof Monitor; title: string; desc: string }[] = [
   { id: "general", icon: Monitor, title: "通用", desc: "主题、机器人参数" },
+  { id: "connection", icon: Radio, title: "连接与 WS", desc: "心跳、重连与兜底间隔" },
   { id: "proxy", icon: Globe, title: "代理", desc: "HTTP 代理配置" },
   { id: "telegram", icon: Send, title: "电报", desc: "Bot 与消息推送" },
   { id: "tags", icon: Tag, title: "分类", desc: "赛事标签管理" },
@@ -54,6 +57,71 @@ const KEY_DESCRIPTIONS: Record<string, string> = {
   polymarketFokSellExtraTicks: "Polymarket FOK 卖出：在最优买价之下额外放宽的 tick 档数。",
   minOpenRiskShares: "风控列表与 CLOB 余额对账：仅保留份额 ≥ 本值的持仓。",
 };
+
+const WS_KEY_DESCRIPTIONS: Record<string, string> = {
+  wsClobPingIntervalSec: "Polymarket CLOB：text PING 间隔（秒）。",
+  wsClobPongTimeoutSec: "无 PONG 时判定僵死并强制重连（秒）。",
+  wsClobBackoffBaseSec: "CLOB 重连指数退避起点（秒）。",
+  wsClobBackoffMaxSec: "CLOB 重连退避上限（秒）。",
+  wsClobBackoffJitterPct: "CLOB 重连抖动比例（0–100）。",
+  wsClobReconnectStableSec: "稳定连接后重置重试计数（秒）。",
+  wsClobMaxReconnectAttempts: "最大重试次数，0=无限。",
+  wsClobSleepThresholdSec: "休眠唤醒检测阈值（秒）。",
+  wsHealthCheckIntervalSec: "服务端 WS 健康巡检周期（秒）。",
+  wsBookStaleThresholdSec: "盘口缓存过期后 REST 兜底（秒）。",
+  wsPositionsReconcileOpenSec: "有开仓时 Data API 对账间隔（秒）。",
+  wsPositionsReconcileIdleSec: "无开仓时对账间隔（秒）。",
+  wsRestTradesIntervalSec: "REST trades 同步间隔（秒）。",
+  wsStoplossReconcileSec: "止损引擎订阅 reconcile（秒）。",
+  wsDashPingIntervalSec: "Dashboard↔服务端 ping 间隔（秒）。",
+  wsDashPongTimeoutSec: "无 pong 判 STALE（秒）。",
+  wsDashBackoffBaseSec: "前端 WS 退避起点（秒）。",
+  wsDashBackoffMaxSec: "前端 WS 退避上限（秒）。",
+  wsDashBackoffJitterPct: "前端重连抖动（0–100）。",
+  wsDashSleepThresholdSec: "Tab 休眠检测 rAF 阈值（秒）。",
+  wsRiskPollIntervalSec: "风控页 REST 状态/仓位兜底轮询（秒）。",
+  wsAutoReconnectOnDisconnect: "前端 WS 断开时自动重连（true/false）。",
+  wsAutoRequestUpstreamReconnect: "检测到上游断开时自动 POST 重连（true/false）。",
+};
+
+const WS_KEY_GROUPS: { title: string; keys: string[] }[] = [
+  {
+    title: "Polymarket CLOB",
+    keys: [
+      "wsClobPingIntervalSec",
+      "wsClobPongTimeoutSec",
+      "wsClobBackoffBaseSec",
+      "wsClobBackoffMaxSec",
+      "wsClobBackoffJitterPct",
+      "wsClobReconnectStableSec",
+      "wsClobMaxReconnectAttempts",
+      "wsClobSleepThresholdSec",
+    ],
+  },
+  {
+    title: "服务端巡检",
+    keys: [
+      "wsHealthCheckIntervalSec",
+      "wsBookStaleThresholdSec",
+      "wsPositionsReconcileOpenSec",
+      "wsPositionsReconcileIdleSec",
+      "wsRestTradesIntervalSec",
+      "wsStoplossReconcileSec",
+    ],
+  },
+  {
+    title: "Dashboard 客户端",
+    keys: [
+      "wsDashPingIntervalSec",
+      "wsDashPongTimeoutSec",
+      "wsDashBackoffBaseSec",
+      "wsDashBackoffMaxSec",
+      "wsDashBackoffJitterPct",
+      "wsDashSleepThresholdSec",
+    ],
+  },
+  { title: "风控页兜底", keys: ["wsRiskPollIntervalSec", "wsAutoReconnectOnDisconnect", "wsAutoRequestUpstreamReconnect"] },
+];
 
 function SettingsPage() {
   const [active, setActive] = useState<SettingsTab>("general");
@@ -98,6 +166,7 @@ function SettingsPage() {
           ) : (
             <>
               {active === "general" && <GeneralTab rows={rows} onSave={save} />}
+              {active === "connection" && <ConnectionTab rows={rows} onSave={save} />}
               {active === "proxy" && <ProxyTab rows={rows} onSave={save} />}
               {active === "telegram" && <TelegramTab rows={rows} onSave={save} />}
               {active === "tags" && <TagsTab rows={rows} onSave={save} />}
@@ -109,6 +178,77 @@ function SettingsPage() {
         </div>
       </div>
     </>
+  );
+}
+
+function ConnectionTab({
+  rows,
+  onSave,
+}: {
+  rows: { key: string; value: string }[];
+  onSave: (k: string, v: string) => Promise<void>;
+}) {
+  const [saving, setSaving] = useState<string | null>(null);
+  const [edited, setEdited] = useState<Record<string, string>>({});
+
+  async function handleSave(key: string) {
+    const value = edited[key] ?? rows.find((r) => r.key === key)?.value ?? "";
+    setSaving(key);
+    try {
+      await onSave(key, value);
+      applyWSConfigPatch(key, value);
+      setEdited((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      toast.success("已保存", {
+        description: key.startsWith("wsDash") ? "Dashboard WS 参数已立即应用" : "CLOB 参数将在下次重连时生效",
+      });
+    } catch (err) {
+      toast.error("保存失败", { description: err instanceof Error ? err.message : "未知错误" });
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {WS_KEY_GROUPS.map((group) => (
+        <section key={group.title} className="surface rounded-xl border border-border p-5">
+          <h3 className="text-[13px] font-semibold mb-4">{group.title}</h3>
+          <div className="space-y-2.5">
+            {group.keys.map((key) => {
+              const row = rows.find((r) => r.key === key);
+              const value = edited[key] ?? row?.value ?? "";
+              const isDirty = key in edited && edited[key] !== row?.value;
+              return (
+                <div key={key} className="rounded-lg border border-border p-4 flex items-start gap-4">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-mono text-[12px] font-medium">{key}</p>
+                    <p className="text-[11px] text-muted-foreground mt-1">{WS_KEY_DESCRIPTIONS[key]}</p>
+                  </div>
+                  <input
+                    type="text"
+                    value={value}
+                    onChange={(e) => setEdited((prev) => ({ ...prev, [key]: e.target.value }))}
+                    className="w-28 h-8 px-2 rounded-md border border-border bg-background font-mono text-[12px]"
+                  />
+                  <button
+                    type="button"
+                    disabled={!isDirty || saving === key}
+                    onClick={() => void handleSave(key)}
+                    className="h-8 px-3 rounded-md border border-border hover:bg-accent text-[11px] disabled:opacity-40"
+                  >
+                    {saving === key ? "…" : "保存"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ))}
+    </div>
   );
 }
 
@@ -125,6 +265,7 @@ function GeneralTab({
 
   const generalRows = rows.filter(
     (r) =>
+      !r.key.startsWith("ws") &&
       ![
         "httpPlatformProxyUrl",
         "telegramBotToken",

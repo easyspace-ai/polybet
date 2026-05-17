@@ -77,6 +77,7 @@ func NewRouter(d Deps) *gin.Engine {
 		// Status
 		api.GET("/status", h.handleStatus)
 		api.GET("/ws/status", h.handleWSStatus)
+		api.POST("/ws/reconnect", h.handleWSReconnect)
 
 		// Cache & restart
 		api.POST("/cache/refresh", h.handleCacheRefresh)

@@ -22,6 +22,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/riskruntime"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
 	"github.com/easyspace-ai/polybet/internal/store"
+	"github.com/easyspace-ai/polybet/internal/wsconfig"
 	"github.com/easyspace-ai/polybet/internal/wsrelay"
 )
 
@@ -42,6 +43,8 @@ type Engine struct {
 
 	// Called after risk evaluation (typically app.rebuildAndBroadcastCache).
 	onAfterRiskEval func()
+	// Called when poly_status should be rebroadcast (reconnect schedule, OB state).
+	broadcastPolyStatus func()
 
 	mu            sync.Mutex
 	market        *marketstream.MarketStream
@@ -52,15 +55,46 @@ type Engine struct {
 }
 
 // New constructs an engine. onAfterRiskEval may be nil.
-func New(cfg *config.Config, st *store.Store, cache *bookcache.Cache, risk *risksvc.Service, deb *debounce.Debouncer, hub, riskHub *wsrelay.Hub, rt *riskruntime.Bus, log *logrus.Logger, onAfterRiskEval func()) *Engine {
+func New(cfg *config.Config, st *store.Store, cache *bookcache.Cache, risk *risksvc.Service, deb *debounce.Debouncer, hub, riskHub *wsrelay.Hub, rt *riskruntime.Bus, log *logrus.Logger, onAfterRiskEval func(), broadcastPolyStatus func()) *Engine {
 	if log == nil {
 		log = logrus.StandardLogger()
 	}
 	return &Engine{
 		cfg: cfg, st: st, cache: cache, risk: risk, debounce: deb,
 		hub: hub, riskHub: riskHub, runtime: rt, log: log, onAfterRiskEval: onAfterRiskEval,
-		subscribed: make(map[string]struct{}),
-		bump:       make(chan struct{}, 1),
+		broadcastPolyStatus: broadcastPolyStatus,
+		subscribed:          make(map[string]struct{}),
+		bump:                make(chan struct{}, 1),
+	}
+}
+
+// Shutdown stops the market upstream WebSocket (idempotent). Run also stops on exit.
+func (e *Engine) Shutdown() {
+	e.mu.Lock()
+	ms := e.market
+	e.mu.Unlock()
+	if ms != nil {
+		ms.Stop()
+	}
+}
+
+// ClearSubscriptions removes all market WS asset subscriptions (best-effort).
+func (e *Engine) ClearSubscriptions() {
+	e.mu.Lock()
+	ms := e.market
+	e.mu.Unlock()
+	if ms != nil {
+		e.clearSubscriptions(ms)
+	}
+}
+
+// ForceMarketReconnect closes the market upstream WS and reconnects.
+func (e *Engine) ForceMarketReconnect() {
+	e.mu.Lock()
+	ms := e.market
+	e.mu.Unlock()
+	if ms != nil {
+		ms.ForceReconnect()
 	}
 }
 
@@ -80,6 +114,17 @@ func (e *Engine) Run(ctx context.Context) {
 	}
 	marketURL, _ := marketstream.ResolveCLOBWSEndpoints(e.cfg.PolymarketCLOBWS)
 	msCfg.MarketWSURL = marketURL
+	ws := wsconfig.Load(ctx, e.st)
+	msCfg = ws.ToMarketstreamConfig(msCfg)
+	msCfg.OnReconnectScheduled = func(attempt int, nextRetryAt time.Time) {
+		if e.risk.WSMeta != nil {
+			e.risk.WSMeta.SetReconnectSchedule("orderbook", attempt, nextRetryAt)
+			e.risk.WSMeta.Record("orderbook", "info", "reconnect scheduled")
+		}
+		if e.broadcastPolyStatus != nil {
+			e.broadcastPolyStatus()
+		}
+	}
 
 	e.mu.Lock()
 	e.market = marketstream.NewMarketStreamWithConfig(msCfg)
@@ -105,7 +150,8 @@ func (e *Engine) Run(ctx context.Context) {
 		}
 	}()
 
-	ticker := time.NewTicker(2 * time.Second)
+	reconcileSec := wsconfig.Load(ctx, e.st).StoplossReconcileSec
+	ticker := time.NewTicker(time.Duration(reconcileSec) * time.Second)
 	defer ticker.Stop()
 
 	e.reconcile(ctx, ms)
@@ -113,13 +159,34 @@ func (e *Engine) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			e.clearSubscriptions(ms)
 			return
 		case <-e.bump:
-			e.reconcile(ctx, ms)
+			e.reconcileBounded(ctx, ms)
 		case <-ticker.C:
-			e.reconcile(ctx, ms)
+			if ctx.Err() != nil {
+				return
+			}
+			ws = wsconfig.Load(ctx, e.st)
+			reconcileSec = ws.StoplossReconcileSec
+			ticker.Reset(time.Duration(reconcileSec) * time.Second)
+			e.reconcileBounded(ctx, ms)
 		}
+	}
+}
+
+// reconcileBounded runs reconcile but returns promptly when ctx is cancelled.
+func (e *Engine) reconcileBounded(ctx context.Context, ms *marketstream.MarketStream) {
+	if ctx.Err() != nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.reconcile(ctx, ms)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 
@@ -145,6 +212,9 @@ func (e *Engine) clearSubscriptions(ms *marketstream.MarketStream) {
 }
 
 func (e *Engine) reconcile(ctx context.Context, ms *marketstream.MarketStream) {
+	if ctx.Err() != nil {
+		return
+	}
 	acct, err := e.st.GetActivePolymarketAccount(ctx)
 	if err != nil || acct == nil {
 		e.clearSubscriptions(ms)
@@ -166,6 +236,9 @@ func (e *Engine) reconcile(ctx context.Context, ms *marketstream.MarketStream) {
 			e.runtime.Publish("transport", "info", "risk.account_switched", acct.ID, "", "", "", map[string]any{"from": prevAcct, "to": acct.ID})
 		}
 		e.clearSubscriptions(ms)
+		if ctx.Err() != nil {
+			return
+		}
 		if err := e.risk.SyncPositionsFromDataAPI(ctx, acct.ID); err != nil {
 			e.log.WithFields(logx.Pairs("err", err.Error())).Warn("止损引擎：切换账户后同步持仓失败")
 		}
@@ -218,6 +291,9 @@ func (e *Engine) reconcile(ctx context.Context, ms *marketstream.MarketStream) {
 
 	if len(toRemove) > 0 {
 		for _, chunk := range chunkStrings(toRemove, maxClobSubscribeBatch) {
+			if ctx.Err() != nil {
+				return
+			}
 			if err := ms.Unsubscribe(chunk...); err != nil {
 				e.log.WithFields(logx.Pairs("err", err.Error())).Warn("止损引擎：取消订阅失败")
 			}
@@ -237,6 +313,9 @@ func (e *Engine) reconcile(ctx context.Context, ms *marketstream.MarketStream) {
 	if len(toAdd) > 0 {
 		e.risk.SetOrderbookWSState(true, false)
 		for _, chunk := range chunkStrings(toAdd, maxClobSubscribeBatch) {
+			if ctx.Err() != nil {
+				return
+			}
 			if err := ms.Subscribe(chunk...); err != nil {
 				e.log.WithFields(logx.Pairs("err", err.Error())).Warn("止损引擎：订阅失败")
 			}
@@ -279,6 +358,16 @@ func (e *Engine) snapshotSubscribed() map[string]struct{} {
 }
 
 func (e *Engine) broadcastOrderbookStatus(connected bool) {
+	if connected && e.risk.WSMeta != nil {
+		e.risk.WSMeta.ClearReconnectSchedule("orderbook")
+		e.risk.WSMeta.Record("orderbook", "info", "connected")
+	} else if !connected && e.risk.WSMeta != nil {
+		e.risk.WSMeta.Record("orderbook", "warn", "disconnected")
+	}
+	if e.broadcastPolyStatus != nil {
+		e.broadcastPolyStatus()
+		return
+	}
 	if e.hub != nil {
 		e.hub.BroadcastJSON(map[string]any{"type": "poly_status", "polyOrderbookConnected": connected})
 	}

@@ -57,6 +57,8 @@ type Handler struct {
 		InvalidateAndRebuildCache()
 		SyncAndBroadcastMarkets(ctx context.Context, force bool) error
 		RequestRestart()
+		ForceWSReconnect(channel string)
+		OpenRiskPositionCount(ctx context.Context) int
 	}
 }
 
@@ -319,14 +321,22 @@ func (h *Handler) handleWSStatus(c *gin.Context) {
 	if h.hub != nil {
 		hubSize = h.hub.ClientCount()
 	}
-	c.JSON(200, gin.H{
-		"dashConnected":           hubSize > 0,
-		"dashClients":             hubSize,
-		"polyOrderbookConnected":  h.risk.OrderbookWSConnected(),
-		"polyOrderbookConnecting": h.risk.OrderbookWSConnecting(),
-		"polyUserConnected":       h.risk.UserWSConnected(),
-		"polyUserConnecting":      h.risk.UserWSConnecting(),
-	})
+	openN := 0
+	if h.app != nil {
+		openN = h.app.OpenRiskPositionCount(c.Request.Context())
+	}
+	c.JSON(200, buildWSStatusJSON(h.risk, h.cache, hubSize, openN))
+}
+
+func (h *Handler) handleWSReconnect(c *gin.Context) {
+	var body struct {
+		Channel string `json:"channel"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	if h.app != nil {
+		h.app.ForceWSReconnect(body.Channel)
+	}
+	c.JSON(200, gin.H{"ok": true})
 }
 
 func (h *Handler) handleSetupStatus(c *gin.Context) {
@@ -886,6 +896,20 @@ func (h *Handler) handleStopLossHistory(c *gin.Context) {
 		return
 	}
 	out := buildTaskRows(tasks)
+	for i := range out {
+		pid, _ := out[i]["positionId"].(string)
+		if pid == "" {
+			continue
+		}
+		pos, err := h.st.GetRiskPosition(c, pid)
+		if err != nil || pos == nil {
+			continue
+		}
+		out[i]["title"] = pos.Title
+		if u := h.risk.OfficialURLForRiskPosition(c, pos); u != "" {
+			out[i]["officialUrl"] = u
+		}
+	}
 	c.JSON(200, gin.H{"tasks": out})
 }
 
@@ -962,9 +986,13 @@ func (h *Handler) handlePatchRiskPosition(c *gin.Context) {
 func (h *Handler) riskRowFromPosition(ctx context.Context, p *store.RiskPosition) gin.H {
 	row := riskRowFromPosition(p)
 
-	if bid, ok := h.risk.BestBidCents(ctx, p.TokenID); ok {
-		row["currentCents"] = bid
-		v := bid / 100 * p.SizeShares
+	if bid, ask, ok := h.risk.BestBidAskCents(ctx, p.TokenID); ok {
+		cur := bid
+		if cur <= 0 && ask > 0 {
+			cur = ask
+		}
+		row["currentCents"] = cur
+		v := cur / 100 * p.SizeShares
 		row["valueUsd"] = v
 		pnl := v - p.CostUSD
 		row["pnlUsd"] = pnl

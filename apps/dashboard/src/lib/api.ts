@@ -182,6 +182,32 @@ export const getTrades = (page = 1, limit = 20) =>
 
 export const getConfig = () => apiFetch<ConfigRow[]>('/api/config');
 
+export interface WSStatusResponse {
+  dashConnected?: boolean;
+  dashClients?: number;
+  polyOrderbookConnected?: boolean;
+  polyOrderbookConnecting?: boolean;
+  polyUserConnected?: boolean;
+  polyUserConnecting?: boolean;
+  openPositionsCount?: number;
+  orderbookNextRetryAt?: number;
+  orderbookReconnectAttempt?: number;
+  userNextRetryAt?: number;
+  userReconnectAttempt?: number;
+  userWsLastIssue?: string;
+  lastBookUpdateMs?: number;
+  wsEvents?: { channel?: string; at?: string; level?: string; message?: string }[];
+}
+
+export const getWSStatus = () => apiFetch<WSStatusResponse>('/api/ws/status');
+
+export const postWSReconnect = (channel: 'orderbook' | 'user' | 'all' = 'all') =>
+  apiFetch<{ ok: boolean }>('/api/ws/reconnect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel }),
+  });
+
 export const getBalances = () => apiFetch<BalanceSummary>('/api/balances');
 
 export const listPolymarketAccounts = () => apiFetch<PolymarketAccountListItem[]>('/api/polymarket/accounts');
@@ -319,6 +345,8 @@ export interface StopLossHistoryTask {
   createdAt: string;
   nextRunAt: string;
   updatedAt: string;
+  title?: string;
+  officialUrl?: string;
 }
 
 export interface OfficialTrade {
@@ -331,6 +359,8 @@ export interface OfficialTrade {
   priceCents: number;
   timestamp: string;
   icon: string;
+  polySlug?: string;
+  officialUrl?: string;
 }
 
 export const getStopLossHistory = (limit = 50) =>

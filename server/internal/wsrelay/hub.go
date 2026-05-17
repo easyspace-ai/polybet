@@ -44,6 +44,20 @@ func (h *Hub) Register(c *websocket.Conn) {
 	logrus.WithFields(logx.Pairs("channel", "hub", "remote_addr", ra, "client_count", n)).Info("WebSocket Hub：客户端已注册")
 }
 
+// CloseAll force-closes every registered client (used during process shutdown so
+// HTTP handlers blocked in ReadMessage return promptly).
+func (h *Hub) CloseAll() {
+	h.mu.Lock()
+	clients := make([]*websocket.Conn, 0, len(h.clients))
+	for c := range h.clients {
+		clients = append(clients, c)
+	}
+	h.mu.Unlock()
+	for _, c := range clients {
+		_ = c.Close()
+	}
+}
+
 func (h *Hub) Unregister(c *websocket.Conn) {
 	h.mu.Lock()
 	delete(h.clients, c)
