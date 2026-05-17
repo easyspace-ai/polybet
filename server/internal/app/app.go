@@ -32,6 +32,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/store"
 	marketsync "github.com/easyspace-ai/polybet/internal/sync"
 	"github.com/easyspace-ai/polybet/internal/tg"
+	"github.com/easyspace-ai/polybet/internal/workqueue"
 	"github.com/easyspace-ai/polybet/internal/wsconfig"
 	"github.com/easyspace-ai/polybet/internal/wsrelay"
 )
@@ -65,6 +66,7 @@ type App struct {
 	StopLoss     *stoplossengine.Engine
 	userStreamMu sync.Mutex
 	activeUserWS *marketstream.UserStream
+	jobs         *workqueue.Runner
 	httpSrv      *http.Server
 	publicSrv    *http.Server
 	wg           sync.WaitGroup
@@ -87,10 +89,10 @@ func New(cfg *config.Config, db *sql.DB, log *logrus.Logger) *App {
 	cache := bookcache.New(topN)
 	hub := wsrelay.NewHub()
 	riskHub := wsrelay.NewHub()
-	var httpDoer *http.Client
+	httpDoer := &http.Client{Timeout: 30 * time.Second}
 	if cfg.HTTPPlatformProxy != "" {
 		if proxyURL, err := url.Parse(cfg.HTTPPlatformProxy); err == nil {
-			httpDoer = &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+			httpDoer.Transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
 		}
 	}
 	dataClient := data.NewClient(transport.NewClient(httpDoer, data.BaseURL))
@@ -119,6 +121,7 @@ func New(cfg *config.Config, db *sql.DB, log *logrus.Logger) *App {
 		BalanceCache: balanceCache, RiskCache: riskCache, InitService: initSvc,
 		LogService: logSvc,
 		restartCh:  make(chan struct{}, 1),
+		jobs:       workqueue.New(),
 	}
 	a.StopLoss = stoplossengine.New(cfg, st, cache, risk, a.Debounce, hub, riskHub, riskRuntime, log,
 		func() { a.rebuildAndBroadcastCache() },
@@ -308,6 +311,7 @@ func (a *App) riskTicker(ctx context.Context) {
 			if time.Since(lastKill) >= killSwitchEvery {
 				lastKill = time.Now()
 				_ = callCtx(ctx, func() error {
+					_ = a.Store.NormalizeDustRisk(ctx, 1e-9)
 					_, err := a.Risk.EvaluateKillSwitch(ctx)
 					return err
 				})

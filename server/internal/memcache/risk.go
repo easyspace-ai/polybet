@@ -6,11 +6,15 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/easyspace-ai/polybet/internal/logx"
 )
 
-const riskCacheTTL = 1 * time.Hour
+const (
+	riskCacheTTL          = 1 * time.Hour
+	riskBackgroundRefresh = 90 * time.Second
+)
 
 // RiskMeta is dashboard-facing metadata bundled with cached positions.
 type RiskMeta struct {
@@ -29,6 +33,10 @@ type RiskFetchResult struct {
 	Meta      RiskMeta
 }
 
+// RiskFetchFunc loads a fresh snapshot. Callers pass request ctx for synchronous
+// fetches; background refresh supplies its own long-lived ctx.
+type RiskFetchFunc func(ctx context.Context) (RiskFetchResult, error)
+
 type riskCacheData struct {
 	Positions []map[string]any `json:"positions"`
 	Meta      RiskMeta         `json:"meta"`
@@ -37,7 +45,7 @@ type riskCacheData struct {
 
 // RiskCache holds a single snapshot of enriched risk positions in memory.
 // Single-writer: RefreshAsync serializes background writes with refreshMu;
-// readers use dataMu RWMutex.
+// readers use dataMu RWMutex. Cache misses use singleflight to avoid herds.
 type RiskCache struct {
 	log *logrus.Logger
 
@@ -45,6 +53,7 @@ type RiskCache struct {
 	data   *riskCacheData
 
 	refreshMu sync.Mutex
+	sf        singleflight.Group
 }
 
 func NewRiskCache(log *logrus.Logger) *RiskCache {
@@ -90,38 +99,55 @@ func (r *RiskCache) Set(ctx context.Context, result RiskFetchResult) error {
 	return nil
 }
 
-func (r *RiskCache) RefreshAsync(ctx context.Context, fetch func() (RiskFetchResult, error)) {
-	if r == nil {
+func (r *RiskCache) RefreshAsync(fetch RiskFetchFunc) {
+	if r == nil || fetch == nil {
 		return
 	}
 	r.refreshMu.Lock()
 	defer r.refreshMu.Unlock()
 
 	go func() {
-		result, err := fetch()
+		_, err, _ := r.sf.Do("refresh", func() (any, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), riskBackgroundRefresh)
+			defer cancel()
+			result, err := fetch(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if err := r.Set(context.Background(), result); err != nil {
+				return nil, err
+			}
+			r.log.WithFields(logx.Pairs("count", len(result.Positions))).Info("风控缓存：已刷新")
+			return result, nil
+		})
 		if err != nil {
 			r.log.WithFields(logx.Pairs("err", err)).Warn("风控缓存：后台刷新失败")
-			return
 		}
-		if err := r.Set(context.Background(), result); err != nil {
-			r.log.WithFields(logx.Pairs("err", err)).Warn("风控缓存：写入失败")
-		}
-		r.log.WithFields(logx.Pairs("count", len(result.Positions))).Info("风控缓存：已刷新")
 	}()
 }
 
-func (r *RiskCache) GetWithRefresh(ctx context.Context, fetch func() (RiskFetchResult, error)) ([]map[string]any, RiskMeta, bool, error) {
+func (r *RiskCache) GetWithRefresh(ctx context.Context, fetch RiskFetchFunc) ([]map[string]any, RiskMeta, bool, error) {
 	positions, meta, found, err := r.Get(ctx)
 	if found && err == nil {
-		r.RefreshAsync(ctx, fetch)
+		r.RefreshAsync(fetch)
 		return positions, meta, true, nil
 	}
 
-	result, err := fetch()
+	v, err, _ := r.sf.Do("fetch", func() (any, error) {
+		if positions, meta, found, err := r.Get(ctx); found && err == nil {
+			return RiskFetchResult{Positions: positions, Meta: meta}, nil
+		}
+		result, err := fetch(ctx)
+		if err != nil {
+			return nil, err
+		}
+		_ = r.Set(ctx, result)
+		return result, nil
+	})
 	if err != nil {
 		return nil, RiskMeta{}, false, err
 	}
-	_ = r.Set(ctx, result)
-	r.RefreshAsync(ctx, fetch)
+	result := v.(RiskFetchResult)
+	r.RefreshAsync(fetch)
 	return result.Positions, result.Meta, false, nil
 }

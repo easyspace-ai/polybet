@@ -33,7 +33,10 @@ func Open(databaseURL string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	conn.SetMaxOpenConns(1)
+	// WAL allows concurrent readers; writers remain serialized but HTTP handlers
+	// no longer block each other on read-heavy paths.
+	conn.SetMaxOpenConns(4)
+	conn.SetMaxIdleConns(4)
 	if err := Migrate(context.Background(), conn); err != nil {
 		_ = conn.Close()
 		return nil, err

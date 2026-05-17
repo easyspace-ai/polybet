@@ -11,6 +11,7 @@ func NewRouter(d Deps) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(requestID())
+	r.Use(requestStartLog())
 	r.Use(accessLog())
 	r.Use(cors(d.Cfg.CORSOrigins))
 
