@@ -16,37 +16,39 @@ import (
 
 // FOKSellReport captures inputs and the limit price actually submitted to the CLOB (or the last computed step on error).
 type FOKSellReport struct {
-	AtRFC3339Nano        string  `json:"at"`
-	CLOBTokenID          string  `json:"clobTokenId,omitempty"`
-	TickSize             string  `json:"tickSize,omitempty"`
-	ExtraTicks           int     `json:"extraTicks"`
-	OrderType            string  `json:"orderType,omitempty"` // FOK | FAK
-	WorstPriceConfigured float64 `json:"worstPriceConfigured,omitempty"`
-	BestBid              float64 `json:"bestBid,omitempty"` // 0–1
-	BestAsk              float64 `json:"bestAsk,omitempty"` // 0–1
-	LimitPrice           float64 `json:"limitPrice,omitempty"`
-	LimitPriceDecimal    string  `json:"limitPriceDecimal,omitempty"`
-	SharesRequested      float64 `json:"positionSharesRequested"`
-	SharesSubmitted      float64 `json:"sharesSubmitted,omitempty"`
-	OnChainBalanceShares float64 `json:"onChainBalanceShares,omitempty"`
-	OrderID              string  `json:"orderId,omitempty"`
-	ErrorStep            string  `json:"errorStep,omitempty"` // token_id | orderbook | no_bid | balance | zero_balance | below_min_lot | build | create_order
+	AtRFC3339Nano        string               `json:"at"`
+	CLOBTokenID          string               `json:"clobTokenId,omitempty"`
+	TickSize             string               `json:"tickSize,omitempty"`
+	ExtraTicks           int                  `json:"extraTicks"`
+	OrderType            string               `json:"orderType,omitempty"` // FOK | FAK
+	WorstPriceConfigured float64              `json:"worstPriceConfigured,omitempty"`
+	BestBid              float64              `json:"bestBid,omitempty"` // 0–1
+	BestAsk              float64              `json:"bestAsk,omitempty"` // 0–1
+	LimitPrice           float64              `json:"limitPrice,omitempty"`
+	LimitPriceDecimal    string               `json:"limitPriceDecimal,omitempty"`
+	SharesRequested      float64              `json:"positionSharesRequested"`
+	SharesSubmitted      float64              `json:"sharesSubmitted,omitempty"`
+	OnChainBalanceShares float64              `json:"onChainBalanceShares,omitempty"`
+	OrderID              string               `json:"orderId,omitempty"`
+	ErrorStep            string               `json:"errorStep,omitempty"` // token_id | orderbook | no_bid | balance | zero_balance | below_min_lot | build | create_order
+	SubmitRefresh        *SubmitRefreshReport `json:"submitRefresh,omitempty"`
 }
 
 // FOKBuyReport captures FOK buy telemetry (hedge path and trades).
 type FOKBuyReport struct {
-	AtRFC3339Nano        string  `json:"at"`
-	CLOBTokenID          string  `json:"clobTokenId,omitempty"`
-	TickSize             string  `json:"tickSize,omitempty"`
-	ExtraTicks           int     `json:"extraTicks"`
-	BestBid              float64 `json:"bestBid,omitempty"`
-	BestAsk              float64 `json:"bestAsk,omitempty"`
-	LimitPrice           float64 `json:"limitPrice,omitempty"`
-	LimitPriceDecimal    string  `json:"limitPriceDecimal,omitempty"`
-	SizeUSDC             float64 `json:"sizeUSDC,omitempty"`
-	ExpectedOdds         float64 `json:"expectedOdds,omitempty"`
-	OrderID              string  `json:"orderId,omitempty"`
-	ErrorStep            string  `json:"errorStep,omitempty"` // token_id | orderbook | build | create_order
+	AtRFC3339Nano        string               `json:"at"`
+	CLOBTokenID          string               `json:"clobTokenId,omitempty"`
+	TickSize             string               `json:"tickSize,omitempty"`
+	ExtraTicks           int                  `json:"extraTicks"`
+	BestBid              float64              `json:"bestBid,omitempty"`
+	BestAsk              float64              `json:"bestAsk,omitempty"`
+	LimitPrice           float64              `json:"limitPrice,omitempty"`
+	LimitPriceDecimal    string               `json:"limitPriceDecimal,omitempty"`
+	SizeUSDC             float64              `json:"sizeUSDC,omitempty"`
+	ExpectedOdds         float64              `json:"expectedOdds,omitempty"`
+	OrderID              string               `json:"orderId,omitempty"`
+	ErrorStep            string               `json:"errorStep,omitempty"` // token_id | orderbook | build | create_order
+	SubmitRefresh        *SubmitRefreshReport `json:"submitRefresh,omitempty"`
 }
 
 func ConditionalBalanceShares(balanceStr string) float64 {
@@ -70,9 +72,18 @@ func ConditionalBalanceShares(balanceStr string) float64 {
 	return f
 }
 
-// ExecuteFOKSell mirrors bot executePolymarketSell.
-// rep is always non-nil and populated through the last successful step (even when err != nil).
+// ExecuteFOKSell mirrors bot executePolymarketSell with submit-time staleness disabled.
+// Use ExecuteFOKSellWithOpts when staleness protection is desired.
 func ExecuteFOKSell(ctx context.Context, client clob.Client, signer auth.Signer, tokenID string, sizeShares float64, sellExtraTicks int) (orderID string, rep *FOKSellReport, err error) {
+	return ExecuteFOKSellWithOpts(ctx, client, signer, tokenID, sizeShares, sellExtraTicks, 0)
+}
+
+// ExecuteFOKSellWithOpts mirrors bot executePolymarketSell. When submitMaxAgeMs > 0
+// and the elapsed time between the initial /book fetch and the build step
+// exceeds the threshold, the book is refreshed and the limit floor is
+// recomputed before signing. rep is always non-nil and populated through the
+// last successful step (even when err != nil).
+func ExecuteFOKSellWithOpts(ctx context.Context, client clob.Client, signer auth.Signer, tokenID string, sizeShares float64, sellExtraTicks, submitMaxAgeMs int) (orderID string, rep *FOKSellReport, err error) {
 	now := time.Now().UTC()
 	rep = &FOKSellReport{
 		AtRFC3339Nano:   now.Format(time.RFC3339Nano),
@@ -85,6 +96,7 @@ func ExecuteFOKSell(ctx context.Context, client clob.Client, signer auth.Signer,
 		return "", rep, err
 	}
 	rep.CLOBTokenID = tokenID
+	bookFetchedAt := time.Now()
 	book, err := client.OrderBook(ctx, &clobtypes.BookRequest{TokenID: tokenID})
 	if err != nil {
 		rep.ErrorStep = "orderbook"
@@ -121,6 +133,40 @@ func ExecuteFOKSell(ctx context.Context, client clob.Client, signer auth.Signer,
 		return "", rep, err
 	}
 	rep.SharesSubmitted = sellAmount
+
+	// Pre-submit freshness re-check. This is the small but high-value safeguard
+	// against build-then-submit races where bestBid moves down between fetch
+	// and signing, leaving us with a limit floor that won't fill.
+	if submitMaxAgeMs > 0 {
+		fresh, refreshed, refErr := maybeRefreshBookForSubmit(ctx, client, tokenID, book, bookFetchedAt, submitMaxAgeMs)
+		refReport := &SubmitRefreshReport{
+			Refreshed: refreshed,
+			ElapsedMs: time.Since(bookFetchedAt).Milliseconds(),
+		}
+		if refErr != nil {
+			refReport.Err = refErr.Error()
+		}
+		if refreshed {
+			refReport.BidMoveDownTicks = bookBestBidMovedDownTicks(book, fresh)
+			book = fresh
+			rep.TickSize = strings.TrimSpace(book.TickSize)
+			tick = ParseTickSize(book.TickSize)
+			if nb, ok := BestBidPrice(book.Bids); ok {
+				bestBid = nb
+				rep.BestBid = nb
+			}
+			if na, ok := BestAskPrice(book.Asks); ok {
+				rep.BestAsk = na
+			}
+			if !bidOK || bestBid <= 0 {
+				rep.ErrorStep = "no_bid"
+				rep.SubmitRefresh = refReport
+				return "", rep, fmt.Errorf("no_bid_liquidity_after_refresh token=%s", tokenID)
+			}
+		}
+		rep.SubmitRefresh = refReport
+	}
+
 	floor := math.Max(tick, bestBid-float64(sellExtraTicks)*tick)
 	floorDec, _ := decimal.NewFromString(fmt.Sprintf("%g", floor))
 	floorDec = TruncatePriceDecimalToTick(floorDec, book.TickSize)
@@ -152,15 +198,25 @@ func ExecuteFOKSell(ctx context.Context, client clob.Client, signer auth.Signer,
 	return id, rep, nil
 }
 
-// ExecuteFAKSell submits a FAK market-style sell with worst-price limit (minimum acceptable price, 0–1).
-// Unlike FOK, remaining size may stay on-chain; callers should Sync and re-check balances.
+// ExecuteFAKSell submits a FAK market-style sell with worst-price limit
+// (minimum acceptable price, 0–1) and submit-time staleness disabled. Use
+// ExecuteFAKSellWithOpts to enable the pre-submit refresh safeguard.
 func ExecuteFAKSell(ctx context.Context, client clob.Client, signer auth.Signer, tokenID string, sizeShares float64, worstPrice float64) (orderID string, rep *FOKSellReport, err error) {
+	return ExecuteFAKSellWithOpts(ctx, client, signer, tokenID, sizeShares, worstPrice, 0)
+}
+
+// ExecuteFAKSellWithOpts is the staleness-aware FAK sell. Unlike FOK, the
+// worst-price limit is NOT recomputed on refresh — the operator-configured
+// floor is the contract; the refresh only updates the tick truncation and
+// telemetry. Remaining size may stay on-chain; callers should Sync and
+// re-check balances.
+func ExecuteFAKSellWithOpts(ctx context.Context, client clob.Client, signer auth.Signer, tokenID string, sizeShares float64, worstPrice float64, submitMaxAgeMs int) (orderID string, rep *FOKSellReport, err error) {
 	now := time.Now().UTC()
 	rep = &FOKSellReport{
-		AtRFC3339Nano:            now.Format(time.RFC3339Nano),
-		SharesRequested:          sizeShares,
-		OrderType:                "FAK",
-		WorstPriceConfigured:     worstPrice,
+		AtRFC3339Nano:        now.Format(time.RFC3339Nano),
+		SharesRequested:      sizeShares,
+		OrderType:            "FAK",
+		WorstPriceConfigured: worstPrice,
 	}
 	tokenID, err = MustCLOBAssetIDForAPI(tokenID)
 	if err != nil {
@@ -168,6 +224,7 @@ func ExecuteFAKSell(ctx context.Context, client clob.Client, signer auth.Signer,
 		return "", rep, err
 	}
 	rep.CLOBTokenID = tokenID
+	bookFetchedAt := time.Now()
 	book, err := client.OrderBook(ctx, &clobtypes.BookRequest{TokenID: tokenID})
 	if err != nil {
 		rep.ErrorStep = "orderbook"
@@ -199,6 +256,31 @@ func ExecuteFAKSell(ctx context.Context, client clob.Client, signer auth.Signer,
 		return "", rep, err
 	}
 	rep.SharesSubmitted = sellAmount
+
+	if submitMaxAgeMs > 0 {
+		fresh, refreshed, refErr := maybeRefreshBookForSubmit(ctx, client, tokenID, book, bookFetchedAt, submitMaxAgeMs)
+		refReport := &SubmitRefreshReport{
+			Refreshed: refreshed,
+			ElapsedMs: time.Since(bookFetchedAt).Milliseconds(),
+		}
+		if refErr != nil {
+			refReport.Err = refErr.Error()
+		}
+		if refreshed {
+			refReport.BidMoveDownTicks = bookBestBidMovedDownTicks(book, fresh)
+			book = fresh
+			rep.TickSize = strings.TrimSpace(book.TickSize)
+			tick = ParseTickSize(book.TickSize)
+			if nb, ok := BestBidPrice(book.Bids); ok {
+				rep.BestBid = nb
+			}
+			if na, ok := BestAskPrice(book.Asks); ok {
+				rep.BestAsk = na
+			}
+		}
+		rep.SubmitRefresh = refReport
+	}
+
 	limit := worstPrice
 	if isFinite(tick) && tick > 0 {
 		limit = math.Max(tick, math.Min(1-tick, limit))
@@ -234,14 +316,20 @@ func ExecuteFAKSell(ctx context.Context, client clob.Client, signer auth.Signer,
 	return id, rep, nil
 }
 
-// ExecuteFOKBuy mirrors bot executePolymarketOrder (BUY).
+// ExecuteFOKBuy mirrors bot executePolymarketOrder (BUY) without submit-time
+// staleness protection. Use ExecuteFOKBuyWithOpts to enable refresh.
 func ExecuteFOKBuy(ctx context.Context, client clob.Client, signer auth.Signer, tokenID string, sizeUSDC, expectedOdds float64, buyExtraTicks int) (orderID string, fillOdds float64, rep *FOKBuyReport, err error) {
+	return ExecuteFOKBuyWithOpts(ctx, client, signer, tokenID, sizeUSDC, expectedOdds, buyExtraTicks, 0)
+}
+
+// ExecuteFOKBuyWithOpts is the staleness-aware FOK buy.
+func ExecuteFOKBuyWithOpts(ctx context.Context, client clob.Client, signer auth.Signer, tokenID string, sizeUSDC, expectedOdds float64, buyExtraTicks, submitMaxAgeMs int) (orderID string, fillOdds float64, rep *FOKBuyReport, err error) {
 	now := time.Now().UTC()
 	rep = &FOKBuyReport{
-		AtRFC3339Nano:    now.Format(time.RFC3339Nano),
-		ExtraTicks:       buyExtraTicks,
-		SizeUSDC:         sizeUSDC,
-		ExpectedOdds:     expectedOdds,
+		AtRFC3339Nano: now.Format(time.RFC3339Nano),
+		ExtraTicks:    buyExtraTicks,
+		SizeUSDC:      sizeUSDC,
+		ExpectedOdds:  expectedOdds,
 	}
 	tokenID, err = MustCLOBAssetIDForAPI(tokenID)
 	if err != nil {
@@ -249,6 +337,7 @@ func ExecuteFOKBuy(ctx context.Context, client clob.Client, signer auth.Signer, 
 		return "", 0, rep, err
 	}
 	rep.CLOBTokenID = tokenID
+	bookFetchedAt := time.Now()
 	book, err := client.OrderBook(ctx, &clobtypes.BookRequest{TokenID: tokenID})
 	if err != nil {
 		rep.ErrorStep = "orderbook"
@@ -263,6 +352,33 @@ func ExecuteFOKBuy(ctx context.Context, client clob.Client, signer auth.Signer, 
 	if ok {
 		rep.BestAsk = bestAsk
 	}
+
+	if submitMaxAgeMs > 0 {
+		fresh, refreshed, refErr := maybeRefreshBookForSubmit(ctx, client, tokenID, book, bookFetchedAt, submitMaxAgeMs)
+		refReport := &SubmitRefreshReport{
+			Refreshed: refreshed,
+			ElapsedMs: time.Since(bookFetchedAt).Milliseconds(),
+		}
+		if refErr != nil {
+			refReport.Err = refErr.Error()
+		}
+		if refreshed {
+			refReport.AskMoveUpTicks = bookBestAskMovedUpTicks(book, fresh)
+			book = fresh
+			rep.TickSize = strings.TrimSpace(book.TickSize)
+			tick = ParseTickSize(book.TickSize)
+			if bb, ok := BestBidPrice(book.Bids); ok {
+				rep.BestBid = bb
+			}
+			if na, askOK := BestAskPrice(book.Asks); askOK {
+				bestAsk = na
+				ok = true
+				rep.BestAsk = na
+			}
+		}
+		rep.SubmitRefresh = refReport
+	}
+
 	limitPrice := expectedOdds
 	if ok && isFinite(tick) && tick > 0 {
 		padded := bestAsk + float64(buyExtraTicks)*tick

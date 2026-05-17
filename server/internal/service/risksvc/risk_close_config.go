@@ -29,6 +29,8 @@ func effectiveRiskCloseExecutionMode(ctx context.Context, st *store.Store) strin
 		return riskCloseModeFAKSell
 	case riskCloseModeHedgeFOKBuy:
 		return riskCloseModeHedgeFOKBuy
+	case riskCloseModeLadder:
+		return riskCloseModeLadder
 	default:
 		return riskCloseModeFOKSell
 	}

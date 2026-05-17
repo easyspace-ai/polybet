@@ -46,6 +46,7 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 		accountID = acct.ID
 	}
 	buyExtra := st.GetBotConfigInt(ctx, "polymarketFokBuyExtraTicks", 5)
+	submitMaxAgeMs := st.GetBotConfigInt(ctx, "orderSubmitMaxAgeMs", 0)
 	results := make([]TradeResult, 0, len(plan.Allocations))
 	for _, a := range plan.Allocations {
 		_, mid, label, _, home, away, err := st.GetOutcomeWithMarket(ctx, a.OutcomeID)
@@ -89,7 +90,7 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 		)
 		logrus.WithFields(fields).Info("交易：发送 FOK 买单")
 		logx.Trade().WithFields(fields).Info("交易：发送 FOK 买单")
-		orderID, fillOdds, _, err := polyexec.ExecuteFOKBuy(ctx, cl.Client, cl.Signer, a.ExternalOutcomeID, a.Size, a.ExpectedOdds, buyExtra)
+		orderID, fillOdds, _, err := polyexec.ExecuteFOKBuyWithOpts(ctx, cl.Client, cl.Signer, a.ExternalOutcomeID, a.Size, a.ExpectedOdds, buyExtra, submitMaxAgeMs)
 		if err != nil {
 			reason := err.Error()
 			_ = st.MarkTradeFailed(ctx, tid, reason)
@@ -102,7 +103,23 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 			continue
 		}
 		_ = st.MarkTradeFilled(ctx, tid, orderID, a.Size, fillOdds)
-		fillFields := logx.Pairs("trade_id", tid, "outcome_id", a.OutcomeID, "order_id", orderID, "fill_odds", fillOdds)
+		// Persist execution-quality metrics for slippage analysis. Best-effort:
+		// failures here must not block trade flow (bug in telemetry should
+		// never fail a real order).
+		_ = st.InsertTradeQuality(ctx, &store.TradeQuality{
+			AccountID:    accountID,
+			Side:         "buy",
+			OrderType:    "FOK",
+			TokenID:      a.ExternalOutcomeID,
+			ExpectedOdds: a.ExpectedOdds,
+			FillOdds:     fillOdds,
+			LimitOdds:    fillOdds,
+			SlippageBps:  store.SlippageBpsBuy(a.ExpectedOdds, fillOdds),
+			Size:         a.Size,
+			TradeID:      tid,
+			Notes:        "tradesvc.ExecutePlan",
+		})
+		fillFields := logx.Pairs("trade_id", tid, "outcome_id", a.OutcomeID, "order_id", orderID, "fill_odds", fillOdds, "slippage_bps", store.SlippageBpsBuy(a.ExpectedOdds, fillOdds))
 		logrus.WithFields(fillFields).Info("交易：FOK 买单成交")
 		logx.Trade().WithFields(fillFields).Info("交易：FOK 买单成交")
 		logx.Open().WithFields(fillFields).Info("交易：FOK 买单成交（开仓）")
