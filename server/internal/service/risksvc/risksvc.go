@@ -34,7 +34,7 @@ type Service struct {
 	log        *logrus.Logger
 	rt         *riskruntime.Bus
 	closeMu    sync.Mutex
-	closeLocks sync.Map // map[string]*sync.Mutex per-position locks for ensureCloseTask
+	closeLocks sync.Map // map[string]*closeLockMeta per-position locks (GC'd by RunGC)
 
 	userWSConnected   atomic.Bool
 	userWSConnecting  atomic.Bool
@@ -298,10 +298,10 @@ func (s *Service) EnqueueClosePosition(ctx context.Context, positionID string) e
 
 // queueReason: "manual" | "stop_loss" | "" (silent, e.g. batch from close_all).
 func (s *Service) ensureCloseTask(ctx context.Context, positionID, queueReason string) error {
-	lockI, _ := s.closeLocks.LoadOrStore(positionID, &sync.Mutex{})
-	lock := lockI.(*sync.Mutex)
-	lock.Lock()
-	defer lock.Unlock()
+	meta := s.loadOrStoreCloseLock(positionID)
+	meta.mu.Lock()
+	defer meta.mu.Unlock()
+	s.touchCloseLock(positionID)
 
 	has, err := s.st.FindPendingCloseTask(ctx, positionID)
 	if err != nil {
