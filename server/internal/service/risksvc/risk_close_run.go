@@ -81,7 +81,12 @@ func (s *Service) runCloseFOKSell(ctx context.Context, cl *polywiring.AuthedCLOB
 	}
 	s.log.WithFields(okFields).Info("风控：FOK 卖单已提交（CLOB 已接单）")
 	logx.StopLoss().WithFields(okFields).Info("风控：FOK 卖单已提交（CLOB 已接单）")
-	if err := s.st.CloseRiskPosition(ctx, positionID); err != nil {
+	// FOK is all-or-nothing: limit price is the exact fill price for the
+	// full position size. realizedPnL = (filledShares × fillPrice) - costBasis.
+	// Captured here so the kill-switch evaluator can include closed-today
+	// losses, not just unrealized.
+	realizedPnL := pos.SizeShares*rep.LimitPrice - pos.CostUSD
+	if err := s.st.CloseRiskPositionPnL(ctx, positionID, realizedPnL); err != nil {
 		s.log.WithFields(logx.Pairs("position_id", positionID, "err", err.Error())).Error("风控：数据库关闭持仓失败")
 		return err
 	}
@@ -213,7 +218,11 @@ func (s *Service) runCloseFAKSellWithWorst(ctx context.Context, cl *polywiring.A
 		s.log.WithFields(logx.Pairs("task_id", taskID, "position_id", positionID, "remaining_shares", fresh.SizeShares, "min_shares", min)).Warn("风控：FAK 部分成交，保留持仓并重试")
 		return errPartialFillRemaining
 	}
-	if err := s.st.CloseRiskPosition(ctx, positionID); err != nil {
+	// FAK fill price is unknown without a per-order detail call. We use the
+	// limit floor as a conservative proxy (worst-case the trader actually
+	// got) so realized PnL is never overstated for the kill switch.
+	realizedPnLFAK := pos.SizeShares*rep.LimitPrice - pos.CostUSD
+	if err := s.st.CloseRiskPositionPnL(ctx, positionID, realizedPnLFAK); err != nil {
 		s.log.WithFields(logx.Pairs("position_id", positionID, "err", err.Error())).Error("风控：FAK 后关闭 dust 持仓失败")
 		return err
 	}
