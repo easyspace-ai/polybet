@@ -7,6 +7,7 @@ import {
   type RiskPositionsMeta,
   type RiskTaskRow,
 } from '@/lib/api';
+import { floorCents1, trailingStopCentsFromHW } from '@/lib/cents';
 import { riskWsBus, type BookLevel, type PositionUpdateMessage, type PolyBookFrame } from '@/lib/wsBus';
 import { getWSConfig } from '@/hooks/useWSConfig';
 import { getWSStatus } from '@/lib/api';
@@ -159,8 +160,8 @@ function updatePositionsFromBook() {
       pos.currentCents = nextCurrent;
       changed = true;
     }
-    const effHw = Math.max(pos.highWaterCents, mark ?? 0);
-    const trail = effHw * (1 - pos.stopLossPct / 100);
+    const effHw = floorCents1(Math.max(floorCents1(pos.highWaterCents), mark ?? 0));
+    const trail = trailingStopCentsFromHW(effHw, pos.stopLossPct);
     if (pos.trailingStopCents !== trail) {
       pos.trailingStopCents = trail;
       changed = true;

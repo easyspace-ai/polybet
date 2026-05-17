@@ -7,6 +7,7 @@ import (
 
 	"github.com/easyspace-ai/polybet/internal/gammaclient"
 	"github.com/easyspace-ai/polybet/internal/logx"
+	"github.com/easyspace-ai/polybet/internal/polywarm"
 	"github.com/easyspace-ai/polybet/internal/store"
 )
 
@@ -31,11 +32,38 @@ func isNoOrderbookError(err error) bool {
 		(strings.Contains(msg, "get orderbook") && strings.Contains(msg, "404"))
 }
 
-func gammaMarketEnded(meta gammaclient.TokenMarketDisplay, found bool) bool {
-	if !found {
+// gammaMarketRowPresent distinguishes a real Gamma /markets row from an in-memory
+// cache placeholder (fetch miss / error) where TokenMarketDisplay is the zero value
+// but the token key was still inserted into the batch map.
+func gammaMarketRowPresent(meta gammaclient.TokenMarketDisplay) bool {
+	return strings.TrimSpace(meta.TokenID) != "" ||
+		strings.TrimSpace(meta.Question) != "" ||
+		strings.TrimSpace(meta.ConditionID) != ""
+}
+
+// gammaMarketEndedForAbort is true when Gamma credibly reports the market is not tradeable.
+func gammaMarketEndedForAbort(meta gammaclient.TokenMarketDisplay, found bool) bool {
+	if !found || !gammaMarketRowPresent(meta) {
 		return false
 	}
 	return meta.Closed || !meta.Active
+}
+
+// closeTaskHasLiveLiquiditySignals is true when the CLOB still exposes a book for this token:
+// cached or REST top-of-book has a non-zero bid or ask, or GET /book returns 200 with decodable JSON
+// (orderbook exists even if both sides are empty).
+func (s *Service) closeTaskHasLiveLiquiditySignals(ctx context.Context, tokenID string) bool {
+	if s == nil || s.cfg == nil {
+		return false
+	}
+	if b, a, ok := s.BestBidAskCents(ctx, tokenID); ok && (b > 0 || a > 0) {
+		return true
+	}
+	tid := store.NormalizeRiskCLOBTokenID(tokenID)
+	if tid == "" {
+		return false
+	}
+	return polywarm.BookJSONHTTPOK(ctx, s.cfg.PolymarketAPIURL, s.cfg.HTTPPlatformProxy, tid)
 }
 
 // evaluateCloseTaskAbort re-checks live state after a failed close (or before retry).
@@ -70,21 +98,20 @@ func (s *Service) evaluateCloseTaskAbort(ctx context.Context, pos *store.RiskPos
 		}
 	}
 
-	if isNoOrderbookError(closeErr) {
-		return closeAbortMarketEnded
-	}
-
 	metaByTok := s.gammaMetaBatch(ctx, []string{pos.TokenID})
 	tok := store.NormalizeRiskCLOBTokenID(pos.TokenID)
 	meta, found := metaByTok[tok]
 	if !found {
 		meta, found = metaByTok[pos.TokenID]
 	}
-	if gammaMarketEnded(meta, found) {
-		return closeAbortMarketEnded
+	gammaEnded := gammaMarketEndedForAbort(meta, found)
+	if !gammaEnded {
+		return ""
 	}
-
-	return ""
+	if s.closeTaskHasLiveLiquiditySignals(ctx, pos.TokenID) {
+		return ""
+	}
+	return closeAbortMarketEnded
 }
 
 func (s *Service) abortCloseTask(ctx context.Context, taskID, positionID string, pos *store.RiskPosition, reason closeTaskAbortReason, closeErr error) error {

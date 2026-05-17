@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
 
 	"github.com/easyspace-ai/polybet/internal/logx"
 )
@@ -31,15 +32,39 @@ func accessLog() gin.HandlerFunc {
 		if path == "" {
 			path = "/"
 		}
+		latency := time.Since(start)
+		status := c.Writer.Status()
+		rid := c.GetString("request_id")
 		logx.LogHTTPAccess(
 			c.Request.Method,
 			path,
-			c.Writer.Status(),
-			time.Since(start),
+			status,
+			latency,
 			c.ClientIP(),
-			c.GetString("request_id"),
+			rid,
 		)
+		// Also emit to stdout so dev consoles show API traffic (disk log may be disabled).
+		if shouldLogHTTPAccessToConsole(path) {
+			logrus.WithFields(logx.Pairs(
+				"request_id", rid,
+				"method", c.Request.Method,
+				"path", path,
+				"status", status,
+				"latency_ms", float64(latency.Microseconds())/1000.0,
+				"client_ip", c.ClientIP(),
+			)).Info("HTTP")
+		}
 	}
+}
+
+func shouldLogHTTPAccessToConsole(path string) bool {
+	if path == "/api/health" {
+		return false
+	}
+	if strings.HasPrefix(path, "/assets/") || path == "/favicon.ico" {
+		return false
+	}
+	return strings.HasPrefix(path, "/api/")
 }
 
 func cors(origins []string) gin.HandlerFunc {

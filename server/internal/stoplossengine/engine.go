@@ -106,6 +106,46 @@ func (e *Engine) NotifyPositionsChanged() {
 	}
 }
 
+// EnsureTokenSubscribed adds one asset to the market WS when a client requests
+// orderbook data (e.g. risk dashboard subscribePolyBook before reconcile runs).
+func (e *Engine) EnsureTokenSubscribed(tokenID string) {
+	tid := normalizeTokenID(tokenID)
+	if tid == "" {
+		return
+	}
+	dec := polyexec.CLOBAssetIDForAPI(tid)
+	if dec == "" {
+		return
+	}
+	e.mu.Lock()
+	ms := e.market
+	_, already := e.subscribed[dec]
+	e.mu.Unlock()
+	if already || ms == nil {
+		return
+	}
+	if err := ms.Subscribe(dec); err != nil {
+		fields := logx.Pairs("token_id", tid, "clob_token_dec", dec, "err", err.Error())
+		e.log.WithFields(fields).Warn("止损引擎：按需订阅失败")
+		logx.StopLoss().WithFields(fields).Warn("止损引擎：按需订阅失败")
+		return
+	}
+	e.mu.Lock()
+	e.subscribed[dec] = struct{}{}
+	n := len(e.subscribed)
+	e.mu.Unlock()
+	fields := logx.Pairs("token_id", tid, "clob_token_dec", dec, "subscribed_assets", n)
+	e.log.WithFields(fields).Info("止损引擎：CLOB 订单簿已按需订阅")
+	logx.StopLoss().WithFields(fields).Info("止损引擎：CLOB 订单簿已按需订阅")
+	e.risk.SetOrderbookWSState(true, true)
+	e.broadcastOrderbookStatus(true)
+	if e.runtime != nil {
+		e.runtime.Publish("market_sub", "info", "market.subscription.started", e.accountID(), tid, "", "", map[string]any{
+			"channel": "clob_market", "addedCount": 1, "reason": "client_subscribe",
+		})
+	}
+}
+
 // Run owns the market WebSocket until ctx is cancelled.
 func (e *Engine) Run(ctx context.Context) {
 	msCfg := marketstream.DefaultConfig()
@@ -432,6 +472,8 @@ func (e *Engine) applyBookUpdate(assetIDRaw string, bid, ask float64, hasBook bo
 			lvA[i] = struct{ Price, Size string }{Price: a.Price, Size: a.Size}
 		}
 		e.cache.ReplaceBook(assetID, lvB, lvA, ts)
+	} else if bid > 0 || ask > 0 {
+		e.cache.ApplyTopOfBook(assetID, bid, ask, ts)
 	}
 	bidsOut, asksOut := e.cache.GetBidsAsks(assetID, 5)
 	bestBid, bestAsk, _ := e.cache.TopOfBook(assetID)

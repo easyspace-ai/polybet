@@ -41,6 +41,12 @@ func (s *Service) runCloseFOKSell(ctx context.Context, cl *polywiring.AuthedCLOB
 				"taskId": taskID, "err": err.Error(), "reason": queueReason,
 			})
 		}
+		if done, derr := s.tryCompleteCloseOnUnsellableDust(ctx, taskID, positionID, pos, rep, err); done || derr != nil {
+			return derr
+		}
+		if done, derr := s.tryCompleteCloseOnStaleCLOBBalance(ctx, taskID, positionID, pos, rep, err); done || derr != nil {
+			return derr
+		}
 		if reason := s.evaluateCloseTaskAbort(ctx, pos, err); reason != "" {
 			j2, mErr2 := marshalCloseAttemptSnapshot(pos, "fok_submit_then_abort", evalBidCents, evalAskCents, sellExtra, rep, modeExtra, err, string(reason))
 			if mErr2 == nil {
@@ -134,6 +140,12 @@ func (s *Service) runCloseFAKSell(ctx context.Context, cl *polywiring.AuthedCLOB
 			s.rt.Publish("position", "warn", "position.close_failed", pos.AccountID, "", pos.TokenID, taskID, map[string]any{
 				"taskId": taskID, "err": err.Error(), "reason": queueReason,
 			})
+		}
+		if done, derr := s.tryCompleteCloseOnUnsellableDust(ctx, taskID, positionID, pos, rep, err); done || derr != nil {
+			return derr
+		}
+		if done, derr := s.tryCompleteCloseOnStaleCLOBBalance(ctx, taskID, positionID, pos, rep, err); done || derr != nil {
+			return derr
 		}
 		if reason := s.evaluateCloseTaskAbort(ctx, pos, err); reason != "" {
 			j2, mErr2 := marshalCloseAttemptSnapshot(pos, "fak_submit_then_abort", evalBidCents, evalAskCents, sellExtra, rep, modeExtra, err, string(reason))

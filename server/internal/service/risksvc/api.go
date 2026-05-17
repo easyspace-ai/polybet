@@ -182,8 +182,8 @@ func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 				logx.StopLoss().WithFields(fields).Warn("风控：更新高点/止损队列失败")
 			}
 		} else {
-			hw = p.HighWaterCents
-			trail = hw * (1 - p.StopLossPct/100)
+			hw = FloorCents1(p.HighWaterCents)
+			trail = TrailingStopCentsFromHW(hw, p.StopLossPct)
 		}
 		var valUsd, pnl *float64
 		if curPtr != nil {
@@ -306,7 +306,7 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 				AvgEntryCents:  entryCents,
 				SizeShares:     size,
 				CostUSD:        costUsd,
-				HighWaterCents: entryCents,
+				HighWaterCents: FloorCents1(entryCents),
 				StopLossPct:    stop,
 				Source:         "polymarket_api",
 				Status:         "open",

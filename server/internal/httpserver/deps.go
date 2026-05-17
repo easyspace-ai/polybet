@@ -38,6 +38,7 @@ type Deps struct {
 		SyncAndBroadcastMarkets(ctx context.Context, force bool) error
 		RequestRestart()
 		ForceWSReconnect(channel string)
+		EnsureOrderbookToken(tokenID string)
 		OpenRiskPositionCount(ctx context.Context) int
 	}
 }

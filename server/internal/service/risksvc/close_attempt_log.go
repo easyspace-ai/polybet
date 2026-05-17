@@ -78,9 +78,9 @@ func marshalCloseAttemptSnapshot(
 		snap.AbortReason = abortReason
 	}
 	if pos != nil {
-		snap.HighWaterCents = pos.HighWaterCents
+		snap.HighWaterCents = FloorCents1(pos.HighWaterCents)
 		snap.StopLossPct = pos.StopLossPct
-		snap.TrailCents = pos.HighWaterCents * (1 - pos.StopLossPct/100)
+		snap.TrailCents = TrailingStopCentsFromHW(snap.HighWaterCents, pos.StopLossPct)
 		snap.PositionShares = pos.SizeShares
 	}
 	if extras != nil {

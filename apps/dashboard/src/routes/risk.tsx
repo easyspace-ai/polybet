@@ -7,6 +7,7 @@ import { useRiskControlCache } from "@/hooks/useRiskControlCache";
 import { postRiskClosePosition, postRiskCloseAll, patchRiskPosition, postRiskOfficialRefresh, postRiskHidePosition, postRiskTasksClear } from "@/lib/api";
 import { resolvePolymarketEventUrl } from "@/lib/polymarketLinks";
 import { cn } from "@/lib/utils";
+import { floorCents1 } from "@/lib/cents";
 import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
@@ -21,7 +22,7 @@ function fmtUsd(n: number | null | undefined): string {
 
 function fmtCents(c: number | null | undefined): string {
   if (c == null || !Number.isFinite(c)) return '—';
-  return `${c.toFixed(1)}¢`;
+  return `${floorCents1(c).toFixed(1)}¢`;
 }
 
 function truncTitle(s: string, max = 42): string {
@@ -122,7 +123,7 @@ function RiskPage() {
       let changed = false;
       for (const p of positions) {
         const sl0 = String(p.stopLossPct);
-        const hw0 = String(p.highWaterCents);
+        const hw0 = String(floorCents1(p.highWaterCents));
         if (!next[p.id]) {
           next[p.id] = { sl: sl0, hw: hw0 };
           changed = true;
@@ -167,15 +168,16 @@ function RiskPage() {
     const d = drafts[id];
     if (!d) return;
     const sl = parseFloat(d.sl);
-    const hw = parseFloat(d.hw);
+    const hwRaw = parseFloat(d.hw);
     if (!Number.isFinite(sl) || sl < 1 || sl > 99) {
       toast.error('无效', { description: '止损% 须在 1–99 之间' });
       return;
     }
-    if (!Number.isFinite(hw) || hw <= 0 || hw > 100) {
+    if (!Number.isFinite(hwRaw) || hwRaw <= 0 || hwRaw > 100) {
       toast.error('无效', { description: '最高水位须在 (0, 100]（¢）' });
       return;
     }
+    const hw = floorCents1(hwRaw);
     setPatchingKey(`${id}:risk`);
     try {
       await patchRiskPosition(id, { stopLossPct: sl, highWaterCents: hw });
@@ -443,7 +445,7 @@ function RiskPage() {
                                   value={drafts[p.id]?.sl ?? ''}
                                   onChange={(e) => setDrafts(prev => ({
                                     ...prev,
-                                    [p.id]: { sl: e.target.value, hw: prev[p.id]?.hw ?? String(p.highWaterCents) }
+                                    [p.id]: { sl: e.target.value, hw: prev[p.id]?.hw ?? String(floorCents1(p.highWaterCents)) }
                                   }))}
                                   className="min-w-0 flex-1 h-6 px-1 text-[10px] num rounded border border-border bg-background focus:outline-none focus:border-brand"
                                 />

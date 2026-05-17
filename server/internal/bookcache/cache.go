@@ -72,6 +72,45 @@ func (c *Cache) FeeRate(tokenID string) float64 {
 	return c.feeRates[tokenID]
 }
 
+// ApplyTopOfBook records best bid/ask from CLOB best_bid_ask or price_change when full depth
+// is not included. Ensures TopOfBook and risk evaluation stay aligned with live WS ticks.
+func (c *Cache) ApplyTopOfBook(tokenID string, bestBid, bestAsk float64, ts int64) {
+	if tokenID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	tb := c.books[tokenID]
+	if tb == nil {
+		tb = &tokenBook{asks: map[string]float64{}, bids: map[string]float64{}}
+		c.books[tokenID] = tb
+	}
+	if ts > 0 && ts < tb.ts {
+		return
+	}
+	if ts > 0 {
+		tb.ts = ts
+	} else if tb.ts == 0 {
+		tb.ts = time.Now().UnixMilli()
+	}
+	if bestBid > 0 && isFinite(bestBid) {
+		p := priceLevelKey(bestBid)
+		if _, ok := tb.bids[p]; !ok {
+			tb.bids[p] = 0
+		}
+	}
+	if bestAsk > 0 && isFinite(bestAsk) {
+		p := priceLevelKey(bestAsk)
+		if _, ok := tb.asks[p]; !ok {
+			tb.asks[p] = 0
+		}
+	}
+}
+
+func priceLevelKey(p float64) string {
+	return strconv.FormatFloat(p, 'f', -1, 64)
+}
+
 func (c *Cache) ReplaceBook(tokenID string, bids, asks []struct{ Price, Size string }, ts int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

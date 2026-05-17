@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -12,9 +13,14 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 
+	"github.com/easyspace-ai/polybet/internal/bookcache"
+	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/logx"
+	"github.com/easyspace-ai/polybet/internal/polyexec"
+	"github.com/easyspace-ai/polybet/internal/polywarm"
 	"github.com/easyspace-ai/polybet/internal/service/marketsvc"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
+	"github.com/easyspace-ai/polybet/internal/wsrelay"
 )
 
 var upgrader = websocket.Upgrader{
@@ -39,6 +45,120 @@ func normalizeTokenID(id string) string {
 		id = "0x" + strings.Repeat("0", 66-len(id)) + id[2:]
 	}
 	return id
+}
+
+const polyBookCacheFreshMaxAge = 30 * time.Second
+
+func bookCacheHasData(cache *bookcache.Cache, tokenID string) bool {
+	bids, asks := cache.GetBidsAsks(tokenID, 1)
+	if len(bids) > 0 || len(asks) > 0 {
+		return true
+	}
+	bb, ba, ok := cache.TopOfBook(tokenID)
+	return ok && (bb > 0 || ba > 0)
+}
+
+func bookCacheNeedsRESTWarm(cache *bookcache.Cache, tokenID string) bool {
+	if !bookCacheHasData(cache, tokenID) {
+		return true
+	}
+	if age, ok := cache.BookAge(tokenID); !ok || age > polyBookCacheFreshMaxAge {
+		return true
+	}
+	bb, ba, ok := cache.TopOfBook(tokenID)
+	if !ok {
+		return true
+	}
+	if bb <= 0 && ba > 0 && ba <= 0.02 {
+		return true
+	}
+	bids, asks := cache.GetBidsAsks(tokenID, 2)
+	return len(bids) == 0 && len(asks) == 0
+}
+
+func warmBookCacheFromREST(ctx context.Context, cfg *config.Config, cache *bookcache.Cache, tokenID string) (source string, ageMs int64, bestBid, bestAsk float64) {
+	source = "rest"
+	if err := polywarm.RefreshFromREST(ctx, cfg.PolymarketAPIURL, cfg.HTTPPlatformProxy, tokenID, cache); err != nil {
+		source = "rest_error"
+		logrus.WithFields(logx.Pairs("token_id", tokenID, "err", err.Error())).Debug("WebSocket：REST 预热订单簿失败")
+	}
+	if age, ok := cache.BookAge(tokenID); ok {
+		ageMs = age.Milliseconds()
+	}
+	bestBid, bestAsk, _ = cache.TopOfBook(tokenID)
+	return source, ageMs, bestBid, bestAsk
+}
+
+func logPolyBookSubscribe(rid, channel, tokenID, originalID string, cache *bookcache.Cache, subscribed bool) {
+	bb, ba, _ := cache.TopOfBook(tokenID)
+	ageMs := int64(-1)
+	if age, ok := cache.BookAge(tokenID); ok {
+		ageMs = age.Milliseconds()
+	}
+	fields := logx.Pairs(
+		"request_id", rid,
+		"channel", channel,
+		"token_id", tokenID,
+		"clob_token_dec", polyexec.CLOBAssetIDForAPI(tokenID),
+		"has_data", bookCacheHasData(cache, tokenID),
+		"needs_rest_warm", bookCacheNeedsRESTWarm(cache, tokenID),
+		"best_bid", bb,
+		"best_ask", ba,
+		"book_age_ms", ageMs,
+		"ensure_ob_subscribed", subscribed,
+	)
+	if originalID != "" && originalID != tokenID {
+		fields["original_id"] = originalID
+	}
+	logrus.WithFields(fields).Info("WebSocket：订阅订单簿")
+}
+
+// asyncSeedBookAndPushSnapshot avoids blocking the WS read loop on CLOB REST; pushes a second snapshot after warm.
+func asyncSeedBookAndPushSnapshot(ctx context.Context, cfg *config.Config, cache *bookcache.Cache, hub *wsrelay.Hub, conn *websocket.Conn, tokenID string) {
+	if !bookCacheNeedsRESTWarm(cache, tokenID) {
+		return
+	}
+	go func() {
+		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		src, ageMs, bb, ba := warmBookCacheFromREST(bg, cfg, cache, tokenID)
+		if !bookCacheHasData(cache, tokenID) {
+			return
+		}
+		logrus.WithFields(logx.Pairs(
+			"token_id", tokenID,
+			"book_source", src,
+			"book_age_ms", ageMs,
+			"best_bid", bb,
+			"best_ask", ba,
+		)).Info("WebSocket：订单簿 REST 预热完成")
+		_ = sendPolyBookSnapshot(conn, hub, cache, tokenID)
+	}()
+}
+
+func sendPolyBookSnapshot(conn *websocket.Conn, hub *wsrelay.Hub, cache *bookcache.Cache, tokenID string) error {
+	bids, asks := cache.GetBidsAsks(tokenID, 5)
+	bestBid, bestAsk, _ := cache.TopOfBook(tokenID)
+	bidCents := 0.0
+	askCents := 0.0
+	if bestBid > 0 {
+		bidCents = bestBid * 100
+	}
+	if bestAsk > 0 {
+		askCents = bestAsk * 100
+	}
+	msg := map[string]any{
+		"type":    "polyBookSnapshot",
+		"tokenId": tokenID,
+		"bids":    bids,
+		"asks":    asks,
+		"bestBid": bidCents,
+		"bestAsk": askCents,
+	}
+	if conn != nil {
+		return hub.WriteJSON(conn, msg)
+	}
+	return nil
 }
 
 func (h *Handler) handleWSRisk(c *gin.Context) {
@@ -112,25 +232,13 @@ func (h *Handler) handleWSRisk(c *gin.Context) {
 			originalTid := tid
 			tid = normalizeTokenID(tid)
 			if tid != "" {
-				bids, asks := h.cache.GetBidsAsks(tid, 5)
-				bestBid, bestAsk, _ := h.cache.TopOfBook(tid)
-				logrus.WithFields(logx.Pairs("request_id", rid, "token_id", tid, "original_id", originalTid, "has_data", len(bids) > 0 || len(asks) > 0)).Info("WebSocket 风控：订阅订单簿")
-				bidCents := 0.0
-				askCents := 0.0
-				if bestBid > 0 {
-					bidCents = bestBid * 100
+				ensured := h.app != nil
+				if ensured {
+					h.app.EnsureOrderbookToken(tid)
 				}
-				if bestAsk > 0 {
-					askCents = bestAsk * 100
-				}
-				_ = h.riskHub.WriteJSON(conn, map[string]any{
-					"type":    "polyBookSnapshot",
-					"tokenId": tid,
-					"bids":    bids,
-					"asks":    asks,
-					"bestBid": bidCents,
-					"bestAsk": askCents,
-				})
+				logPolyBookSubscribe(rid, "risk_ws", tid, originalTid, h.cache, ensured)
+				_ = sendPolyBookSnapshot(conn, h.riskHub, h.cache, tid)
+				asyncSeedBookAndPushSnapshot(c.Request.Context(), h.cfg, h.cache, h.riskHub, conn, tid)
 			}
 		}
 	}
@@ -200,27 +308,15 @@ func registerWS(r *gin.Engine, d Deps) {
 				continue
 			case "subscribePolyBook":
 				tid, _ := m["tokenId"].(string)
-				tid = strings.ToLower(strings.TrimSpace(tid))
+				tid = normalizeTokenID(tid)
 				if tid != "" {
-					logrus.WithFields(logx.Pairs("request_id", rid, "token_id", tid)).Info("WebSocket Dashboard：订阅订单簿")
-					bids, asks := d.Cache.GetBidsAsks(tid, 5)
-					bestBid, bestAsk, _ := d.Cache.TopOfBook(tid)
-					bidCents := 0.0
-					askCents := 0.0
-					if bestBid > 0 {
-						bidCents = bestBid * 100
+					ensured := d.App != nil
+					if ensured {
+						d.App.EnsureOrderbookToken(tid)
 					}
-					if bestAsk > 0 {
-						askCents = bestAsk * 100
-					}
-					_ = d.Hub.WriteJSON(conn, map[string]any{
-						"type":    "polyBookSnapshot",
-						"tokenId": tid,
-						"bids":    bids,
-						"asks":    asks,
-						"bestBid": bidCents,
-						"bestAsk": askCents,
-					})
+					logPolyBookSubscribe(rid, "dashboard_ws", tid, "", d.Cache, ensured)
+					_ = sendPolyBookSnapshot(conn, d.Hub, d.Cache, tid)
+					asyncSeedBookAndPushSnapshot(c.Request.Context(), d.Cfg, d.Cache, d.Hub, conn, tid)
 				}
 			case "subscribePolyOdds":
 				if raw, ok := m["tokenIds"].([]any); ok {

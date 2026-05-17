@@ -30,7 +30,7 @@ type FOKSellReport struct {
 	SharesSubmitted      float64 `json:"sharesSubmitted,omitempty"`
 	OnChainBalanceShares float64 `json:"onChainBalanceShares,omitempty"`
 	OrderID              string  `json:"orderId,omitempty"`
-	ErrorStep            string  `json:"errorStep,omitempty"` // token_id | orderbook | no_bid | balance | zero_balance | build | create_order
+	ErrorStep            string  `json:"errorStep,omitempty"` // token_id | orderbook | no_bid | balance | zero_balance | below_min_lot | build | create_order
 }
 
 // FOKBuyReport captures FOK buy telemetry (hedge path and trades).
@@ -112,16 +112,13 @@ func ExecuteFOKSell(ctx context.Context, client clob.Client, signer auth.Signer,
 		return "", rep, fmt.Errorf("balance-allowance: %w", err)
 	}
 	onChain := ConditionalBalanceShares(bal.Balance)
-	if isFinite(onChain) && onChain > 0 {
+	if isFinite(onChain) {
 		rep.OnChainBalanceShares = onChain
 	}
-	sellAmount := sizeShares
-	if isFinite(onChain) && onChain > 0 {
-		sellAmount = math.Min(sizeShares, onChain)
-	}
-	if !isFinite(sellAmount) || sellAmount <= 0 {
-		rep.ErrorStep = "zero_balance"
-		return "", rep, fmt.Errorf("zero_conditional_balance")
+	sellAmount, step, err := resolveMarketSellShares(sizeShares, onChain)
+	if err != nil {
+		rep.ErrorStep = step
+		return "", rep, err
 	}
 	rep.SharesSubmitted = sellAmount
 	floor := math.Max(tick, bestBid-float64(sellExtraTicks)*tick)
@@ -193,16 +190,13 @@ func ExecuteFAKSell(ctx context.Context, client clob.Client, signer auth.Signer,
 		return "", rep, fmt.Errorf("balance-allowance: %w", err)
 	}
 	onChain := ConditionalBalanceShares(bal.Balance)
-	if isFinite(onChain) && onChain > 0 {
+	if isFinite(onChain) {
 		rep.OnChainBalanceShares = onChain
 	}
-	sellAmount := sizeShares
-	if isFinite(onChain) && onChain > 0 {
-		sellAmount = math.Min(sizeShares, onChain)
-	}
-	if !isFinite(sellAmount) || sellAmount <= 0 {
-		rep.ErrorStep = "zero_balance"
-		return "", rep, fmt.Errorf("zero_conditional_balance")
+	sellAmount, step, err := resolveMarketSellShares(sizeShares, onChain)
+	if err != nil {
+		rep.ErrorStep = step
+		return "", rep, err
 	}
 	rep.SharesSubmitted = sellAmount
 	limit := worstPrice

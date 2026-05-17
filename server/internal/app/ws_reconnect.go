@@ -18,6 +18,14 @@ func (a *App) clearActiveUserStream() {
 	a.userStreamMu.Unlock()
 }
 
+// EnsureOrderbookToken subscribes the stop-loss market WS to one token when the
+// risk dashboard requests orderbook data and reconcile has not caught up yet.
+func (a *App) EnsureOrderbookToken(tokenID string) {
+	if a.StopLoss != nil {
+		a.StopLoss.EnsureTokenSubscribed(tokenID)
+	}
+}
+
 // ForceWSReconnect triggers upstream reconnect for orderbook, user, or all.
 func (a *App) ForceWSReconnect(channel string) {
 	switch strings.ToLower(strings.TrimSpace(channel)) {

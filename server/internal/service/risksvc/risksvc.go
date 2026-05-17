@@ -211,7 +211,7 @@ func (s *Service) BestBidCents(ctx context.Context, tokenID string) (float64, bo
 
 // BestBidAskCents returns best bid and ask in cents from the in-memory book cache, or REST /book.
 func (s *Service) BestBidAskCents(ctx context.Context, tokenID string) (bidCents, askCents float64, ok bool) {
-	tid := strings.ToLower(strings.TrimSpace(tokenID))
+	tid := store.NormalizeRiskCLOBTokenID(tokenID)
 	bb, ba, topOk := s.cache.TopOfBook(tid)
 	bidCents, askCents = bb*100, ba*100
 	if topOk && (bidCents > 0 || askCents > 0) {
@@ -243,15 +243,15 @@ func stopTriggerReferenceCents(bidCents, askCents float64) float64 {
 // UpdateHighWaterAndMaybeQueueStop ratchets high-water using max(bid, ask) so it tracks the
 // top of the quoted range since open; stop-loss compares triggerCents (best bid, or mark if bid empty) to trail.
 func (s *Service) UpdateHighWaterAndMaybeQueueStop(ctx context.Context, p store.RiskPosition, bidCents, askCents float64) (hw float64, trail float64, cur *float64, err error) {
-	hw = p.HighWaterCents
-	mark := maxCentsRatchet(bidCents, askCents)
+	hw = FloorCents1(p.HighWaterCents)
+	mark := FloorCents1(maxCentsRatchet(bidCents, askCents))
 	if mark > hw {
 		hw = mark
 		if err := s.st.UpdateRiskPositionHighWater(ctx, p.ID, hw); err != nil {
 			return 0, 0, nil, err
 		}
 	}
-	trail = hw * (1 - p.StopLossPct/100)
+	trail = TrailingStopCentsFromHW(hw, p.StopLossPct)
 	curVal := bidCents
 	if curVal <= 0 && askCents > 0 {
 		curVal = askCents
@@ -329,9 +329,10 @@ func (s *Service) ensureCloseTask(ctx context.Context, positionID, queueReason s
 		taskFields["token_id"] = pos.TokenID
 		taskFields["size_shares"] = pos.SizeShares
 		if queueReason == "stop_loss" {
-			trail := pos.HighWaterCents * (1 - pos.StopLossPct/100)
+			hw := FloorCents1(pos.HighWaterCents)
+			trail := TrailingStopCentsFromHW(hw, pos.StopLossPct)
 			taskFields["trail_cents"] = trail
-			taskFields["high_water_cents"] = pos.HighWaterCents
+			taskFields["high_water_cents"] = hw
 			taskFields["stop_loss_pct"] = pos.StopLossPct
 		}
 	}
@@ -349,7 +350,7 @@ func (s *Service) ensureCloseTask(ctx context.Context, positionID, queueReason s
 		switch queueReason {
 		case "stop_loss":
 			d["stopLossPct"] = pos.StopLossPct
-			d["highWaterCents"] = pos.HighWaterCents
+			d["highWaterCents"] = FloorCents1(pos.HighWaterCents)
 			s.rt.Publish("position", "warn", "position.stop_loss_triggered", pos.AccountID, "", pos.TokenID, t.ID, d)
 		case "manual":
 			s.rt.Publish("position", "info", "position.close_queued", pos.AccountID, "", pos.TokenID, t.ID, d)
@@ -564,11 +565,13 @@ func (s *Service) runClosePosition(ctx context.Context, cl *polywiring.AuthedCLO
 		s.clearStopLossMarketEndedCooldown(positionID)
 		return s.st.SetRiskTaskSucceeded(ctx, taskID)
 	}
+	_, _, bookMeta := s.bookTopForClose(ctx, pos.TokenID)
 	evalBidCents, evalAskCents := 0.0, 0.0
 	if b, a, ok := s.BestBidAskCents(ctx, pos.TokenID); ok {
 		evalBidCents, evalAskCents = b, a
 	}
-	trailCents := pos.HighWaterCents * (1 - pos.StopLossPct/100)
+	hw := FloorCents1(pos.HighWaterCents)
+	trailCents := TrailingStopCentsFromHW(hw, pos.StopLossPct)
 
 	if reason := s.evaluateCloseTaskAbort(ctx, pos, nil); reason != "" {
 		j, mErr := marshalCloseAttemptSnapshot(pos, "pre_submit_abort", evalBidCents, evalAskCents, sellExtra, nil, modeExtra, nil, string(reason))
@@ -576,7 +579,7 @@ func (s *Service) runClosePosition(ctx context.Context, cl *polywiring.AuthedCLO
 			s.persistCloseAttemptDetail(ctx, taskID, j)
 		}
 		fields := logx.Pairs("task_id", taskID, "position_id", positionID, "token_id", pos.TokenID,
-			"abort_reason", string(reason), "trail_cents", trailCents, "high_water_cents", pos.HighWaterCents,
+			"abort_reason", string(reason), "trail_cents", trailCents, "high_water_cents", hw,
 			"stop_loss_pct", pos.StopLossPct, "eval_bid_cents", evalBidCents, "eval_ask_cents", evalAskCents,
 			"execution_mode", mode)
 		if mErr == nil {
@@ -592,8 +595,11 @@ func (s *Service) runClosePosition(ctx context.Context, cl *polywiring.AuthedCLO
 	}
 	preFields := logx.Pairs("task_id", taskID, "position_id", positionID, "token_id", pos.TokenID,
 		"execution_mode", mode, "base_extra_ticks", baseSellExtra, "effective_extra_ticks", sellExtra, "task_attempts", taskAttempts,
-		"position_shares", pos.SizeShares, "trail_cents", trailCents, "high_water_cents", pos.HighWaterCents,
+		"position_shares", pos.SizeShares, "trail_cents", trailCents, "high_water_cents", hw,
 		"stop_loss_pct", pos.StopLossPct, "eval_bid_cents", evalBidCents, "eval_ask_cents", evalAskCents)
+	for k, v := range bookMeta {
+		preFields[k] = v
+	}
 	s.log.WithFields(preFields).Info("风控：准备提交平仓 CLOB 订单")
 	logx.StopLoss().WithFields(preFields).Info("风控：准备提交平仓 CLOB 订单")
 

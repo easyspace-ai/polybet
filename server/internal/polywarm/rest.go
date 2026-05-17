@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/easyspace-ai/polybet/internal/bookcache"
+	"github.com/easyspace-ai/polybet/internal/polyexec"
+	"github.com/easyspace-ai/polybet/internal/store"
 )
 
 type clobBook struct {
@@ -26,8 +28,17 @@ type clobBook struct {
 }
 
 // RefreshFromREST pulls /book and replaces in-memory cache (matches Node warmPolyBook).
+// tokenID may be hex or decimal; cache is keyed by normalized 0x + 64 hex.
 func RefreshFromREST(ctx context.Context, clobBaseURL, httpProxy, tokenID string, cache *bookcache.Cache) error {
-	u := strings.TrimRight(clobBaseURL, "/") + "/book?token_id=" + url.QueryEscape(tokenID)
+	cacheKey := store.NormalizeRiskCLOBTokenID(tokenID)
+	if cacheKey == "" {
+		return fmt.Errorf("empty token id")
+	}
+	apiID := polyexec.CLOBAssetIDForAPI(tokenID)
+	if apiID == "" {
+		apiID = strings.TrimSpace(tokenID)
+	}
+	u := strings.TrimRight(clobBaseURL, "/") + "/book?token_id=" + url.QueryEscape(apiID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return err
@@ -63,13 +74,17 @@ func RefreshFromREST(ctx context.Context, clobBaseURL, httpProxy, tokenID string
 	for i := range book.Asks {
 		asks[i] = struct{ Price, Size string }{Price: book.Asks[i].Price, Size: book.Asks[i].Size}
 	}
-	cache.ReplaceBook(tokenID, bids, asks, ts)
+	cache.ReplaceBook(cacheKey, bids, asks, ts)
 	return nil
 }
 
 // BestBidCents returns best bid in cents from REST (fallback when WS empty).
 func BestBidCents(ctx context.Context, clobBaseURL, httpProxy, tokenID string) (float64, error) {
-	u := strings.TrimRight(clobBaseURL, "/") + "/book?token_id=" + url.QueryEscape(tokenID)
+	apiID := polyexec.CLOBAssetIDForAPI(tokenID)
+	if apiID == "" {
+		apiID = strings.TrimSpace(tokenID)
+	}
+	u := strings.TrimRight(clobBaseURL, "/") + "/book?token_id=" + url.QueryEscape(apiID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return 0, err
@@ -111,7 +126,11 @@ func BestBidCents(ctx context.Context, clobBaseURL, httpProxy, tokenID string) (
 // BestBidAskCents returns best bid and best ask in cents (probability × 100) from one /book fetch.
 // Best bid = highest buy price; best ask = lowest sell price.
 func BestBidAskCents(ctx context.Context, clobBaseURL, httpProxy, tokenID string) (bidCents, askCents float64, err error) {
-	u := strings.TrimRight(clobBaseURL, "/") + "/book?token_id=" + url.QueryEscape(tokenID)
+	apiID := polyexec.CLOBAssetIDForAPI(tokenID)
+	if apiID == "" {
+		apiID = strings.TrimSpace(tokenID)
+	}
+	u := strings.TrimRight(clobBaseURL, "/") + "/book?token_id=" + url.QueryEscape(apiID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return 0, 0, err
@@ -157,4 +176,41 @@ func BestBidAskCents(ctx context.Context, clobBaseURL, httpProxy, tokenID string
 		return 0, 0, fmt.Errorf("empty_book")
 	}
 	return bestBid * 100, bestAsk * 100, nil
+}
+
+// BookJSONHTTPOK reports whether CLOB GET /book returned HTTP 200 and the body decoded as a book payload.
+// It returns true even when bids and asks are empty (token is recognized by the book endpoint).
+func BookJSONHTTPOK(ctx context.Context, clobBaseURL, httpProxy, tokenID string) bool {
+	tid := strings.TrimSpace(tokenID)
+	if tid == "" {
+		return false
+	}
+	apiID := polyexec.CLOBAssetIDForAPI(tid)
+	if apiID == "" {
+		apiID = tid
+	}
+	u := strings.TrimRight(clobBaseURL, "/") + "/book?token_id=" + url.QueryEscape(apiID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return false
+	}
+	tr := http.DefaultTransport
+	if strings.TrimSpace(httpProxy) != "" {
+		pu, _ := url.Parse(httpProxy)
+		tr = &http.Transport{Proxy: http.ProxyURL(pu)}
+	}
+	client := &http.Client{Transport: tr, Timeout: 4 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return false
+	}
+	var book clobBook
+	if err := json.NewDecoder(res.Body).Decode(&book); err != nil {
+		return false
+	}
+	return true
 }

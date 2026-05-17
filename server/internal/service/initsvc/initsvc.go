@@ -3,8 +3,11 @@ package initsvc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -178,8 +181,25 @@ func (s *Service) checkProxy(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		s.updateStatus("proxy", StepStatus{Status: "error", Error: err.Error()})
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		errMsg := fmt.Sprintf("geoblock http %d", resp.StatusCode)
+		s.updateStatus("proxy", StepStatus{Status: "error", Error: errMsg})
+		return fmt.Errorf("%s", errMsg)
+	}
+	ct := strings.ToLower(resp.Header.Get("Content-Type"))
+	if !strings.Contains(ct, "json") && len(body) > 0 && body[0] == '<' {
+		errMsg := "geoblock returned HTML (proxy misconfigured or blocked)"
+		s.updateStatus("proxy", StepStatus{Status: "error", Error: errMsg})
+		return fmt.Errorf("%s", errMsg)
+	}
+
 	var result ProxyDetails
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		s.updateStatus("proxy", StepStatus{Status: "error", Error: err.Error()})
 		return err
 	}

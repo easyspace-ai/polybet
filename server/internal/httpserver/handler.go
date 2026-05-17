@@ -58,6 +58,7 @@ type Handler struct {
 		SyncAndBroadcastMarkets(ctx context.Context, force bool) error
 		RequestRestart()
 		ForceWSReconnect(channel string)
+		EnsureOrderbookToken(tokenID string)
 		OpenRiskPositionCount(ctx context.Context) int
 	}
 }
@@ -1063,7 +1064,9 @@ func (h *Handler) handlePatchRiskPosition(c *gin.Context) {
 		fields["stop_loss_pct"] = *body.StopLossPct
 	}
 	if body.HighWaterCents != nil {
-		fields["high_water_cents"] = *body.HighWaterCents
+		floored := risksvc.FloorCents1(*body.HighWaterCents)
+		body.HighWaterCents = &floored
+		fields["high_water_cents"] = floored
 	}
 	logx.Position().WithFields(fields).Info("风控持仓：PATCH 已更新")
 	c.JSON(200, gin.H{"ok": true, "position": h.riskRowFromPosition(c, p)})
@@ -1088,8 +1091,8 @@ func (h *Handler) riskRowFromPosition(ctx context.Context, p *store.RiskPosition
 }
 
 func riskRowFromPosition(p *store.RiskPosition) gin.H {
-	hw := p.HighWaterCents
-	trail := hw * (1 - p.StopLossPct/100)
+	hw := risksvc.FloorCents1(p.HighWaterCents)
+	trail := risksvc.TrailingStopCentsFromHW(hw, p.StopLossPct)
 	tid := strings.ToLower(strings.TrimSpace(p.TokenID))
 	return gin.H{
 		"id": p.ID, "title": p.Title, "sideLabel": p.SideLabel, "tokenId": tid,
