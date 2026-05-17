@@ -13,9 +13,13 @@ func TestApplyTopOfBookUpdatesTopOfBook(t *testing.T) {
 	if bb != 0.54 || ba != 0.55 {
 		t.Fatalf("top of book = %v/%v, want 0.54/0.55", bb, ba)
 	}
+	// ApplyTopOfBook does NOT inject size=0 placeholder levels into the
+	// ladder; depth must come from a real book event (ReplaceBook /
+	// ApplyPriceChange with non-zero size). Routers and UI consumers must
+	// not see phantom $0 rows.
 	bids, asks := c.GetBidsAsks(tid, 5)
-	if len(bids) != 1 || len(asks) != 1 {
-		t.Fatalf("depth levels bids=%d asks=%d", len(bids), len(asks))
+	if len(bids) != 0 || len(asks) != 0 {
+		t.Fatalf("expected no level rows from top-of-book-only update, got bids=%d asks=%d", len(bids), len(asks))
 	}
 }
 
