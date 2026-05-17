@@ -4,9 +4,27 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
+
+// DefaultStopLossPct is the fallback trailing stop percent applied when a
+// risk_position_configs row is missing or stop_loss_pct is NULL. Kept in
+// sync with risksvc.defaultStopPct (20%) and the seeded priceStopLossRanges
+// in bot_config so that an operator who reads "20%" in the dashboard does
+// not get silently downgraded to 10% on legacy rows.
+//
+// Historical context: the legacy SQL hardcoded 10 in five places while the
+// service layer hardcoded 20 in one. New positions always wrote stop_loss_pct
+// explicitly so the COALESCE fallback only fired for pre-migration rows
+// (or rows whose rpc row was somehow lost), but the discrepancy meant those
+// rows ran with a TIGHTER stop than the operator configured — surprise risk.
+const DefaultStopLossPct = 20.0
+
+func defaultStopLossPctSQL() string {
+	return fmt.Sprintf("%g", DefaultStopLossPct)
+}
 
 type RiskPosition struct {
 	ID             string
@@ -140,7 +158,7 @@ func (s *Store) listRiskPositionsWhere(ctx context.Context, clause string, args 
 		COALESCE(rp.poly_event_slug, ''), COALESCE(rp.poly_market_slug, ''),
 		rp.avg_entry_cents, rp.size_shares, rp.cost_usd,
 		COALESCE(rpc.high_water_cents, rp.avg_entry_cents) as high_water_cents,
-		COALESCE(rpc.stop_loss_pct, 10) as stop_loss_pct,
+		COALESCE(rpc.stop_loss_pct, ` + defaultStopLossPctSQL() + `) as stop_loss_pct,
 		rp.source, rp.status, rp.created_at, rp.updated_at
 	FROM risk_positions rp
 	LEFT JOIN risk_position_configs rpc ON rp.id = rpc.position_id
@@ -175,7 +193,7 @@ func (s *Store) GetRiskPosition(ctx context.Context, id string) (*RiskPosition, 
 		COALESCE(rp.poly_event_slug, ''), COALESCE(rp.poly_market_slug, ''),
 		rp.avg_entry_cents, rp.size_shares, rp.cost_usd,
 		COALESCE(rpc.high_water_cents, rp.avg_entry_cents) as high_water_cents,
-		COALESCE(rpc.stop_loss_pct, 10) as stop_loss_pct,
+		COALESCE(rpc.stop_loss_pct, `+defaultStopLossPctSQL()+`) as stop_loss_pct,
 		rp.source, rp.status, rp.created_at, rp.updated_at
 	FROM risk_positions rp
 	LEFT JOIN risk_position_configs rpc ON rp.id = rpc.position_id
@@ -210,7 +228,7 @@ func (s *Store) UpdateRiskPositionPolySlugs(ctx context.Context, id, eventSlug, 
 func (s *Store) UpdateRiskPositionHighWater(ctx context.Context, id string, hw float64) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO risk_position_configs(position_id, high_water_cents, stop_loss_pct, created_at, updated_at)
-		VALUES(?, ?, COALESCE((SELECT stop_loss_pct FROM risk_position_configs WHERE position_id = ?), 10), datetime('now'), datetime('now'))
+		VALUES(?, ?, COALESCE((SELECT stop_loss_pct FROM risk_position_configs WHERE position_id = ?), `+defaultStopLossPctSQL()+`), datetime('now'), datetime('now'))
 		ON CONFLICT(position_id) DO UPDATE SET high_water_cents = excluded.high_water_cents, updated_at = datetime('now')`,
 		id, hw, id)
 	return err
@@ -241,7 +259,7 @@ func (s *Store) UpdateRiskPositionStop(ctx context.Context, id string, stopLossP
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO risk_position_configs(position_id, high_water_cents, stop_loss_pct, created_at, updated_at)
-		VALUES(?, ?, COALESCE((SELECT stop_loss_pct FROM risk_position_configs WHERE position_id = ?), 10), datetime('now'), datetime('now'))
+		VALUES(?, ?, COALESCE((SELECT stop_loss_pct FROM risk_position_configs WHERE position_id = ?), `+defaultStopLossPctSQL()+`), datetime('now'), datetime('now'))
 		ON CONFLICT(position_id) DO UPDATE SET high_water_cents = excluded.high_water_cents, updated_at = datetime('now')`,
 		id, *highWaterCents, id)
 	return err
@@ -368,7 +386,7 @@ func (s *Store) GetOpenRiskPositionByToken(ctx context.Context, tokenID, account
 	tokenID = NormalizeRiskCLOBTokenID(tokenID)
 	row := s.db.QueryRowContext(ctx, `SELECT rp.id, rp.platform, rp.outcome_id, rp.token_id, rp.title, rp.side_label, rp.avg_entry_cents, rp.size_shares, rp.cost_usd,
 		COALESCE(rpc.high_water_cents, rp.avg_entry_cents) as high_water_cents,
-		COALESCE(rpc.stop_loss_pct, 10) as stop_loss_pct,
+		COALESCE(rpc.stop_loss_pct, `+defaultStopLossPctSQL()+`) as stop_loss_pct,
 		rp.source, rp.status, rp.created_at, rp.updated_at
 	FROM risk_positions rp
 	LEFT JOIN risk_position_configs rpc ON rp.id = rpc.position_id
