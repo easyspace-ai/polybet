@@ -228,6 +228,9 @@ func (e *Engine) runStreamOnce(ctx context.Context) string {
 	ms.OnBook(e.handleBook)
 	ms.OnPriceChange(e.handlePriceChange)
 	ms.OnBestBidAsk(e.handleBestBidAsk)
+	ms.OnNewMarket(e.handleNewMarket)
+	ms.OnTickSizeChange(e.handleTickSizeChange)
+	ms.OnMarketResolved(e.handleMarketResolved)
 
 	if err := ms.Start(ctx); err != nil {
 		fields := logx.Pairs("err", err.Error())
@@ -579,6 +582,69 @@ func (e *Engine) applyBookUpdate(assetIDRaw string, bid, ask float64, hasBook bo
 			e.onAfterRiskEval()
 		}
 	})
+}
+
+// handleNewMarket pushes the per-market taker fee surfaced by the CLOB WS
+// into bookcache so price-adjusted ladder lookups stay aligned with what
+// the exchange is actually charging — without waiting for the next Gamma
+// sync cycle. Called for every clob_token_id in the new_market payload.
+func (e *Engine) handleNewMarket(ev marketstream.NewMarketEvent) {
+	feeRate, ok := marketstream.NewMarketEventFeeRate(&ev)
+	if !ok {
+		return
+	}
+	for _, tok := range ev.ClobTokenIds {
+		tid := normalizeTokenID(tok)
+		if tid == "" {
+			continue
+		}
+		if e.cache != nil {
+			e.cache.SetFeeRate(tid, feeRate)
+		}
+	}
+	if e.log != nil {
+		e.log.WithFields(logx.Pairs(
+			"market", ev.Market, "condition_id", ev.ConditionID, "tokens", len(ev.ClobTokenIds),
+			"fee_rate", feeRate,
+		)).Info("止损引擎：CLOB new_market 已更新 bookcache 费率")
+	}
+}
+
+// handleTickSizeChange logs tick size changes for forensics. The bookcache
+// does not store tick size separately — order construction reads it
+// fresh from the REST /book before signing — but operators benefit from
+// seeing the change in the structured log timeline.
+func (e *Engine) handleTickSizeChange(ev marketstream.TickSizeChangeEvent) {
+	if e.log == nil {
+		return
+	}
+	e.log.WithFields(logx.Pairs(
+		"asset_id", ev.AssetID, "old_tick_size", ev.OldTickSize, "new_tick_size", ev.NewTickSize,
+	)).Info("止损引擎：CLOB tick_size_change")
+}
+
+// handleMarketResolved drops cached fee + book state for the resolved
+// market so a stale book doesn't satisfy the trade-gate freshness check
+// after the underlying market is settled.
+func (e *Engine) handleMarketResolved(ev marketstream.MarketResolvedEvent) {
+	if e.cache == nil {
+		return
+	}
+	for _, tok := range ev.AssetsIDs {
+		tid := normalizeTokenID(tok)
+		if tid == "" {
+			continue
+		}
+		// Set fee rate to 0 so any future stale ladder lookup is at least
+		// not double-charged for fees on a market that no longer exists.
+		// PruneIdle eventually evicts the token's book entirely.
+		e.cache.SetFeeRate(tid, 0)
+	}
+	if e.log != nil {
+		e.log.WithFields(logx.Pairs(
+			"market", ev.Market, "winning_outcome", ev.WinningOutcome, "tokens", len(ev.AssetsIDs),
+		)).Info("止损引擎：CLOB market_resolved")
+	}
 }
 
 func normalizeTokenID(id string) string {

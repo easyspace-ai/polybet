@@ -13,7 +13,12 @@ type priceRange struct {
 	StopLossPct float64 `json:"stopLossPct"`
 }
 
-const defaultStopPct = 20.0
+// defaultStopPct mirrors store.DefaultStopLossPct so the percent applied
+// to a brand-new position with no priceStopLossRanges match equals the
+// SQL fallback for legacy rows. Drift between these two constants used
+// to silently downgrade legacy positions to a tighter stop than the
+// dashboard reported.
+const defaultStopPct = store.DefaultStopLossPct
 
 // botKeyStopLossAbsCents holds the absolute cent-trail floor (0 = disabled).
 // See TrailingStopCentsFromHWWithAbs for semantics.
