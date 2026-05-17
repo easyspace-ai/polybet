@@ -264,7 +264,7 @@ func (s *Service) UpdateHighWaterAndMaybeQueueStop(ctx context.Context, p store.
 			return 0, 0, nil, err
 		}
 	}
-	trail = TrailingStopCentsFromHW(hw, p.StopLossPct)
+	trail = s.trailingStopCents(ctx, hw, p.StopLossPct)
 	curVal := bidCents
 	if curVal <= 0 && askCents > 0 {
 		curVal = askCents
@@ -343,10 +343,13 @@ func (s *Service) ensureCloseTask(ctx context.Context, positionID, queueReason s
 		taskFields["size_shares"] = pos.SizeShares
 		if queueReason == "stop_loss" {
 			hw := FloorCents1(pos.HighWaterCents)
-			trail := TrailingStopCentsFromHW(hw, pos.StopLossPct)
+			trail := s.trailingStopCents(ctx, hw, pos.StopLossPct)
 			taskFields["trail_cents"] = trail
 			taskFields["high_water_cents"] = hw
 			taskFields["stop_loss_pct"] = pos.StopLossPct
+			if abs := stopLossAbsCents(ctx, s.st); abs > 0 {
+				taskFields["stop_loss_abs_cents"] = abs
+			}
 		}
 	}
 	s.log.WithFields(taskFields).Info("风控：平仓任务已创建")
@@ -584,7 +587,7 @@ func (s *Service) runClosePosition(ctx context.Context, cl *polywiring.AuthedCLO
 		evalBidCents, evalAskCents = b, a
 	}
 	hw := FloorCents1(pos.HighWaterCents)
-	trailCents := TrailingStopCentsFromHW(hw, pos.StopLossPct)
+	trailCents := s.trailingStopCents(ctx, hw, pos.StopLossPct)
 
 	if reason := s.evaluateCloseTaskAbort(ctx, pos, nil); reason != "" {
 		j, mErr := marshalCloseAttemptSnapshot(pos, "pre_submit_abort", evalBidCents, evalAskCents, sellExtra, nil, modeExtra, nil, string(reason))

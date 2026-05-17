@@ -15,6 +15,10 @@ type priceRange struct {
 
 const defaultStopPct = 20.0
 
+// botKeyStopLossAbsCents holds the absolute cent-trail floor (0 = disabled).
+// See TrailingStopCentsFromHWWithAbs for semantics.
+const botKeyStopLossAbsCents = "priceStopLossAbsCents"
+
 func resolveStopLossPct(ctx context.Context, st *store.Store, entryCents float64) float64 {
 	raw, ok, err := st.GetBotConfig(ctx, "priceStopLossRanges")
 	if err != nil || !ok || raw == "" {
@@ -30,4 +34,24 @@ func resolveStopLossPct(ctx context.Context, st *store.Store, entryCents float64
 		}
 	}
 	return defaultStopPct
+}
+
+// stopLossAbsCents reads the configured absolute cent-trail floor (0 disables).
+// Returns 0 on parse error so the legacy percent-only path is preserved.
+func stopLossAbsCents(ctx context.Context, st *store.Store) float64 {
+	if st == nil {
+		return 0
+	}
+	v := st.GetBotConfigFloat(ctx, botKeyStopLossAbsCents, 0)
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+// trailingStopCents wraps TrailingStopCentsFromHWWithAbs with the configured
+// absolute cent floor. Use this everywhere a fresh trail is computed so the
+// abs-floor takes effect uniformly (UI display, stop trigger, snapshot).
+func (s *Service) trailingStopCents(ctx context.Context, hwCents, stopLossPct float64) float64 {
+	return TrailingStopCentsFromHWWithAbs(hwCents, stopLossPct, stopLossAbsCents(ctx, s.st))
 }
