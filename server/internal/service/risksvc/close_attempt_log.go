@@ -16,6 +16,11 @@ type closeAttemptExtras struct {
 	BuyRep        *polyexec.FOKBuyReport
 	LadderTier    string // populated by ladder mode: which tier executed this attempt
 	LadderAttempt int    // 0-based attempt index that selected the tier
+
+	// Hedge collateral telemetry (set by runCloseHedgeFOKBuy).
+	HedgeRequestedUSDC   float64
+	HedgeAvailableUSDC   float64
+	HedgeCollateralClamp bool
 }
 
 // closeAttemptSnapshot is stored in risk_tasks.last_attempt_detail and returned to the API for replay.
@@ -32,6 +37,9 @@ type closeAttemptSnapshot struct {
 	HedgeSizing          string  `json:"hedgeSizing,omitempty"`
 	LadderTier           string  `json:"ladderTier,omitempty"`
 	LadderAttempt        int     `json:"ladderAttempt,omitempty"`
+	HedgeRequestedUSDC   float64 `json:"hedgeRequestedUSDC,omitempty"`
+	HedgeAvailableUSDC   float64 `json:"hedgeAvailableUSDC,omitempty"`
+	HedgeCollateralClamp bool    `json:"hedgeCollateralClamp,omitempty"`
 	Side                 string  `json:"side,omitempty"` // SELL | BUY
 	CLOBTokenID          string  `json:"clobTokenId,omitempty"`
 	TickSize             string  `json:"tickSize,omitempty"`
@@ -93,6 +101,9 @@ func marshalCloseAttemptSnapshot(
 		snap.HedgeSizing = extras.HedgeSizing
 		snap.LadderTier = extras.LadderTier
 		snap.LadderAttempt = extras.LadderAttempt
+		snap.HedgeRequestedUSDC = extras.HedgeRequestedUSDC
+		snap.HedgeAvailableUSDC = extras.HedgeAvailableUSDC
+		snap.HedgeCollateralClamp = extras.HedgeCollateralClamp
 	}
 	if sellRep != nil {
 		snap.Side = "SELL"

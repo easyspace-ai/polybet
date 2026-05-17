@@ -9,6 +9,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/polyexec"
 	"github.com/easyspace-ai/polybet/internal/polywiring"
+	"github.com/easyspace-ai/polybet/internal/service/balancesvc"
 	"github.com/easyspace-ai/polybet/internal/store"
 	"github.com/easyspace-ai/polybet/internal/tg"
 )
@@ -275,10 +276,28 @@ func (s *Service) runCloseHedgeFOKBuy(ctx context.Context, cl *polywiring.Authed
 		return terr
 	}
 	mark01 := markPrice01FromEvalCents(evalBidCents, evalAskCents)
-	sizeUSDC, expectedOdds, serr := polyexec.HedgeFOKBuySizing(ctx, cl.Client, opp, pos.SizeShares, mark01, hedgeSizing, buyExtra)
+	// Read the live CLOB collateral so the hedge BUY can never request more
+	// USDC than the account has — without this clamp, the FOK was sometimes
+	// rejected by CLOB for "not enough balance" leaving the original
+	// position uncovered.
+	availableCollateral, balErr := balancesvc.FetchCLOBCollateralUSD(ctx, cl)
+	if balErr != nil && s.log != nil {
+		s.log.WithFields(logx.Pairs("task_id", taskID, "position_id", positionID, "err", balErr.Error())).Warn("风控：读取 CLOB 抵押余额失败，回退按请求名义对冲")
+		availableCollateral = 0 // 0 = "unknown" → fail-open in HedgeFOKBuySizingWithCollateral
+	}
+	reservePct := s.st.GetBotConfigFloat(ctx, "riskHedgeCollateralReservePct", 0.05)
+	minHedge := s.st.GetBotConfigFloat(ctx, "riskHedgeMinUSDC", 1.0)
+	hedgeRes, serr := polyexec.HedgeFOKBuySizingWithCollateral(ctx, cl.Client, opp, pos.SizeShares, mark01, hedgeSizing, buyExtra, availableCollateral, reservePct, minHedge)
 	if serr != nil {
 		_ = s.st.SetRiskPositionStatus(ctx, positionID, "open")
-		ex := &closeAttemptExtras{ExecutionMode: modeExtra.ExecutionMode, HedgeTokenID: opp, HedgeSizing: hedgeSizing}
+		ex := &closeAttemptExtras{
+			ExecutionMode:        modeExtra.ExecutionMode,
+			HedgeTokenID:         opp,
+			HedgeSizing:          hedgeSizing,
+			HedgeRequestedUSDC:   hedgeRes.RequestedUSDC,
+			HedgeAvailableUSDC:   hedgeRes.AvailableCollateral,
+			HedgeCollateralClamp: hedgeRes.CollateralClamped,
+		}
 		j, mErr := marshalCloseAttemptSnapshot(pos, "hedge_sizing_error", evalBidCents, evalAskCents, sellExtra, nil, ex, serr, "")
 		if mErr == nil {
 			s.persistCloseAttemptDetail(ctx, taskID, j)
@@ -286,13 +305,25 @@ func (s *Service) runCloseHedgeFOKBuy(ctx context.Context, cl *polywiring.Authed
 		s.log.WithFields(logx.Pairs("task_id", taskID, "position_id", positionID, "err", serr.Error())).Warn("风控：对冲预算计算失败")
 		return serr
 	}
+	sizeUSDC := hedgeRes.SizeUSDC
+	expectedOdds := hedgeRes.ExpectedOdds
 	submitMaxAgeMs := s.st.GetBotConfigInt(ctx, botKeyOrderSubmitMaxAgeMs, 0)
 	orderID, fillOdds, buyRep, err := polyexec.ExecuteFOKBuyWithOpts(ctx, cl.Client, cl.Signer, opp, sizeUSDC, expectedOdds, buyExtra, submitMaxAgeMs)
 	extras := &closeAttemptExtras{
-		ExecutionMode: modeExtra.ExecutionMode,
-		HedgeTokenID:  opp,
-		HedgeSizing:   hedgeSizing,
-		BuyRep:        buyRep,
+		ExecutionMode:        modeExtra.ExecutionMode,
+		HedgeTokenID:         opp,
+		HedgeSizing:          hedgeSizing,
+		BuyRep:               buyRep,
+		HedgeRequestedUSDC:   hedgeRes.RequestedUSDC,
+		HedgeAvailableUSDC:   hedgeRes.AvailableCollateral,
+		HedgeCollateralClamp: hedgeRes.CollateralClamped,
+	}
+	if hedgeRes.CollateralClamped && s.log != nil {
+		s.log.WithFields(logx.Pairs(
+			"task_id", taskID, "position_id", positionID,
+			"requested_usdc", hedgeRes.RequestedUSDC, "size_usdc", sizeUSDC,
+			"available_collateral", hedgeRes.AvailableCollateral, "reserve_usdc", hedgeRes.ReserveUSDC,
+		)).Warn("风控：对冲预算被抵押余额限制下调（部分对冲）")
 	}
 	if err != nil {
 		_ = s.st.SetRiskPositionStatus(ctx, positionID, "open")

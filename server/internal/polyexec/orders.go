@@ -416,8 +416,26 @@ func ExecuteFOKBuyWithOpts(ctx context.Context, client clob.Client, signer auth.
 	return id, fillOdds, rep, nil
 }
 
+// HedgeSizingResult carries the resolved USDC budget plus optional clamp
+// telemetry for the close-attempt forensic log. When CollateralClamped is
+// true, the BUY was downsized because the account did not have enough
+// available collateral to fund the full hedge — the operator may want to
+// cover the gap with another wallet or accept a partial hedge.
+type HedgeSizingResult struct {
+	SizeUSDC             float64 `json:"sizeUSDC"`
+	ExpectedOdds         float64 `json:"expectedOdds"`
+	RequestedUSDC        float64 `json:"requestedUSDC,omitempty"`
+	AvailableCollateral  float64 `json:"availableCollateral,omitempty"`
+	ReserveUSDC          float64 `json:"reserveUSDC,omitempty"`
+	CollateralClamped    bool    `json:"collateralClamped,omitempty"`
+}
+
 // HedgeFOKBuySizing computes USDC budget and expected odds (0–1) for hedge_fok_buy on the opponent outcome token.
 // markPrice01 is the held outcome mark in 0–1 (e.g. max(bid,ask) on YES); required for notional sizing.
+//
+// Backwards-compat wrapper. New callers should use
+// HedgeFOKBuySizingWithCollateral so the planner cannot exceed available
+// collateral.
 func HedgeFOKBuySizing(ctx context.Context, client clob.Client, oppTokenID string, heldShares, markPrice01 float64, sizing string, buyExtraTicks int) (sizeUSDC, expectedOdds float64, err error) {
 	tid, err := MustCLOBAssetIDForAPI(oppTokenID)
 	if err != nil {
@@ -450,6 +468,66 @@ func HedgeFOKBuySizing(ctx context.Context, client clob.Client, oppTokenID strin
 		return 0, 0, fmt.Errorf("hedge: zero sizeUSDC")
 	}
 	return sizeUSDC, expectedOdds, nil
+}
+
+// HedgeFOKBuySizingWithCollateral wraps HedgeFOKBuySizing and clamps the
+// resolved sizeUSDC to the account's available CLOB collateral minus a
+// configurable reserve fraction. Prevents the FOK BUY from being rejected
+// by CLOB for "not enough balance" mid-flight, which would force the
+// operator to manually retry the hedge.
+//
+// reservePct is a fraction in [0, 0.5) representing the share of collateral
+// to KEEP UNUSED (e.g. 0.05 = leave 5% headroom for fees and rounding).
+// Out-of-range values are clamped to 0 (no reserve).
+//
+// minHedgeUSDC is the smallest hedge the caller is willing to submit. When
+// the available collateral after reserve is below this, the function
+// returns ok=false so the close path can abort cleanly rather than fire a
+// dust-sized hedge that the CLOB lot size would reject.
+func HedgeFOKBuySizingWithCollateral(
+	ctx context.Context,
+	client clob.Client,
+	oppTokenID string,
+	heldShares, markPrice01 float64,
+	sizing string,
+	buyExtraTicks int,
+	availableCollateralUSDC float64,
+	reservePct float64,
+	minHedgeUSDC float64,
+) (HedgeSizingResult, error) {
+	requested, expected, err := HedgeFOKBuySizing(ctx, client, oppTokenID, heldShares, markPrice01, sizing, buyExtraTicks)
+	if err != nil {
+		return HedgeSizingResult{}, err
+	}
+	if reservePct < 0 || reservePct >= 0.5 {
+		reservePct = 0
+	}
+	reserve := availableCollateralUSDC * reservePct
+	usable := availableCollateralUSDC - reserve
+	if usable < 0 {
+		usable = 0
+	}
+	out := HedgeSizingResult{
+		SizeUSDC:            requested,
+		ExpectedOdds:        expected,
+		RequestedUSDC:       requested,
+		AvailableCollateral: availableCollateralUSDC,
+		ReserveUSDC:         reserve,
+	}
+	if availableCollateralUSDC <= 0 {
+		// Fail-open path used when the caller could not retrieve a balance:
+		// pass through the requested sizing and let CLOB reject if it must.
+		// Ledger 0 is treated as "unknown" rather than "broke".
+		return out, nil
+	}
+	if requested > usable {
+		out.SizeUSDC = usable
+		out.CollateralClamped = true
+	}
+	if out.SizeUSDC < minHedgeUSDC {
+		return out, fmt.Errorf("hedge_collateral_insufficient: requested=%.2f available=%.2f reserve=%.2f min=%.2f", requested, availableCollateralUSDC, reserve, minHedgeUSDC)
+	}
+	return out, nil
 }
 
 func timeNowMs() int64 { return time.Now().UnixMilli() }
