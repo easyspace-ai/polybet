@@ -68,6 +68,9 @@ func riskMetaForAPI(m risksvc.Meta) memcache.RiskMeta {
 		UserWsConnecting:        m.UserWsConnecting,
 		OutboundProxyConfigured: m.OutboundProxyConfigured,
 		MinOpenRiskShares:       m.MinOpenRiskShares,
+		RiskCloseExecutionMode:  m.RiskCloseExecutionMode,
+		RiskCloseFakWorstPrice:  m.RiskCloseFakWorstPrice,
+		RiskHedgeBuySizing:      m.RiskHedgeBuySizing,
 	}
 }
 
@@ -85,11 +88,50 @@ func riskPositionsFetchResult(ctx context.Context, requestID string, risk *risks
 	ctxBase := context.WithoutCancel(ctx)
 	rows, m, err := risk.ListRiskPositionsEnriched(ctxBase, meta, accountID)
 	if err != nil {
-		logrus.WithFields(logx.Pairs("request_id", requestID, "err", err.Error())).Warn("风控持仓：列举失败，返回空列表")
+		fields := logx.Pairs("request_id", requestID, "err", err.Error())
+		logrus.WithFields(fields).Warn("风控持仓：列举失败，返回空列表")
+		logx.Position().WithFields(fields).Warn("风控持仓：列举失败，返回空列表")
 		snap := risk.DashboardListingMeta(ctxBase, meta)
 		return memcache.RiskFetchResult{Positions: []map[string]any{}, Meta: riskMetaForAPI(snap)}, nil
 	}
 	return memcache.RiskFetchResult{Positions: rows, Meta: riskMetaForAPI(m)}, nil
+}
+
+func validateBotConfigUpdate(key, value string) error {
+	k := strings.TrimSpace(key)
+	v := strings.TrimSpace(value)
+	switch k {
+	case "riskCloseExecutionMode":
+		switch strings.ToLower(v) {
+		case "fok_sell", "fak_sell", "hedge_fok_buy":
+			return nil
+		default:
+			return fmt.Errorf("riskCloseExecutionMode must be fok_sell, fak_sell, or hedge_fok_buy")
+		}
+	case "riskHedgeBuySizing":
+		switch strings.ToLower(v) {
+		case "notional", "shares":
+			return nil
+		default:
+			return fmt.Errorf("riskHedgeBuySizing must be notional or shares")
+		}
+	case "riskHedgeAutoHidePosition":
+		if _, err := strconv.ParseBool(v); err != nil {
+			return fmt.Errorf("riskHedgeAutoHidePosition must be a boolean")
+		}
+		return nil
+	case "riskCloseFakWorstPrice":
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return fmt.Errorf("riskCloseFakWorstPrice must be a number")
+		}
+		if f <= 0 || f >= 1 {
+			return fmt.Errorf("riskCloseFakWorstPrice must be between 0 and 1 exclusive")
+		}
+		return nil
+	default:
+		return nil
+	}
 }
 
 func NewHandler(d Deps) *Handler {
@@ -241,6 +283,10 @@ func (h *Handler) handleUpdateConfig(c *gin.Context) {
 	}
 	_ = c.BindJSON(&body)
 	key := c.Param("key")
+	if err := validateBotConfigUpdate(key, body.Value); err != nil {
+		c.JSON(400, gin.H{"error": "invalid_config", "message": err.Error()})
+		return
+	}
 	if err := h.st.UpsertBotConfig(c, key, body.Value); err != nil {
 		c.JSON(500, gin.H{"error": "update_failed"})
 		return
@@ -511,7 +557,9 @@ func (h *Handler) fetchAndCachePolyBook(ctx context.Context, tokenID string) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, clobAPI, nil)
 	resp, err := client.Do(req)
 	if err != nil {
-		logrus.WithFields(logx.Pairs("token_id", tokenID, "err", err)).Warn("订单簿：从 Polymarket 拉取失败")
+		fields := logx.Pairs("token_id", tokenID, "err", err)
+		logrus.WithFields(fields).Warn("订单簿：从 Polymarket 拉取失败")
+		logx.Trade().WithFields(fields).Warn("订单簿：从 Polymarket 拉取失败")
 		return
 	}
 	defer resp.Body.Close()
@@ -546,21 +594,27 @@ func (h *Handler) handleTradePreview(c *gin.Context) {
 	res := routersvc.BuildAllocationPlan(c, h.st, h.cache, oid, side, size)
 	if !res.OK {
 		st := mapRouterErr(res.Error)
-		logrus.WithFields(logx.Pairs(
+		fields := logx.Pairs(
 			"request_id", rid, "outcome_id", oid, "side", side, "size", size,
 			"router_code", res.Error.Code, "router_message", res.Error.Message, "detail", res.Error.Detail, "http_status", st,
-		)).Warn("交易预览失败")
+		)
+		logrus.WithFields(fields).Warn("交易预览失败")
+		logx.Trade().WithFields(fields).Warn("交易预览失败")
 		c.JSON(st, gin.H{"error": res.Error.Code, "message": res.Error.Message, "detail": res.Error.Detail})
 		return
 	}
-	logrus.WithFields(logx.Pairs("request_id", rid, "outcome_id", oid, "side", side, "size", size, "allocations", len(res.Plan.Allocations))).Info("交易预览成功")
+	fields := logx.Pairs("request_id", rid, "outcome_id", oid, "side", side, "size", size, "allocations", len(res.Plan.Allocations))
+	logrus.WithFields(fields).Info("交易预览成功")
+	logx.Trade().WithFields(fields).Info("交易预览成功")
 	c.JSON(200, res.Plan)
 }
 
 func (h *Handler) handleTradeExecute(c *gin.Context) {
 	rid := c.GetString("request_id")
 	if h.cfg.ReadOnlyMode {
-		logrus.WithFields(logx.Pairs("request_id", rid)).Warn("交易执行：只读模式已阻止")
+		fields := logx.Pairs("request_id", rid)
+		logrus.WithFields(fields).Warn("交易执行：只读模式已阻止")
+		logx.Trade().WithFields(fields).Warn("交易执行：只读模式已阻止")
 		c.JSON(403, gin.H{"error": "read_only"})
 		return
 	}
@@ -584,17 +638,21 @@ func (h *Handler) handleTradeExecute(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "only_buy_supported"})
 		return
 	}
-	logrus.WithFields(logx.Pairs("request_id", rid, "outcome_id", body.OutcomeID, "side", body.Side, "size", body.Size)).Info("交易执行：收到下单请求")
+	execFields := logx.Pairs("request_id", rid, "outcome_id", body.OutcomeID, "side", body.Side, "size", body.Size)
+	logrus.WithFields(execFields).Info("交易执行：收到下单请求")
+	logx.Trade().WithFields(execFields).Info("交易执行：收到下单请求")
 	if h.logService != nil {
 		h.logService.Info("交易", fmt.Sprintf("用户下单: %s $%.2f", body.OutcomeID, body.Size))
 	}
 	res := routersvc.BuildAllocationPlan(c, h.st, h.cache, body.OutcomeID, body.Side, body.Size)
 	if !res.OK {
 		st := mapRouterErr(res.Error)
-		logrus.WithFields(logx.Pairs(
+		fields := logx.Pairs(
 			"request_id", rid, "outcome_id", body.OutcomeID, "size", body.Size,
 			"router_code", res.Error.Code, "router_message", res.Error.Message, "detail", res.Error.Detail, "http_status", st,
-		)).Warn("交易执行：路由计划失败")
+		)
+		logrus.WithFields(fields).Warn("交易执行：路由计划失败")
+		logx.Trade().WithFields(fields).Warn("交易执行：路由计划失败")
 		c.JSON(st, gin.H{"error": res.Error.Code, "message": res.Error.Message, "detail": res.Error.Detail})
 		return
 	}
@@ -613,11 +671,18 @@ func (h *Handler) handleTradeExecute(c *gin.Context) {
 		return
 	}
 	if code == 422 {
-		logrus.WithFields(logx.Pairs("request_id", rid, "outcome_id", body.OutcomeID, "response_status", resp.Status,
-			"allocations", len(resp.Trades), "trades", tradeResultsLog(resp.Trades))).Warn("交易执行：未完全成交")
+		fields := logx.Pairs("request_id", rid, "outcome_id", body.OutcomeID, "response_status", resp.Status,
+			"allocations", len(resp.Trades), "trades", tradeResultsLog(resp.Trades))
+		logrus.WithFields(fields).Warn("交易执行：未完全成交")
+		logx.Trade().WithFields(fields).Warn("交易执行：未完全成交")
 	} else {
-		logrus.WithFields(logx.Pairs("request_id", rid, "outcome_id", body.OutcomeID, "http_status", code,
-			"response_status", resp.Status, "trades", tradeResultsLog(resp.Trades))).Info("交易执行：已完成")
+		fields := logx.Pairs("request_id", rid, "outcome_id", body.OutcomeID, "http_status", code,
+			"response_status", resp.Status, "trades", tradeResultsLog(resp.Trades))
+		logrus.WithFields(fields).Info("交易执行：已完成")
+		logx.Trade().WithFields(fields).Info("交易执行：已完成")
+		if code == 201 {
+			logx.Open().WithFields(fields).Info("交易执行：开仓成交")
+		}
 	}
 	if h.logService != nil {
 		filled := 0
@@ -795,6 +860,10 @@ func (h *Handler) handleRiskPositions(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "risk"})
 		return
 	}
+	if !fromCache {
+		fields := logx.Pairs("request_id", c.GetString("request_id"), "count", len(rows))
+		logx.Position().WithFields(fields).Info("风控持仓：列表已刷新")
+	}
 	c.JSON(200, gin.H{"positions": rows, "meta": meta2, "cached": fromCache})
 }
 
@@ -810,9 +879,13 @@ func (h *Handler) handleRiskRefresh(c *gin.Context) {
 		if err := h.risk.SyncRiskFromRESTTrades(c); err != nil {
 			es := err.Error()
 			syncErr = &es
-			logrus.WithFields(logx.Pairs("request_id", rid, "err", es)).Warn("风控刷新：CLOB 成交同步失败")
+			fields := logx.Pairs("request_id", rid, "err", es)
+			logrus.WithFields(fields).Warn("风控刷新：CLOB 成交同步失败")
+			logx.Position().WithFields(fields).Warn("风控刷新：CLOB 成交同步失败")
 		} else {
-			logrus.WithFields(logx.Pairs("request_id", rid)).Info("风控刷新：CLOB 成交同步成功")
+			fields := logx.Pairs("request_id", rid)
+			logrus.WithFields(fields).Info("风控刷新：CLOB 成交同步成功")
+			logx.Position().WithFields(fields).Info("风控刷新：CLOB 成交同步成功")
 		}
 	}
 	if h.app != nil {
@@ -941,12 +1014,17 @@ func buildTaskRows(tasks []store.RiskTask) []gin.H {
 		if t.Reason.Valid {
 			reason = t.Reason.String
 		}
+		lad := interface{}(nil)
+		if t.LastAttemptDetail.Valid {
+			lad = t.LastAttemptDetail.String
+		}
 		out = append(out, gin.H{
 			"id": t.ID, "type": t.Type, "positionId": pid, "status": t.Status,
 			"attempts": t.Attempts, "lastError": le, "reason": reason,
-			"createdAt": t.CreatedAt.UTC().Format(time.RFC3339Nano),
-			"nextRunAt": t.NextRunAt.UTC().Format(time.RFC3339Nano),
-			"updatedAt": t.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"createdAt":         t.CreatedAt.UTC().Format(time.RFC3339Nano),
+			"nextRunAt":         t.NextRunAt.UTC().Format(time.RFC3339Nano),
+			"updatedAt":         t.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			"lastAttemptDetail": lad,
 		})
 	}
 	return out
@@ -980,6 +1058,14 @@ func (h *Handler) handlePatchRiskPosition(c *gin.Context) {
 		c.JSON(404, gin.H{"error": "not_found"})
 		return
 	}
+	fields := logx.Pairs("request_id", c.GetString("request_id"), "position_id", id)
+	if body.StopLossPct != nil {
+		fields["stop_loss_pct"] = *body.StopLossPct
+	}
+	if body.HighWaterCents != nil {
+		fields["high_water_cents"] = *body.HighWaterCents
+	}
+	logx.Position().WithFields(fields).Info("风控持仓：PATCH 已更新")
 	c.JSON(200, gin.H{"ok": true, "position": h.riskRowFromPosition(c, p)})
 }
 
@@ -1023,7 +1109,9 @@ func (h *Handler) handleClosePosition(c *gin.Context) {
 		c.JSON(403, gin.H{"error": "read_only"})
 		return
 	}
-	logrus.WithFields(logx.Pairs("request_id", rid, "position_id", pid)).Info("风控平仓：API 入队请求")
+	fields := logx.Pairs("request_id", rid, "position_id", pid)
+	logrus.WithFields(fields).Info("风控平仓：API 入队请求")
+	logx.StopLoss().WithFields(fields).Info("风控平仓：API 入队请求")
 	if err := h.risk.EnqueueClosePosition(c, pid); err != nil {
 		logrus.WithFields(logx.Pairs("request_id", rid, "position_id", pid, "err", err.Error())).Error("风控平仓：入队失败")
 		c.JSON(500, gin.H{"error": "enqueue_failed"})

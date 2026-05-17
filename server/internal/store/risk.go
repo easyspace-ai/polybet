@@ -38,16 +38,17 @@ type RiskPositionConfig struct {
 }
 
 type RiskTask struct {
-	ID         string
-	Type       string
-	PositionID sql.NullString
-	Status     string
-	Attempts   int
-	LastError  sql.NullString
-	Reason     sql.NullString
-	NextRunAt  time.Time
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID                string
+	Type              string
+	PositionID        sql.NullString
+	Status            string
+	Attempts          int
+	LastError         sql.NullString
+	Reason            sql.NullString
+	LastAttemptDetail sql.NullString // JSON: last FOK submit snapshot or pre-submit abort context
+	NextRunAt         time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 func (s *Store) InsertRiskAppliedTrade(ctx context.Context, id string, accountID string) (bool, error) {
@@ -432,7 +433,7 @@ func sqlNullable(ns sql.NullString) any {
 func (s *Store) ListDueRiskTasks(ctx context.Context, limit int) ([]RiskTask, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, type, position_id, status, attempts, last_error, reason, next_run_at, created_at, updated_at
+		SELECT id, type, position_id, status, attempts, last_error, reason, next_run_at, created_at, updated_at, last_attempt_detail
 		FROM risk_tasks WHERE status IN ('pending','failed') AND next_run_at <= ? ORDER BY next_run_at ASC LIMIT ?`,
 		now, limit)
 	if err != nil {
@@ -445,13 +446,15 @@ func (s *Store) ListDueRiskTasks(ctx context.Context, limit int) ([]RiskTask, er
 		var pid sql.NullString
 		var le sql.NullString
 		var reason sql.NullString
+		var lad sql.NullString
 		var nr, ca, ua string
-		if err := rows.Scan(&t.ID, &t.Type, &pid, &t.Status, &t.Attempts, &le, &reason, &nr, &ca, &ua); err != nil {
+		if err := rows.Scan(&t.ID, &t.Type, &pid, &t.Status, &t.Attempts, &le, &reason, &nr, &ca, &ua, &lad); err != nil {
 			return nil, err
 		}
 		t.PositionID = pid
 		t.LastError = le
 		t.Reason = reason
+		t.LastAttemptDetail = lad
 		t.NextRunAt = parseSQLiteTime(nr)
 		t.CreatedAt = parseSQLiteTime(ca)
 		t.UpdatedAt = parseSQLiteTime(ua)
@@ -462,6 +465,14 @@ func (s *Store) ListDueRiskTasks(ctx context.Context, limit int) ([]RiskTask, er
 
 func (s *Store) SetRiskTaskRunning(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE risk_tasks SET status = 'running', updated_at = datetime('now') WHERE id = ?`, id)
+	return err
+}
+
+// UpdateRiskTaskLastAttemptDetail stores JSON (FOK limit price, shares, book snapshot, abort context) for UI and replay.
+func (s *Store) UpdateRiskTaskLastAttemptDetail(ctx context.Context, id, detailJSON string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE risk_tasks SET last_attempt_detail = ?, updated_at = datetime('now') WHERE id = ?`,
+		detailJSON, id)
 	return err
 }
 

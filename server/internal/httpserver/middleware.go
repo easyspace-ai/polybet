@@ -3,9 +3,12 @@ package httpserver
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	"github.com/easyspace-ai/polybet/internal/logx"
 )
 
 func requestID() gin.HandlerFunc {
@@ -17,6 +20,25 @@ func requestID() gin.HandlerFunc {
 		c.Writer.Header().Set("X-Request-ID", id)
 		c.Set("request_id", id)
 		c.Next()
+	}
+}
+
+func accessLog() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		path := c.Request.URL.Path
+		if path == "" {
+			path = "/"
+		}
+		logx.LogHTTPAccess(
+			c.Request.Method,
+			path,
+			c.Writer.Status(),
+			time.Since(start),
+			c.ClientIP(),
+			c.GetString("request_id"),
+		)
 	}
 }
 

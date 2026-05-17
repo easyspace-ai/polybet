@@ -50,7 +50,9 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 	for _, a := range plan.Allocations {
 		_, mid, label, _, home, away, err := st.GetOutcomeWithMarket(ctx, a.OutcomeID)
 		if err != nil {
-			logrus.WithFields(logx.Pairs("outcome_id", a.OutcomeID, "platform", a.Platform, "err", err.Error())).Warn("交易：查询 outcome 失败")
+			fields := logx.Pairs("outcome_id", a.OutcomeID, "platform", a.Platform, "err", err.Error())
+			logrus.WithFields(fields).Warn("交易：查询 outcome 失败")
+			logx.Trade().WithFields(fields).Warn("交易：查询 outcome 失败")
 			results = append(results, TradeResult{TradeID: "unknown", Status: "failed", Platform: a.Platform, FailureReason: "outcome_lookup: " + err.Error()})
 			continue
 		}
@@ -66,12 +68,14 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 			results = append(results, TradeResult{TradeID: tid, Status: "failed", Platform: a.Platform, FailureReason: "unsupported_platform"})
 			continue
 		}
-		logrus.WithFields(logx.Pairs(
+		fields := logx.Pairs(
 			"trade_id", tid, "outcome_id", a.OutcomeID, "token_id", a.ExternalOutcomeID,
 			"size_usdc", a.Size, "expected_odds", a.ExpectedOdds, "extra_ticks", buyExtra,
 			"match", home+" vs "+away, "label", label,
-		)).Info("交易：发送 FOK 买单")
-		orderID, fillOdds, err := polyexec.ExecuteFOKBuy(ctx, cl.Client, cl.Signer, a.ExternalOutcomeID, a.Size, a.ExpectedOdds, buyExtra)
+		)
+		logrus.WithFields(fields).Info("交易：发送 FOK 买单")
+		logx.Trade().WithFields(fields).Info("交易：发送 FOK 买单")
+		orderID, fillOdds, _, err := polyexec.ExecuteFOKBuy(ctx, cl.Client, cl.Signer, a.ExternalOutcomeID, a.Size, a.ExpectedOdds, buyExtra)
 		if err != nil {
 			reason := err.Error()
 			_ = st.MarkTradeFailed(ctx, tid, reason)
@@ -84,7 +88,10 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 			continue
 		}
 		_ = st.MarkTradeFilled(ctx, tid, orderID, a.Size, fillOdds)
-		logrus.WithFields(logx.Pairs("trade_id", tid, "outcome_id", a.OutcomeID, "order_id", orderID, "fill_odds", fillOdds)).Info("交易：FOK 买单成交")
+		fillFields := logx.Pairs("trade_id", tid, "outcome_id", a.OutcomeID, "order_id", orderID, "fill_odds", fillOdds)
+		logrus.WithFields(fillFields).Info("交易：FOK 买单成交")
+		logx.Trade().WithFields(fillFields).Info("交易：FOK 买单成交")
+		logx.Open().WithFields(fillFields).Info("交易：FOK 买单成交（开仓）")
 		tg.Notify(ctx, cfg, st, logrus.StandardLogger(), fmt.Sprintf(
 			"Polybet 开单成交\n%s vs %s · %s · $%.2f @ 成交 %.1f¢\norder %s",
 			home, away, label, a.Size, fillOdds*100, orderID,
@@ -121,7 +128,9 @@ func ExecutePlan(ctx context.Context, cfg *config.Config, st *store.Store, cache
 		code = 201
 	}
 	msg := tradeFailureSummary(results)
-	logrus.WithFields(logx.Pairs("side", side, "allocations", len(plan.Allocations), "status", status, "http_status", code, "all_filled", allFilled, "any_filled", anyFilled, "failure_summary", msg)).Info("交易：计划执行汇总")
+	summaryFields := logx.Pairs("side", side, "allocations", len(plan.Allocations), "status", status, "http_status", code, "all_filled", allFilled, "any_filled", anyFilled, "failure_summary", msg)
+	logrus.WithFields(summaryFields).Info("交易：计划执行汇总")
+	logx.Trade().WithFields(summaryFields).Info("交易：计划执行汇总")
 	return &TradeResponse{Status: status, Message: msg, Trades: results, Plan: plan}, code, nil
 }
 

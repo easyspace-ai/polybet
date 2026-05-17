@@ -190,8 +190,13 @@ func (s *Store) SeedDefaultConfig(ctx context.Context) error {
 		{"priceStopLossRanges", `[{"id":"r1","name":"20-30¢","minCents":20,"maxCents":30,"fundPct":17,"stopLossPct":20},{"id":"r2","name":"30-40¢","minCents":30,"maxCents":40,"fundPct":17,"stopLossPct":20},{"id":"r3","name":"40-50¢","minCents":40,"maxCents":50,"fundPct":17,"stopLossPct":20},{"id":"r4","name":"50-60¢","minCents":50,"maxCents":60,"fundPct":17,"stopLossPct":20},{"id":"r5","name":"60-70¢","minCents":60,"maxCents":70,"fundPct":16,"stopLossPct":20},{"id":"r6","name":"70-80¢","minCents":70,"maxCents":80,"fundPct":16,"stopLossPct":20}]`},
 		{"polymarketFokBuyExtraTicks", "5"},
 		{"polymarketFokSellExtraTicks", "5"},
+		{"riskStopLossMarketEndedCooldownSec", "300"},
 		{"minOpenRiskShares", "1"},
 		{"onboardingComplete", "false"},
+		{"riskCloseExecutionMode", "fok_sell"},
+		{"riskCloseFakWorstPrice", "0.01"},
+		{"riskHedgeBuySizing", "notional"},
+		{"riskHedgeAutoHidePosition", "true"},
 	}
 	for _, r := range append(rows, wsConfigSeedRows()...) {
 		if err := s.InsertBotConfigDefault(ctx, r.k, r.v); err != nil {

@@ -30,12 +30,13 @@ import {
   CheckCircle,
   ChevronsUpDown,
   Radio,
+  Scale,
 } from "lucide-react";
 import { applyWSConfigPatch } from "@/hooks/useWSConfig";
 
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
 
-type SettingsTab = "general" | "connection" | "proxy" | "telegram" | "tags" | "prices" | "sound" | "about";
+type SettingsTab = "general" | "connection" | "proxy" | "telegram" | "tags" | "prices" | "riskClose" | "sound" | "about";
 
 const TABS: { id: SettingsTab; icon: typeof Monitor; title: string; desc: string }[] = [
   { id: "general", icon: Monitor, title: "通用", desc: "主题、机器人参数" },
@@ -44,6 +45,7 @@ const TABS: { id: SettingsTab; icon: typeof Monitor; title: string; desc: string
   { id: "telegram", icon: Send, title: "电报", desc: "Bot 与消息推送" },
   { id: "tags", icon: Tag, title: "分类", desc: "赛事标签管理" },
   { id: "prices", icon: DollarSign, title: "价格", desc: "资金区间与止损" },
+  { id: "riskClose", icon: Scale, title: "止损平仓", desc: "FOK / FAK / 对冲执行" },
   { id: "sound", icon: Volume2, title: "声音", desc: "提醒与音效测试" },
   { id: "about", icon: Info, title: "关于", desc: "版本与更新" },
 ];
@@ -55,6 +57,10 @@ const KEY_DESCRIPTIONS: Record<string, string> = {
   orderBookLevels: "投注单 / 交易面板中，实时推送的 Polymarket 盘口档位数。",
   polymarketFokBuyExtraTicks: "Polymarket FOK 买入：在最优卖价之上额外允许的 tick 档数。",
   polymarketFokSellExtraTicks: "Polymarket FOK 卖出：在最优买价之下额外放宽的 tick 档数。",
+  riskCloseExecutionMode: "全局止损触发后的 CLOB 执行方式：整笔 FOK 卖、FAK 卖（可部分成交并重试）、或对手 token 上 FOK 买单对冲。",
+  riskCloseFakWorstPrice: "FAK 卖出时的 worst-price 限价（0–1，如 0.01 表示最低约 1¢），会按市场 tick 截断。",
+  riskHedgeBuySizing: "对冲模式：按持仓等值美元（notional）或按同份额估算买单预算（shares）。",
+  riskHedgeAutoHidePosition: "对冲成功后是否自动「不再监控」原 YES 行（默认 true），避免止损引擎反复触发；链上原仓仍在。",
   minOpenRiskShares: "风控列表与 CLOB 余额对账：仅保留份额 ≥ 本值的持仓。",
 };
 
@@ -171,6 +177,7 @@ function SettingsPage() {
               {active === "telegram" && <TelegramTab rows={rows} onSave={save} />}
               {active === "tags" && <TagsTab rows={rows} onSave={save} />}
               {active === "prices" && <PricesTab rows={rows} onSave={save} />}
+              {active === "riskClose" && <RiskCloseExecutionTab rows={rows} onSave={save} />}
               {active === "sound" && <SoundTab />}
               {active === "about" && <AboutTab />}
             </>
@@ -732,6 +739,122 @@ function TagsTab({
         className="w-full h-10 rounded-md text-[12px] font-semibold transition bg-brand text-brand-foreground hover:opacity-90 disabled:opacity-50"
       >
         {saving ? "保存中..." : "保存赛事分类"}
+      </button>
+    </div>
+  );
+}
+
+function RiskCloseExecutionTab({
+  rows,
+  onSave,
+}: {
+  rows: { key: string; value: string }[];
+  onSave: (k: string, v: string) => Promise<void>;
+}) {
+  const row = (k: string, d: string) => (rows.find((r) => r.key === k)?.value ?? d).trim();
+
+  const [execMode, setExecMode] = useState(row("riskCloseExecutionMode", "fok_sell"));
+  const [worst, setWorst] = useState(row("riskCloseFakWorstPrice", "0.01"));
+  const [hedgeSizing, setHedgeSizing] = useState(row("riskHedgeBuySizing", "notional"));
+  const [autoHide, setAutoHide] = useState(row("riskHedgeAutoHidePosition", "true").toLowerCase() !== "false");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setExecMode(row("riskCloseExecutionMode", "fok_sell"));
+    setWorst(row("riskCloseFakWorstPrice", "0.01"));
+    setHedgeSizing(row("riskHedgeBuySizing", "notional"));
+    setAutoHide(row("riskHedgeAutoHidePosition", "true").toLowerCase() !== "false");
+  }, [rows]);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await onSave("riskCloseExecutionMode", execMode);
+      await onSave("riskCloseFakWorstPrice", worst.trim() || "0.01");
+      await onSave("riskHedgeBuySizing", hedgeSizing);
+      await onSave("riskHedgeAutoHidePosition", autoHide ? "true" : "false");
+      toast.success("已保存", { description: "止损平仓执行" });
+    } catch (err) {
+      toast.error("保存失败", { description: err instanceof Error ? err.message : "未知错误" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="rounded-[var(--tm-rad)] border border-border bg-surface p-5 space-y-5 max-w-xl">
+      <div>
+        <div className="text-[13px] font-semibold">止损平仓执行（全局）</div>
+        <p className="text-[11px] text-muted-foreground mt-1 leading-[1.55]">
+          自动止损、手动卖出与一键平仓子任务均读取此处配置。FAK 部分成交会保留持仓并自动重试；对冲不会卖出原 YES，仅买对手 outcome。
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <div className="text-[11px] font-medium text-foreground">执行方式</div>
+        <label className="flex items-start gap-2 text-[12px] cursor-pointer">
+          <input type="radio" name="riskCloseMode" checked={execMode === "fok_sell"} onChange={() => setExecMode("fok_sell")} className="mt-0.5" />
+          <span>
+            <span className="font-medium">FOK 卖出</span>
+            <span className="block text-[10.5px] text-muted-foreground">整笔立刻成交否则取消（默认）。</span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 text-[12px] cursor-pointer">
+          <input type="radio" name="riskCloseMode" checked={execMode === "fak_sell"} onChange={() => setExecMode("fak_sell")} className="mt-0.5" />
+          <span>
+            <span className="font-medium">FAK 卖出</span>
+            <span className="block text-[10.5px] text-muted-foreground">能成交多少算多少，余量取消；未平完会重试。</span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 text-[12px] cursor-pointer">
+          <input type="radio" name="riskCloseMode" checked={execMode === "hedge_fok_buy"} onChange={() => setExecMode("hedge_fok_buy")} className="mt-0.5" />
+          <span>
+            <span className="font-medium">反向 FOK 买单对冲</span>
+            <span className="block text-[10.5px] text-muted-foreground">仅在二元市场（两个 clobTokenIds）可用；不关闭原 YES 记录。</span>
+          </span>
+        </label>
+      </div>
+
+      {execMode === "fak_sell" && (
+        <div className="space-y-1">
+          <label className="text-[11px] font-medium">FAK worst 价（0–1）</label>
+          <input
+            value={worst}
+            onChange={(e) => setWorst(e.target.value)}
+            className="w-full h-9 px-2 text-[12px] rounded border border-border bg-background"
+          />
+          <p className="text-[10px] text-muted-foreground">{KEY_DESCRIPTIONS.riskCloseFakWorstPrice}</p>
+        </div>
+      )}
+
+      {execMode === "hedge_fok_buy" && (
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <div className="text-[11px] font-medium">对冲预算</div>
+            <label className="flex items-center gap-2 text-[12px] cursor-pointer">
+              <input type="radio" name="hedgeSizing" checked={hedgeSizing === "notional"} onChange={() => setHedgeSizing("notional")} />
+              按持仓等值美元（max(bid,ask) 作 YES 标记价）
+            </label>
+            <label className="flex items-center gap-2 text-[12px] cursor-pointer">
+              <input type="radio" name="hedgeSizing" checked={hedgeSizing === "shares"} onChange={() => setHedgeSizing("shares")} />
+              按同份额 × 对手卖价上限估算 USDC
+            </label>
+          </div>
+          <label className="flex items-center gap-2 text-[12px] cursor-pointer">
+            <input type="checkbox" checked={autoHide} onChange={(e) => setAutoHide(e.target.checked)} />
+            对冲成功后自动「不再监控」该 YES（推荐）
+          </label>
+          <p className="text-[10px] text-muted-foreground">{KEY_DESCRIPTIONS.riskHedgeAutoHidePosition}</p>
+        </div>
+      )}
+
+      <button
+        type="button"
+        disabled={saving}
+        onClick={() => void handleSave()}
+        className="w-full h-10 rounded-md text-[12px] font-semibold transition bg-brand text-brand-foreground hover:opacity-90 disabled:opacity-50"
+      >
+        {saving ? "保存中..." : "保存止损平仓配置"}
       </button>
     </div>
   );

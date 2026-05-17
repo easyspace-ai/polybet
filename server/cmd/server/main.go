@@ -36,6 +36,12 @@ func main() {
 	} else if d := logx.PolybetLogsDir(); d != "" {
 		logrus.WithFields(logx.Pairs("log_dir", d)).Info("进程日志已追加写入磁盘")
 	}
+	if err := logx.OpenCategoryLoggers(); err != nil {
+		logrus.WithFields(logx.Pairs("err", err.Error())).Warn("分类日志未启用")
+	}
+	if err := logx.OpenHTTPAccessLog(); err != nil {
+		logrus.WithFields(logx.Pairs("err", err.Error())).Warn("HTTP 访问日志未启用")
+	}
 	defer logx.ClosePersistentLog()
 
 	sqlDB, err := db.Open(cfg.DatabaseURL)

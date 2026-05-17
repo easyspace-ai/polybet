@@ -136,14 +136,18 @@ func (e *Engine) Run(ctx context.Context) {
 	ms.OnBestBidAsk(e.handleBestBidAsk)
 
 	if err := ms.Start(ctx); err != nil {
-		e.log.WithFields(logx.Pairs("err", err.Error())).Error("止损引擎：MarketStream 启动失败")
+		fields := logx.Pairs("err", err.Error())
+		e.log.WithFields(fields).Error("止损引擎：MarketStream 启动失败")
+		logx.StopLoss().WithFields(fields).Error("止损引擎：MarketStream 启动失败")
 		return
 	}
 	defer ms.Stop()
 
 	go func() {
 		for err := range ms.Errors() {
-			e.log.WithFields(logx.Pairs("err", err.Error())).Warn("止损引擎：MarketStream 报错")
+			fields := logx.Pairs("err", err.Error())
+			e.log.WithFields(fields).Warn("止损引擎：MarketStream 报错")
+			logx.StopLoss().WithFields(fields).Warn("止损引擎：MarketStream 报错")
 			if e.runtime != nil {
 				e.runtime.Publish("transport", "warn", "ws.market.error", e.accountID(), "", "", "", map[string]any{"err": err.Error()})
 			}
@@ -231,7 +235,9 @@ func (e *Engine) reconcile(ctx context.Context, ms *marketstream.MarketStream) {
 	e.mu.Unlock()
 
 	if acct.ID != prevAcct {
-		e.log.WithFields(logx.Pairs("from", prevAcct, "to", acct.ID)).Info("止损引擎：活跃账户已切换")
+		fields := logx.Pairs("from", prevAcct, "to", acct.ID)
+		e.log.WithFields(fields).Info("止损引擎：活跃账户已切换")
+		logx.StopLoss().WithFields(fields).Info("止损引擎：活跃账户已切换")
 		if e.runtime != nil {
 			e.runtime.Publish("transport", "info", "risk.account_switched", acct.ID, "", "", "", map[string]any{"from": prevAcct, "to": acct.ID})
 		}
@@ -240,7 +246,9 @@ func (e *Engine) reconcile(ctx context.Context, ms *marketstream.MarketStream) {
 			return
 		}
 		if err := e.risk.SyncPositionsFromDataAPI(ctx, acct.ID); err != nil {
-			e.log.WithFields(logx.Pairs("err", err.Error())).Warn("止损引擎：切换账户后同步持仓失败")
+			fields := logx.Pairs("err", err.Error())
+			e.log.WithFields(fields).Warn("止损引擎：切换账户后同步持仓失败")
+			logx.Position().WithFields(fields).Warn("止损引擎：切换账户后同步持仓失败")
 		}
 		e.mu.Lock()
 		e.lastAccountID = acct.ID
@@ -253,7 +261,9 @@ func (e *Engine) reconcile(ctx context.Context, ms *marketstream.MarketStream) {
 	min := e.st.GetBotConfigFloat(ctx, "minOpenRiskShares", 1)
 	rows, err := e.st.ListOpenRiskPositionsMinShares(ctx, min, acct.ID)
 	if err != nil {
-		e.log.WithFields(logx.Pairs("err", err.Error())).Warn("止损引擎：列举持仓失败")
+		fields := logx.Pairs("err", err.Error())
+		e.log.WithFields(fields).Warn("止损引擎：列举持仓失败")
+		logx.StopLoss().WithFields(fields).Warn("止损引擎：列举持仓失败")
 		return
 	}
 
@@ -295,7 +305,9 @@ func (e *Engine) reconcile(ctx context.Context, ms *marketstream.MarketStream) {
 				return
 			}
 			if err := ms.Unsubscribe(chunk...); err != nil {
-				e.log.WithFields(logx.Pairs("err", err.Error())).Warn("止损引擎：取消订阅失败")
+				fields := logx.Pairs("err", err.Error())
+				e.log.WithFields(fields).Warn("止损引擎：取消订阅失败")
+				logx.StopLoss().WithFields(fields).Warn("止损引擎：取消订阅失败")
 			}
 		}
 		e.mu.Lock()
@@ -317,7 +329,9 @@ func (e *Engine) reconcile(ctx context.Context, ms *marketstream.MarketStream) {
 				return
 			}
 			if err := ms.Subscribe(chunk...); err != nil {
-				e.log.WithFields(logx.Pairs("err", err.Error())).Warn("止损引擎：订阅失败")
+				fields := logx.Pairs("err", err.Error())
+				e.log.WithFields(fields).Warn("止损引擎：订阅失败")
+				logx.StopLoss().WithFields(fields).Warn("止损引擎：订阅失败")
 			}
 		}
 		e.mu.Lock()

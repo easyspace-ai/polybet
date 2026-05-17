@@ -44,6 +44,63 @@ function relAgeShort(iso: string | null): string {
   return `${Math.floor(h / 24)}d前`;
 }
 
+/** Human-readable lines from server `last_attempt_detail` JSON (FOK / abort snapshot). */
+function closeAttemptSummaryLines(raw: string | null | undefined): string[] {
+  if (!raw?.trim()) return [];
+  try {
+    const o = JSON.parse(raw) as Record<string, unknown>;
+    const lines: string[] = [];
+    const push = (label: string, v: unknown) => {
+      if (v === undefined || v === null || v === '') return;
+      lines.push(`${label}: ${typeof v === 'number' && Number.isFinite(v) ? (Math.abs(v) < 1e-6 ? String(v) : String(v)) : String(v)}`);
+    };
+    push('执行模式', o.executionMode);
+    push('对冲 token', o.hedgeTokenId);
+    push('对冲预算方式', o.hedgeSizing);
+    push('买单 USDC', o.sizeUSDC);
+    push('方向', o.side);
+    push('worst 配置价', o.worstPriceConfigured);
+    push('阶段', o.phase);
+    push('时间(UTC)', o.at);
+    push('移动止损线¢', o.trailCents);
+    push('高水位¢', o.highWaterCents);
+    push('止损%', o.stopLossPct);
+    push('评估侧bid¢', o.evalBidCents);
+    push('评估侧ask¢', o.evalAskCents);
+    push('CLOB best bid(0-1)', o.bestBid);
+    push('CLOB best ask(0-1)', o.bestAsk);
+    push('提交限价(小数)', o.limitPriceDecimal);
+    push('提交限价¢', o.limitPriceCents);
+    push('下单份额', o.sharesSubmitted);
+    push('持仓请求份额', o.positionSharesRequested);
+    push('链上条件余额份额', o.onChainBalanceShares);
+    push('tick', o.tickSize);
+    push('额外tick', o.extraTicks);
+    push('orderId', o.orderId);
+    push('错误步骤', o.errorStep);
+    push('错误', o.err);
+    push('中止原因', o.abortReason);
+    return lines;
+  } catch {
+    return [raw];
+  }
+}
+
+function riskCloseModeBanner(meta: { riskCloseExecutionMode?: string; riskCloseFakWorstPrice?: number; riskHedgeBuySizing?: string } | null): string {
+  const m = (meta?.riskCloseExecutionMode || "fok_sell").trim();
+  if (m === "fak_sell") {
+    const w = meta?.riskCloseFakWorstPrice;
+    const ws = w != null && Number.isFinite(w) ? String(w) : "0.01";
+    return `当前全局平仓：FAK 卖出（worst ${ws}）· 部分成交会自动重试`;
+  }
+  if (m === "hedge_fok_buy") {
+    const s = (meta?.riskHedgeBuySizing || "notional").trim();
+    const sizing = s === "shares" ? "按份额估算买单" : "按等值美元买单";
+    return `当前全局平仓：反向 FOK 买单对冲（${sizing}）· 不卖出原 YES；成功后默认不再监控该仓位`;
+  }
+  return "当前全局平仓：FOK 卖出（整笔成交或取消）";
+}
+
 function RiskPage() {
   const { positions, meta, tasks, loading, error, refresh, lastRefresh } = useRiskControlCache();
   const [closingId, setClosingId] = useState<string | null>(null);
@@ -223,6 +280,14 @@ function RiskPage() {
           </>
         }
       />
+
+      <div className="px-6 pt-4 -mb-2">
+        <div className="rounded-lg border border-border/80 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground leading-snug">
+          {riskCloseModeBanner(meta)}
+          <span className="text-border mx-1.5">·</span>
+          <span className="opacity-90">在「设置 → 止损平仓」修改；单笔无法切换模式。</span>
+        </div>
+      </div>
 
       <div className="p-6 pb-28 space-y-6 animate-slide-up">
         {error && (
@@ -452,7 +517,9 @@ function RiskPage() {
                   )}
                 </div>
                 <p className="text-[11px] text-muted-foreground max-w-2xl text-right flex-1 min-w-[200px]">
-                  止损触发与手动平仓均进入此队列；状态为 <code className="text-warning">FAILED</code> 时自动重试。
+                  止损触发与手动平仓均进入此队列；状态为 <code className="text-warning">FAILED</code> 时自动重试，重试会逐步提高 FOK 卖单的 tick 让步（仍单笔 FOK，非挂单拆单）。
+                  市场已结束导致 <code className="text-muted-foreground">aborted:market_ended</code> 后，同一持仓的止损入队会冷却一段时间，避免刷屏。
+                  每条任务可展开查看最近一次提交的 <strong className="text-foreground/90">限价、份额、CLOB 盘口快照与移动止损线</strong>（与服务器日志一致）。
                 </p>
               </div>
               {tasks.length === 0 ? (
@@ -461,8 +528,11 @@ function RiskPage() {
                 </div>
               ) : (
                 <div className="surface-elevated rounded-xl border border-border p-4 font-mono text-[11.5px] space-y-2 max-h-[400px] overflow-y-auto scrollbar-thin">
-                  {tasks.map((t) => (
-                    <div key={t.id} className="flex items-start gap-3 py-1 hover:bg-accent/30 px-2 -mx-2 rounded transition-colors">
+                  {tasks.map((t) => {
+                    const detailLines = closeAttemptSummaryLines(t.lastAttemptDetail ?? null);
+                    return (
+                    <div key={t.id} className="flex flex-col gap-1 py-1.5 hover:bg-accent/30 px-2 -mx-2 rounded transition-colors border-b border-border/40 last:border-0">
+                      <div className="flex items-start gap-3 flex-wrap">
                       <span className="text-muted-foreground shrink-0">{t.updatedAt.slice(5, 16)}</span>
                       <span className="text-brand shrink-0">{t.type}</span>
                       <span className={cn(
@@ -471,6 +541,7 @@ function RiskPage() {
                         t.status === 'failed' && "text-danger",
                         t.status === 'pending' && "text-warning",
                         t.status === 'running' && "text-blue-400",
+                        t.status === 'cancelled' && "text-muted-foreground",
                       )}>
                         {t.status}
                       </span>
@@ -478,9 +549,17 @@ function RiskPage() {
                         <span className="text-muted-foreground">pos {t.positionId.slice(0, 8)}…</span>
                       )}
                       <span className="text-muted-foreground">#{t.attempts}</span>
-                      {t.lastError && <span className="text-danger/80">{t.lastError}</span>}
+                      {t.reason && <span className="text-[9px] text-muted-foreground">reason {t.reason}</span>}
+                      {t.lastError && <span className="text-danger/80 break-all">{t.lastError}</span>}
+                      </div>
+                      {detailLines.length > 0 && (
+                        <pre className="text-[9.5px] leading-snug text-muted-foreground/95 pl-0 sm:pl-[4.5rem] whitespace-pre-wrap break-all max-h-40 overflow-y-auto scrollbar-thin border-l border-border/60 pl-2 ml-1">
+                          {detailLines.join('\n')}
+                        </pre>
+                      )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </section>

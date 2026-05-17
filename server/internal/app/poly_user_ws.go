@@ -124,7 +124,10 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 					a.LogService.Error("风控", fmt.Sprintf("应用 CLOB 交易失败: %s", err.Error()))
 				}
 			} else if applied {
-				a.Log.WithFields(logx.Pairs("trade_id", tradeID, "asset_id", assetID, "side", ev.Side, "size", sizeStr, "price", priceStr, "status", ev.Status)).Info("用户 CLOB WS：成交已入账")
+				wsFields := logx.Pairs("trade_id", tradeID, "asset_id", assetID, "side", ev.Side, "size", sizeStr, "price", priceStr, "status", ev.Status)
+				a.Log.WithFields(wsFields).Info("用户 CLOB WS：成交已入账")
+				logx.Trade().WithFields(wsFields).Info("用户 CLOB WS：成交已入账")
+				logx.Open().WithFields(wsFields).Info("用户 CLOB WS：成交已入账")
 				if a.LogService != nil {
 					a.LogService.Info("交易", fmt.Sprintf("CLOB 成交: %s %s $%s @ $%s", ev.Side, assetID, sizeStr, priceStr))
 				}
@@ -134,7 +137,9 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 					})
 				}
 				if syncErr := a.Risk.SyncPositionsFromDataAPI(context.Background(), accountID); syncErr != nil {
-					a.Log.WithFields(logx.Pairs("err", syncErr.Error())).Warn("用户 CLOB WS：成交后同步持仓失败")
+					syncFields := logx.Pairs("err", syncErr.Error(), "trade_id", tradeID)
+					a.Log.WithFields(syncFields).Warn("用户 CLOB WS：成交后同步持仓失败")
+					logx.Position().WithFields(syncFields).Warn("用户 CLOB WS：成交后同步持仓失败")
 				}
 				a.rebuildAndBroadcastCache()
 			} else {
@@ -257,6 +262,9 @@ func (a *App) rebuildAndBroadcastCache() {
 			UserWsConnecting:        enrichedMeta.UserWsConnecting,
 			OutboundProxyConfigured: enrichedMeta.OutboundProxyConfigured,
 			MinOpenRiskShares:       enrichedMeta.MinOpenRiskShares,
+			RiskCloseExecutionMode:  enrichedMeta.RiskCloseExecutionMode,
+			RiskCloseFakWorstPrice:  enrichedMeta.RiskCloseFakWorstPrice,
+			RiskHedgeBuySizing:      enrichedMeta.RiskHedgeBuySizing,
 		}})
 		if shouldBroadcast {
 			a.Hub.BroadcastJSON(map[string]any{"type": "position_update", "data": rows})
@@ -320,6 +328,9 @@ func (a *App) InvalidateAndRebuildCache() {
 			UserWsConnecting:        enrichedMeta.UserWsConnecting,
 			OutboundProxyConfigured: enrichedMeta.OutboundProxyConfigured,
 			MinOpenRiskShares:       enrichedMeta.MinOpenRiskShares,
+			RiskCloseExecutionMode:  enrichedMeta.RiskCloseExecutionMode,
+			RiskCloseFakWorstPrice:  enrichedMeta.RiskCloseFakWorstPrice,
+			RiskHedgeBuySizing:      enrichedMeta.RiskHedgeBuySizing,
 		}})
 		a.Hub.BroadcastJSON(map[string]any{"type": "position_update", "data": rows})
 	}

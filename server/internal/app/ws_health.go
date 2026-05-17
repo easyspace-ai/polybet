@@ -89,7 +89,9 @@ func (a *App) runWSHealthCheck(ctx context.Context, ws wsconfig.Settings) {
 			continue
 		}
 		_ = a.Risk.RiskEvaluateTokenAfterBookUpdate(ctx, tid)
-		a.Log.WithFields(logx.Pairs("token_id", tid, "bid_cents", cents)).Info("WS 健康检查：已用 REST 价评估止损")
+		fields := logx.Pairs("token_id", tid, "bid_cents", cents)
+		a.Log.WithFields(fields).Info("WS 健康检查：已用 REST 价评估止损")
+		logx.StopLoss().WithFields(fields).Info("WS 健康检查：已用 REST 价评估止损")
 	}
 	a.broadcastPolyStatus()
 }

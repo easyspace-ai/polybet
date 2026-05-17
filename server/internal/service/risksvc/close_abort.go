@@ -100,11 +100,15 @@ func (s *Service) abortCloseTask(ctx context.Context, taskID, positionID string,
 	if err := s.st.SetRiskTaskCancelled(ctx, taskID, msg); err != nil {
 		return err
 	}
+	if reason == closeAbortMarketEnded {
+		s.setStopLossMarketEndedCooldown(ctx, positionID)
+	}
 	fields := logx.Pairs("task_id", taskID, "position_id", positionID, "reason", msg)
 	if pos != nil {
 		fields["token_id"] = pos.TokenID
 	}
 	s.log.WithFields(fields).Info("风控：平仓任务已终止（不再重试）")
+	logx.StopLoss().WithFields(fields).Info("风控：平仓任务已终止（不再重试）")
 	if s.rt != nil && pos != nil {
 		s.rt.Publish("position", "info", "position.close_aborted", pos.AccountID, "", pos.TokenID, taskID, map[string]any{
 			"taskId": taskID, "abortReason": string(reason),

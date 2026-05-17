@@ -17,10 +17,9 @@ import (
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/logx"
-	"github.com/easyspace-ai/polybet/internal/riskruntime"
-	"github.com/easyspace-ai/polybet/internal/polyexec"
 	"github.com/easyspace-ai/polybet/internal/polywarm"
 	"github.com/easyspace-ai/polybet/internal/polywiring"
+	"github.com/easyspace-ai/polybet/internal/riskruntime"
 	"github.com/easyspace-ai/polybet/internal/service/polysession"
 	"github.com/easyspace-ai/polybet/internal/store"
 	"github.com/easyspace-ai/polybet/internal/tg"
@@ -52,13 +51,55 @@ type Service struct {
 	// Gamma /markets cache for risk UI (token id → last fetch).
 	gammaMetaMu sync.Mutex
 	gammaMeta   map[string]gammaMetaCache
+
+	// After aborted:market_ended, suppress new stop_loss tasks until deadline (reduces task-queue spam).
+	slMktEndedCoolMu sync.Mutex
+	slMktEndedCool   map[string]time.Time // positionID -> cooldown until (UTC)
 }
 
 func New(cfg *config.Config, st *store.Store, cache *bookcache.Cache, dataClient data.Client, log *logrus.Logger, rt *riskruntime.Bus) *Service {
 	if log == nil {
 		log = logrus.StandardLogger()
 	}
-	return &Service{cfg: cfg, st: st, cache: cache, dataClient: dataClient, log: log, rt: rt, WSMeta: NewWSMetaCollector()}
+	return &Service{cfg: cfg, st: st, cache: cache, dataClient: dataClient, log: log, rt: rt, WSMeta: NewWSMetaCollector(), slMktEndedCool: make(map[string]time.Time)}
+}
+
+func (s *Service) setStopLossMarketEndedCooldown(ctx context.Context, positionID string) {
+	sec := s.st.GetBotConfigInt(ctx, "riskStopLossMarketEndedCooldownSec", 300)
+	if sec <= 0 || strings.TrimSpace(positionID) == "" {
+		return
+	}
+	until := time.Now().UTC().Add(time.Duration(sec) * time.Second)
+	s.slMktEndedCoolMu.Lock()
+	defer s.slMktEndedCoolMu.Unlock()
+	s.slMktEndedCool[positionID] = until
+}
+
+func (s *Service) clearStopLossMarketEndedCooldown(positionID string) {
+	if strings.TrimSpace(positionID) == "" {
+		return
+	}
+	s.slMktEndedCoolMu.Lock()
+	defer s.slMktEndedCoolMu.Unlock()
+	delete(s.slMktEndedCool, positionID)
+}
+
+func (s *Service) stopLossMarketEndedCooldownActive(positionID string) bool {
+	if strings.TrimSpace(positionID) == "" {
+		return false
+	}
+	now := time.Now().UTC()
+	s.slMktEndedCoolMu.Lock()
+	defer s.slMktEndedCoolMu.Unlock()
+	until, ok := s.slMktEndedCool[positionID]
+	if !ok {
+		return false
+	}
+	if now.After(until) {
+		delete(s.slMktEndedCool, positionID)
+		return false
+	}
+	return true
 }
 
 // SetUserWSState updates dashboard-facing User WS meta (best-effort).
@@ -93,7 +134,7 @@ func (s *Service) TouchUserWSMessage() {
 	s.userWSLastMsgMs.Store(time.Now().UnixMilli())
 }
 
-func (s *Service) fillMeta(meta Meta) Meta {
+func (s *Service) fillMeta(ctx context.Context, meta Meta) Meta {
 	meta.UserWsConnected = s.userWSConnected.Load()
 	meta.UserWsConnecting = s.userWSConnecting.Load()
 	meta.OrderbookWsConnected = s.orderbookWSConnected.Load()
@@ -112,13 +153,18 @@ func (s *Service) fillMeta(meta Meta) Meta {
 	if issue != "" {
 		meta.UserWsLastIssue = &issue
 	}
+	if ctx != nil && s.st != nil {
+		meta.RiskCloseExecutionMode = effectiveRiskCloseExecutionMode(ctx, s.st)
+		meta.RiskCloseFakWorstPrice = s.st.GetBotConfigFloat(ctx, botKeyRiskCloseFakWorstPrice, 0.01)
+		meta.RiskHedgeBuySizing = effectiveRiskHedgeBuySizing(ctx, s.st)
+	}
 	return meta
 }
 
 // DashboardListingMeta returns dashboard-facing meta without loading positions
 // (used when position listing degrades to an empty snapshot).
 func (s *Service) DashboardListingMeta(ctx context.Context, base Meta) Meta {
-	meta := s.fillMeta(base)
+	meta := s.fillMeta(ctx, base)
 	meta.MinOpenRiskShares = s.minShares(ctx)
 	return meta
 }
@@ -214,7 +260,13 @@ func (s *Service) UpdateHighWaterAndMaybeQueueStop(ctx context.Context, p store.
 	triggerCents := stopTriggerReferenceCents(bidCents, askCents)
 	if p.Status == "open" && p.SizeShares >= s.minShares(ctx) && triggerCents > 0 && triggerCents <= trail {
 		if s.log != nil && bidCents <= 0 && mark > 0 {
-			s.log.WithFields(logx.Pairs("position_id", p.ID, "token_id", p.TokenID, "trigger_cents", triggerCents, "trail", trail, "mark_cents", mark)).Info("风控：移动止损触发（无买盘，按盘口高点/卖价比较）")
+			fields := logx.Pairs(
+				"position_id", p.ID, "token_id", p.TokenID,
+				"trigger_cents", triggerCents, "trail_cents", trail, "mark_cents", mark,
+				"bid_cents", bidCents, "ask_cents", askCents, "high_water_cents", hw, "stop_loss_pct", p.StopLossPct,
+			)
+			s.log.WithFields(fields).Info("风控：移动止损触发（无买盘，按盘口高点/卖价比较）")
+			logx.StopLoss().WithFields(fields).Info("风控：移动止损触发（无买盘，按盘口高点/卖价比较）")
 		}
 		if err := s.ensureCloseTask(ctx, p.ID, "stop_loss"); err != nil {
 			return hw, trail, cur, err
@@ -225,7 +277,9 @@ func (s *Service) UpdateHighWaterAndMaybeQueueStop(ctx context.Context, p store.
 
 // EnqueueClosePosition queues a manual close (same as Node enqueueClosePosition).
 func (s *Service) EnqueueClosePosition(ctx context.Context, positionID string) error {
-	s.log.WithFields(logx.Pairs("position_id", positionID)).Info("风控：平仓任务已入队")
+	fields := logx.Pairs("position_id", positionID)
+	s.log.WithFields(fields).Info("风控：平仓任务已入队")
+	logx.StopLoss().WithFields(fields).Info("风控：平仓任务已入队")
 	return s.ensureCloseTask(ctx, positionID, "manual")
 }
 
@@ -245,6 +299,15 @@ func (s *Service) ensureCloseTask(ctx context.Context, positionID, queueReason s
 		s.log.WithFields(logx.Pairs("position_id", positionID)).Info("风控：该持仓已有待处理平仓任务")
 		return nil
 	}
+	if queueReason == "manual" || queueReason == "" {
+		s.clearStopLossMarketEndedCooldown(positionID)
+	}
+	if queueReason == "stop_loss" && s.stopLossMarketEndedCooldownActive(positionID) {
+		if s.log != nil {
+			s.log.WithFields(logx.Pairs("position_id", positionID, "queue_reason", queueReason)).Debug("风控：止损入队跳过（市场已结束后冷却中）")
+		}
+		return nil
+	}
 	pos, _ := s.st.GetRiskPosition(ctx, positionID)
 	t := &store.RiskTask{
 		ID:         uuid.NewString(),
@@ -261,7 +324,23 @@ func (s *Service) ensureCloseTask(ctx context.Context, positionID, queueReason s
 		s.log.WithFields(logx.Pairs("position_id", positionID, "err", err.Error())).Error("风控：写入平仓任务失败")
 		return err
 	}
-	s.log.WithFields(logx.Pairs("position_id", positionID, "task_id", t.ID)).Info("风控：平仓任务已创建")
+	taskFields := logx.Pairs("position_id", positionID, "task_id", t.ID, "queue_reason", queueReason)
+	if pos != nil {
+		taskFields["token_id"] = pos.TokenID
+		taskFields["size_shares"] = pos.SizeShares
+		if queueReason == "stop_loss" {
+			trail := pos.HighWaterCents * (1 - pos.StopLossPct/100)
+			taskFields["trail_cents"] = trail
+			taskFields["high_water_cents"] = pos.HighWaterCents
+			taskFields["stop_loss_pct"] = pos.StopLossPct
+		}
+	}
+	s.log.WithFields(taskFields).Info("风控：平仓任务已创建")
+	if queueReason == "stop_loss" {
+		logx.StopLoss().WithFields(taskFields).Info("风控：止损平仓任务已创建")
+	} else if queueReason != "" {
+		logx.StopLoss().WithFields(taskFields).Info("风控：平仓任务已创建")
+	}
 	if queueReason != "" {
 		tg.Notify(ctx, s.cfg, s.st, s.log, formatCloseQueuedTelegram(queueReason, pos, positionID))
 	}
@@ -356,9 +435,13 @@ func (s *Service) ProcessRiskTasksOnce(ctx context.Context) error {
 		}
 
 		_ = s.st.SetRiskTaskRunning(ctx, t.ID)
-		s.log.WithFields(logx.Pairs("task_id", t.ID, "type", t.Type, "position_id", t.PositionID.String, "attempts", t.Attempts)).Info("风控：执行任务")
+		effTicks := effectiveFokSellExtraTicks(sellExtra, t.Attempts)
+		runFields := logx.Pairs("task_id", t.ID, "type", t.Type, "position_id", t.PositionID.String, "attempts", t.Attempts,
+			"base_extra_ticks", sellExtra, "effective_extra_ticks", effTicks)
+		s.log.WithFields(runFields).Info("风控：执行任务")
+		logx.StopLoss().WithFields(runFields).Info("风控：执行任务")
 
-		runErr := s.runClosePosition(ctx, cl, t, sellExtra)
+		runErr := s.runClosePosition(ctx, cl, t, sellExtra, t.Attempts)
 		if runErr != nil {
 			if errors.Is(runErr, errCloseTaskAborted) {
 				mu.Lock()
@@ -443,60 +526,85 @@ func (s *Service) ProcessRiskTasksOnce(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) runClosePosition(ctx context.Context, cl *polywiring.AuthedCLOB, task store.RiskTask, sellExtra int) error {
+func (s *Service) persistCloseAttemptDetail(ctx context.Context, taskID, detailJSON string) {
+	if taskID == "" || detailJSON == "" {
+		return
+	}
+	if err := s.st.UpdateRiskTaskLastAttemptDetail(ctx, taskID, detailJSON); err != nil && s.log != nil {
+		s.log.WithFields(logx.Pairs("task_id", taskID, "err", err.Error())).Warn("风控：写入 last_attempt_detail 失败")
+	}
+}
+
+// effectiveFokSellExtraTicks adds aggressiveness on task retries (not Strategy B ladder).
+func effectiveFokSellExtraTicks(baseSellExtra, taskAttempts int) int {
+	n := baseSellExtra + minInt(taskAttempts, 8)
+	if n > 30 {
+		return 30
+	}
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+func (s *Service) runClosePosition(ctx context.Context, cl *polywiring.AuthedCLOB, task store.RiskTask, baseSellExtra int, taskAttempts int) error {
 	taskID := task.ID
 	positionID := task.PositionID.String
 	queueReason := ""
 	if task.Reason.Valid {
 		queueReason = task.Reason.String
 	}
+	mode := effectiveRiskCloseExecutionMode(ctx, s.st)
+	sellExtra := effectiveFokSellExtraTicks(baseSellExtra, taskAttempts)
+	modeExtra := &closeAttemptExtras{ExecutionMode: mode}
 
 	pos, err := s.st.GetRiskPosition(ctx, positionID)
 	if err != nil || pos == nil || pos.Status == "closed" {
 		s.log.WithFields(logx.Pairs("task_id", taskID, "position_id", positionID, "reason", "missing_or_closed")).Info("风控：跳过平仓（已关闭或无持仓）")
+		s.clearStopLossMarketEndedCooldown(positionID)
 		return s.st.SetRiskTaskSucceeded(ctx, taskID)
 	}
+	evalBidCents, evalAskCents := 0.0, 0.0
+	if b, a, ok := s.BestBidAskCents(ctx, pos.TokenID); ok {
+		evalBidCents, evalAskCents = b, a
+	}
+	trailCents := pos.HighWaterCents * (1 - pos.StopLossPct/100)
+
 	if reason := s.evaluateCloseTaskAbort(ctx, pos, nil); reason != "" {
+		j, mErr := marshalCloseAttemptSnapshot(pos, "pre_submit_abort", evalBidCents, evalAskCents, sellExtra, nil, modeExtra, nil, string(reason))
+		if mErr == nil {
+			s.persistCloseAttemptDetail(ctx, taskID, j)
+		}
+		fields := logx.Pairs("task_id", taskID, "position_id", positionID, "token_id", pos.TokenID,
+			"abort_reason", string(reason), "trail_cents", trailCents, "high_water_cents", pos.HighWaterCents,
+			"stop_loss_pct", pos.StopLossPct, "eval_bid_cents", evalBidCents, "eval_ask_cents", evalAskCents,
+			"execution_mode", mode)
+		if mErr == nil {
+			fields["close_attempt"] = j
+		}
+		s.log.WithFields(fields).Info("风控：平仓中止（提交 CLOB 前）")
+		logx.StopLoss().WithFields(fields).Info("风控：平仓中止（提交 CLOB 前）")
 		return s.abortCloseTask(ctx, taskID, positionID, pos, reason, nil)
 	}
 	if err := s.st.SetRiskPositionStatus(ctx, positionID, "closing"); err != nil {
 		s.log.WithFields(logx.Pairs("position_id", positionID, "err", err.Error())).Warn("风控：更新持仓状态为 closing 失败")
 		return err
 	}
-	s.log.WithFields(logx.Pairs("task_id", taskID, "position_id", positionID, "token_id", pos.TokenID, "size_shares", pos.SizeShares, "extra_ticks", sellExtra)).Info("风控：发送 FOK 卖单平仓")
-	_, err = polyexec.ExecuteFOKSell(ctx, cl.Client, cl.Signer, pos.TokenID, pos.SizeShares, sellExtra)
-	if err != nil {
-		_ = s.st.SetRiskPositionStatus(ctx, positionID, "open")
-		s.log.WithFields(logx.Pairs("task_id", taskID, "position_id", positionID, "token_id", pos.TokenID, "err", err.Error())).Warn("风控：FOK 卖单失败")
-		if s.rt != nil {
-			s.rt.Publish("position", "warn", "position.close_failed", pos.AccountID, "", pos.TokenID, taskID, map[string]any{
-				"taskId": taskID, "err": err.Error(), "reason": queueReason,
-			})
-		}
-		if reason := s.evaluateCloseTaskAbort(ctx, pos, err); reason != "" {
-			return s.abortCloseTask(ctx, taskID, positionID, pos, reason, err)
-		}
-		return err
+	preFields := logx.Pairs("task_id", taskID, "position_id", positionID, "token_id", pos.TokenID,
+		"execution_mode", mode, "base_extra_ticks", baseSellExtra, "effective_extra_ticks", sellExtra, "task_attempts", taskAttempts,
+		"position_shares", pos.SizeShares, "trail_cents", trailCents, "high_water_cents", pos.HighWaterCents,
+		"stop_loss_pct", pos.StopLossPct, "eval_bid_cents", evalBidCents, "eval_ask_cents", evalAskCents)
+	s.log.WithFields(preFields).Info("风控：准备提交平仓 CLOB 订单")
+	logx.StopLoss().WithFields(preFields).Info("风控：准备提交平仓 CLOB 订单")
+
+	switch mode {
+	case riskCloseModeHedgeFOKBuy:
+		return s.runCloseHedgeFOKBuy(ctx, cl, task, pos, taskID, positionID, queueReason, sellExtra, evalBidCents, evalAskCents, trailCents, modeExtra)
+	case riskCloseModeFAKSell:
+		return s.runCloseFAKSell(ctx, cl, task, pos, taskID, positionID, queueReason, sellExtra, evalBidCents, evalAskCents, trailCents, modeExtra)
+	default:
+		return s.runCloseFOKSell(ctx, cl, task, pos, taskID, positionID, queueReason, sellExtra, evalBidCents, evalAskCents, trailCents, modeExtra)
 	}
-	if err := s.st.CloseRiskPosition(ctx, positionID); err != nil {
-		s.log.WithFields(logx.Pairs("position_id", positionID, "err", err.Error())).Error("风控：数据库关闭持仓失败")
-		return err
-	}
-	_ = s.st.CancelOtherCloseTasks(ctx, positionID, taskID)
-	s.log.WithFields(logx.Pairs("task_id", taskID, "position_id", positionID, "token_id", pos.TokenID)).Info("风控：平仓成交")
-	if s.rt != nil {
-		s.rt.Publish("position", "info", "position.closed", pos.AccountID, "", pos.TokenID, taskID, map[string]any{
-			"taskId": taskID, "reason": queueReason, "sizeShares": pos.SizeShares,
-		})
-	}
-	tg.Notify(ctx, s.cfg, s.st, s.log, fmt.Sprintf(
-		"Polybet 平仓成交\n%s\n份额 %.2f · token %s",
-		strings.TrimSpace(pos.Title),
-		pos.SizeShares,
-		pos.TokenID,
-	))
-	tg.MaybeNotifyCollateralChanged(s.cfg, s.log, s.st)
-	return s.st.SetRiskTaskSucceeded(ctx, taskID)
 }
 
 func (s *Service) runCloseAll(ctx context.Context, taskID string) error {
@@ -588,7 +696,9 @@ func (s *Service) RiskEvaluateTokenAfterBookUpdate(ctx context.Context, tokenID 
 		}
 		_, _, _, err := s.UpdateHighWaterAndMaybeQueueStop(ctx, p, bid, ask)
 		if err != nil {
-			s.log.WithFields(logx.Pairs("err", err)).Warn("风控：评估止损失败")
+			fields := logx.Pairs("err", err, "position_id", p.ID, "token_id", tokenID)
+			s.log.WithFields(fields).Warn("风控：评估止损失败")
+			logx.StopLoss().WithFields(fields).Warn("风控：评估止损失败")
 		}
 	}
 	return nil
@@ -610,5 +720,7 @@ func (s *Service) ApplyClobTradeIfNew(ctx context.Context, trade struct {
 	if err != nil || !ok {
 		return false, err
 	}
+	fields := logx.Pairs("trade_id", trade.ID, "asset_id", trade.AssetID, "side", trade.Side, "size", trade.Size, "price", trade.Price, "account_id", accountID)
+	logx.Open().WithFields(fields).Info("CLOB 成交已入账（待同步持仓）")
 	return true, nil
 }

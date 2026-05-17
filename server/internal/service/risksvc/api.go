@@ -27,6 +27,10 @@ type Meta struct {
 	MinOpenRiskShares       float64 `json:"minOpenRiskShares"`
 	OrderbookWsConnected    bool    `json:"orderbookWsConnected"`
 	OrderbookWsConnecting   bool    `json:"orderbookWsConnecting"`
+	// Global stop-loss close execution (bot_config); per-position override is not supported.
+	RiskCloseExecutionMode string  `json:"riskCloseExecutionMode"`
+	RiskCloseFakWorstPrice  float64 `json:"riskCloseFakWorstPrice"`
+	RiskHedgeBuySizing      string  `json:"riskHedgeBuySizing"`
 }
 
 func firstNonEmpty(vals ...string) string {
@@ -124,7 +128,7 @@ func polymarketLinks(dm store.RiskDisplayMeta, gm gammaclient.TokenMarketDisplay
 }
 
 func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, accountID string) ([]map[string]any, Meta, error) {
-	meta = s.fillMeta(meta)
+	meta = s.fillMeta(ctx, meta)
 	_ = s.st.NormalizeDustRisk(ctx, 1e-9)
 	min := s.minShares(ctx)
 	rows, err := s.st.ListOpenOrClosingRiskPositions(ctx, accountID)
@@ -173,7 +177,9 @@ func (s *Service) ListRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 		if ok {
 			hw, trail, curPtr, err = s.UpdateHighWaterAndMaybeQueueStop(ctx, p, bid, ask)
 			if err != nil {
-				s.log.WithFields(logx.Pairs("err", err)).Warn("风控：更新高点/止损队列失败")
+				fields := logx.Pairs("err", err, "position_id", p.ID)
+				s.log.WithFields(fields).Warn("风控：更新高点/止损队列失败")
+				logx.StopLoss().WithFields(fields).Warn("风控：更新高点/止损队列失败")
 			}
 		} else {
 			hw = p.HighWaterCents
@@ -306,13 +312,24 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 				Status:         "open",
 			})
 			if err != nil {
-				s.log.WithFields(logx.Pairs("token", tokenID, "err", err)).Warn("风控同步：创建持仓失败")
+				fields := logx.Pairs("token", tokenID, "err", err)
+				s.log.WithFields(fields).Warn("风控同步：创建持仓失败")
+				logx.Open().WithFields(fields).Warn("风控同步：创建持仓失败")
+			} else {
+				openFields := logx.Pairs("token", tokenID, "size_shares", size, "avg_entry_cents", entryCents, "source", "polymarket_api")
+				logx.Open().WithFields(openFields).Info("风控同步：新建持仓")
+				logx.Position().WithFields(openFields).Info("风控同步：新建持仓")
 			}
 		} else {
 			// Existing position: keep high_water, update shares/avg/cost
 			err = s.st.UpdateRiskPositionSharesCost(ctx, existing.ID, size, costUsd)
 			if err != nil {
-				s.log.WithFields(logx.Pairs("token", tokenID, "err", err)).Warn("风控同步：更新份额失败")
+				fields := logx.Pairs("token", tokenID, "err", err)
+				s.log.WithFields(fields).Warn("风控同步：更新份额失败")
+				logx.Position().WithFields(fields).Warn("风控同步：更新份额失败")
+			} else {
+				posFields := logx.Pairs("token", tokenID, "position_id", existing.ID, "size_shares", size, "avg_entry_cents", entryCents)
+				logx.Position().WithFields(posFields).Info("风控同步：更新持仓份额")
 			}
 			if existing.AvgEntryCents != entryCents {
 				_ = s.st.UpdateRiskPositionAvgEntry(ctx, existing.ID, entryCents)
@@ -337,7 +354,9 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 		tok := store.NormalizeRiskCLOBTokenID(p.TokenID)
 		if _, ok := officialByToken[tok]; !ok {
 			_ = s.st.CloseRiskPosition(ctx, p.ID)
-			s.log.WithFields(logx.Pairs("token", p.TokenID)).Info("风控同步：官方已无该持仓，已关闭本地记录")
+			fields := logx.Pairs("token", p.TokenID, "position_id", p.ID)
+			s.log.WithFields(fields).Info("风控同步：官方已无该持仓，已关闭本地记录")
+			logx.Position().WithFields(fields).Info("风控同步：官方已无该持仓，已关闭本地记录")
 		}
 	}
 

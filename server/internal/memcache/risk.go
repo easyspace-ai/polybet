@@ -18,6 +18,9 @@ type RiskMeta struct {
 	UserWsConnecting        bool    `json:"userWsConnecting"`
 	OutboundProxyConfigured bool    `json:"outboundProxyConfigured"`
 	MinOpenRiskShares       float64 `json:"minOpenRiskShares"`
+	RiskCloseExecutionMode  string  `json:"riskCloseExecutionMode"`
+	RiskCloseFakWorstPrice  float64 `json:"riskCloseFakWorstPrice"`
+	RiskHedgeBuySizing      string  `json:"riskHedgeBuySizing"`
 }
 
 // RiskFetchResult is the payload produced by risksvc and stored in-process.

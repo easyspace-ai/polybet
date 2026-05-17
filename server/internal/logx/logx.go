@@ -27,6 +27,8 @@ func PolybetLogsDir() string {
 
 // ClosePersistentLog closes the disk log file if open. Safe to call multiple times.
 func ClosePersistentLog() {
+	CloseCategoryLoggers()
+	CloseHTTPAccessLog()
 	persistentMu.Lock()
 	defer persistentMu.Unlock()
 	if persistentFile != nil {

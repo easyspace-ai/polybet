@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-const gammaAPI = "https://gamma-api.polymarket.com"
+const gammaAPIHost = "https://gamma-api.polymarket.com"
+
+// gammaAPIBase is the Gamma REST root (mutable in tests).
+var gammaAPIBase = gammaAPIHost
 
 // TokenMarketDisplay is a small slice of Gamma market JSON for operator UI.
 type TokenMarketDisplay struct {
@@ -177,7 +180,7 @@ func unmarshalMarketsArray(body []byte) ([]gammaMarketJSON, error) {
 }
 
 func doMarketsGET(ctx context.Context, client *http.Client, query url.Values) ([]gammaMarketJSON, error) {
-	u := gammaAPI + "/markets?" + query.Encode()
+	u := gammaAPIBase + "/markets?" + query.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -288,4 +291,45 @@ func FetchMarketsByCLOBTokenIDs(ctx context.Context, httpProxy string, tokenIDs 
 	}
 
 	return out, nil
+}
+
+// OppositeCLOBTokenID returns the other CLOB outcome token in a binary market (exactly two clobTokenIds).
+// heldTokenID must match one entry; otherwise an error is returned (including when the market is not binary).
+func OppositeCLOBTokenID(ctx context.Context, httpProxy, heldTokenID string) (string, error) {
+	held := strings.TrimSpace(heldTokenID)
+	if held == "" {
+		return "", fmt.Errorf("empty held token id")
+	}
+	q := url.Values{}
+	q.Set("clob_token_ids", held)
+	q.Set("limit", "8")
+	markets, err := doMarketsGET(ctx, httpClient(httpProxy), q)
+	if err != nil {
+		return "", err
+	}
+	for _, m := range markets {
+		toks := parseClobTokenIDsField(m.ClobTokenIDs)
+		if len(toks) == 0 {
+			toks = parseStringArray(m.ClobTokenIDs)
+		}
+		if len(toks) != 2 {
+			continue
+		}
+		var heldIdx = -1
+		for i, t := range toks {
+			if strings.EqualFold(strings.TrimSpace(t), held) {
+				heldIdx = i
+				break
+			}
+		}
+		if heldIdx < 0 {
+			continue
+		}
+		other := toks[1-heldIdx]
+		if strings.TrimSpace(other) == "" {
+			return "", fmt.Errorf("hedge_opposite_token: empty sibling in binary market")
+		}
+		return strings.TrimSpace(other), nil
+	}
+	return "", fmt.Errorf("hedge_opposite_token: need binary market (2 clob tokens) containing %s", held)
 }

@@ -21,6 +21,7 @@ func NewPublicRouter(d Deps) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(requestID())
+	r.Use(accessLog())
 	r.Use(cors(d.Cfg.CORSOrigins))
 
 	r.GET("/api/health", func(c *gin.Context) {
@@ -87,10 +88,12 @@ func NewPublicRouter(d Deps) *gin.Engine {
 			res := routersvc.BuildAllocationPlan(c, d.Store, d.Cache, oid, side, size)
 			if !res.OK {
 				st := mapRouterErr(res.Error)
-				logrus.WithFields(logx.Pairs(
+				fields := logx.Pairs(
 					"request_id", rid, "outcome_id", oid, "side", side, "size", size,
 					"router_code", res.Error.Code, "router_message", res.Error.Message, "detail", res.Error.Detail, "http_status", st,
-				)).Warn("公开端口：交易预览失败")
+				)
+				logrus.WithFields(fields).Warn("公开端口：交易预览失败")
+				logx.Trade().WithFields(fields).Warn("公开端口：交易预览失败")
 				c.JSON(st, gin.H{"error": res.Error.Code, "message": res.Error.Message, "detail": res.Error.Detail})
 				return
 			}
@@ -142,11 +145,21 @@ func NewPublicRouter(d Deps) *gin.Engine {
 				if t.LastError.Valid {
 					le = t.LastError.String
 				}
+				reason := interface{}(nil)
+				if t.Reason.Valid {
+					reason = t.Reason.String
+				}
+				lad := interface{}(nil)
+				if t.LastAttemptDetail.Valid {
+					lad = t.LastAttemptDetail.String
+				}
 				out = append(out, gin.H{
 					"id": t.ID, "type": t.Type, "positionId": pid, "status": t.Status,
-					"attempts": t.Attempts, "lastError": le,
-					"nextRunAt": t.NextRunAt.UTC().Format(time.RFC3339Nano),
-					"updatedAt": t.UpdatedAt.UTC().Format(time.RFC3339Nano),
+					"attempts": t.Attempts, "lastError": le, "reason": reason,
+					"createdAt":         t.CreatedAt.UTC().Format(time.RFC3339Nano),
+					"nextRunAt":         t.NextRunAt.UTC().Format(time.RFC3339Nano),
+					"updatedAt":         t.UpdatedAt.UTC().Format(time.RFC3339Nano),
+					"lastAttemptDetail": lad,
 				})
 			}
 			c.JSON(200, gin.H{"tasks": out})

@@ -289,6 +289,11 @@ export interface RiskPositionsMeta {
   userWsLastIssue?: string | null;
   outboundProxyConfigured?: boolean;
   minOpenRiskShares?: number;
+  /** fok_sell | fak_sell | hedge_fok_buy */
+  riskCloseExecutionMode?: string;
+  riskCloseFakWorstPrice?: number;
+  /** notional | shares (hedge mode) */
+  riskHedgeBuySizing?: string;
 }
 
 export interface RiskTaskRow {
@@ -298,8 +303,14 @@ export interface RiskTaskRow {
   status: string;
   attempts: number;
   lastError: string | null;
+  /** server: stop_loss | manual | null */
+  reason?: string | null;
+  /** RFC3339nano */
+  createdAt?: string;
   nextRunAt: string;
   updatedAt: string;
+  /** JSON string: last FOK submit / abort snapshot (limit price, shares, book, trail). */
+  lastAttemptDetail?: string | null;
 }
 
 export const getRiskPositions = () =>
