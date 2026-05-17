@@ -14,6 +14,24 @@ import (
 )
 
 func (s *Service) runCloseFOKSell(ctx context.Context, cl *polywiring.AuthedCLOB, task store.RiskTask, pos *store.RiskPosition, taskID, positionID, queueReason string, sellExtra int, evalBidCents, evalAskCents, trailCents float64, modeExtra *closeAttemptExtras) error {
+	// Slippage gate: refuse to submit a SELL whose projected limit floor
+	// would drop more than riskCloseMaxSlippageBps below the eval bid.
+	// Counts as a failed attempt so the ladder advances (next tier with
+	// looser bps cap, or hedge_fok_buy at the end which bypasses the gate).
+	if projBps, gateErr := s.checkCloseSlippage(ctx, evalBidCents, sellExtra, riskCloseModeFOKSell); gateErr != nil {
+		_ = s.st.SetRiskPositionStatus(ctx, positionID, "open")
+		ex := *modeExtra
+		ex.SlippageProjectedBps = projBps
+		j, mErr := marshalCloseAttemptSnapshot(pos, "fok_slippage_gate", evalBidCents, evalAskCents, sellExtra, nil, &ex, gateErr, "")
+		if mErr == nil {
+			s.persistCloseAttemptDetail(ctx, taskID, j)
+		}
+		s.log.WithFields(logx.Pairs(
+			"task_id", taskID, "position_id", positionID, "token_id", pos.TokenID,
+			"projected_slippage_bps", projBps, "extra_ticks", sellExtra, "eval_bid_cents", evalBidCents,
+		)).Warn("风控：FOK 卖单被滑点上限拦截，等待下一 tier")
+		return gateErr
+	}
 	submitMaxAgeMs := s.st.GetBotConfigInt(ctx, botKeyOrderSubmitMaxAgeMs, 0)
 	orderID, rep, err := polyexec.ExecuteFOKSellWithOpts(ctx, cl.Client, cl.Signer, pos.TokenID, pos.SizeShares, sellExtra, submitMaxAgeMs)
 	if err != nil {
@@ -92,20 +110,29 @@ func (s *Service) runCloseFOKSell(ctx context.Context, cl *polywiring.AuthedCLOB
 	// FOK fills entirely at the limit floor or not at all, so limitPrice is
 	// the actual fill. expected = bestBid at decision time (evalBidCents/100).
 	expected01 := evalBidCents / 100.0
+	// Realized PnL = filledShares × fillPrice − costBasis. FOK guarantees
+	// full size at the limit, so this is the exact realized number — fed
+	// to trade_quality so /api/trade-quality/aggregate can show today's
+	// realized PnL alongside slippage.
+	fokRealizedPnL := pos.SizeShares*rep.LimitPrice - pos.CostUSD
+	if modeExtra != nil {
+		modeExtra.RealizedPnLUSD = fokRealizedPnL
+	}
 	_ = s.st.InsertTradeQuality(ctx, &store.TradeQuality{
-		AccountID:    pos.AccountID,
-		Side:         "sell",
-		OrderType:    "FOK",
-		TokenID:      pos.TokenID,
-		ExpectedOdds: expected01,
-		FillOdds:     rep.LimitPrice,
-		LimitOdds:    rep.LimitPrice,
-		BestBid:      rep.BestBid,
-		BestAsk:      rep.BestAsk,
-		SlippageBps:  store.SlippageBpsSell(expected01, rep.LimitPrice),
-		Size:         pos.SizeShares,
-		RiskTaskID:   taskID,
-		Notes:        "runCloseFOKSell",
+		AccountID:      pos.AccountID,
+		Side:           "sell",
+		OrderType:      "FOK",
+		TokenID:        pos.TokenID,
+		ExpectedOdds:   expected01,
+		FillOdds:       rep.LimitPrice,
+		LimitOdds:      rep.LimitPrice,
+		BestBid:        rep.BestBid,
+		BestAsk:        rep.BestAsk,
+		SlippageBps:    store.SlippageBpsSell(expected01, rep.LimitPrice),
+		Size:           pos.SizeShares,
+		RealizedPnLUSD: fokRealizedPnL,
+		RiskTaskID:     taskID,
+		Notes:          "runCloseFOKSell",
 	})
 	_ = s.st.CancelOtherCloseTasks(ctx, positionID, taskID)
 	doneFields := logx.Pairs("task_id", taskID, "position_id", positionID, "token_id", pos.TokenID, "order_id", orderID,
@@ -141,6 +168,21 @@ func (s *Service) runCloseFAKSell(ctx context.Context, cl *polywiring.AuthedCLOB
 // touching the global riskCloseFakWorstPrice config.
 func (s *Service) runCloseFAKSellWithWorst(ctx context.Context, cl *polywiring.AuthedCLOB, task store.RiskTask, pos *store.RiskPosition, taskID, positionID, queueReason string, sellExtra int, worst, evalBidCents, evalAskCents, trailCents float64, modeExtra *closeAttemptExtras) error {
 	_ = trailCents
+	// Slippage gate (same rule as FOK; hedge_fok_buy is exempt).
+	if projBps, gateErr := s.checkCloseSlippage(ctx, evalBidCents, sellExtra, riskCloseModeFAKSell); gateErr != nil {
+		_ = s.st.SetRiskPositionStatus(ctx, positionID, "open")
+		ex := *modeExtra
+		ex.SlippageProjectedBps = projBps
+		j, mErr := marshalCloseAttemptSnapshot(pos, "fak_slippage_gate", evalBidCents, evalAskCents, sellExtra, nil, &ex, gateErr, "")
+		if mErr == nil {
+			s.persistCloseAttemptDetail(ctx, taskID, j)
+		}
+		s.log.WithFields(logx.Pairs(
+			"task_id", taskID, "position_id", positionID, "token_id", pos.TokenID,
+			"projected_slippage_bps", projBps, "extra_ticks", sellExtra, "eval_bid_cents", evalBidCents,
+		)).Warn("风控：FAK 卖单被滑点上限拦截，等待下一 tier")
+		return gateErr
+	}
 	submitMaxAgeMs := s.st.GetBotConfigInt(ctx, botKeyOrderSubmitMaxAgeMs, 0)
 	orderID, rep, err := polyexec.ExecuteFAKSellWithOpts(ctx, cl.Client, cl.Signer, pos.TokenID, pos.SizeShares, worst, submitMaxAgeMs)
 	if err != nil {
@@ -224,22 +266,28 @@ func (s *Service) runCloseFAKSellWithWorst(ctx context.Context, cl *polywiring.A
 	// FAK fill price is unknown without a per-order detail call; the limit
 	// is the worst-case fill, so use it as a conservative proxy. expected =
 	// best bid at decision time. Marked notes="proxy" so analytics can
-	// distinguish from FOK exact-fill rows.
+	// distinguish from FOK exact-fill rows. RealizedPnL uses the same
+	// conservative proxy: never overstate realized profit.
 	expected01 := evalBidCents / 100.0
+	fakRealizedPnL := pos.SizeShares*rep.LimitPrice - pos.CostUSD
+	if modeExtra != nil {
+		modeExtra.RealizedPnLUSD = fakRealizedPnL
+	}
 	_ = s.st.InsertTradeQuality(ctx, &store.TradeQuality{
-		AccountID:    pos.AccountID,
-		Side:         "sell",
-		OrderType:    "FAK",
-		TokenID:      pos.TokenID,
-		ExpectedOdds: expected01,
-		FillOdds:     rep.LimitPrice, // proxy
-		LimitOdds:    rep.LimitPrice,
-		BestBid:      rep.BestBid,
-		BestAsk:      rep.BestAsk,
-		SlippageBps:  store.SlippageBpsSell(expected01, rep.LimitPrice),
-		Size:         pos.SizeShares,
-		RiskTaskID:   taskID,
-		Notes:        "runCloseFAKSell:proxy_limit_as_fill",
+		AccountID:      pos.AccountID,
+		Side:           "sell",
+		OrderType:      "FAK",
+		TokenID:        pos.TokenID,
+		ExpectedOdds:   expected01,
+		FillOdds:       rep.LimitPrice, // proxy
+		LimitOdds:      rep.LimitPrice,
+		BestBid:        rep.BestBid,
+		BestAsk:        rep.BestAsk,
+		SlippageBps:    store.SlippageBpsSell(expected01, rep.LimitPrice),
+		Size:           pos.SizeShares,
+		RealizedPnLUSD: fakRealizedPnL,
+		RiskTaskID:     taskID,
+		Notes:          "runCloseFAKSell:proxy_limit_as_fill",
 	})
 	_ = s.st.CancelOtherCloseTasks(ctx, positionID, taskID)
 	s.log.WithFields(logx.Pairs("task_id", taskID, "position_id", positionID, "order_id", orderID,

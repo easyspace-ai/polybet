@@ -16,6 +16,16 @@ type closeAttemptExtras struct {
 	BuyRep        *polyexec.FOKBuyReport
 	LadderTier    string // populated by ladder mode: which tier executed this attempt
 	LadderAttempt int    // 0-based attempt index that selected the tier
+
+	// Pre-submit slippage projection (only populated when the slippage
+	// gate is configured > 0). Helps operators tune the cap.
+	SlippageProjectedBps float64
+
+	// Realized PnL recorded at SELL completion (= filledShares ×
+	// fillPrice − costBasis). Surfaced in the forensic JSON so the
+	// dashboard can render closure outcomes inline. Set by the close
+	// paths after ExecuteFOK(/FAK)Sell succeeds.
+	RealizedPnLUSD float64
 }
 
 // closeAttemptSnapshot is stored in risk_tasks.last_attempt_detail and returned to the API for replay.
@@ -32,6 +42,8 @@ type closeAttemptSnapshot struct {
 	HedgeSizing          string  `json:"hedgeSizing,omitempty"`
 	LadderTier           string  `json:"ladderTier,omitempty"`
 	LadderAttempt        int     `json:"ladderAttempt,omitempty"`
+	SlippageProjectedBps float64 `json:"slippageProjectedBps,omitempty"`
+	RealizedPnLUSD       float64 `json:"realizedPnLUSD,omitempty"`
 	Side                 string  `json:"side,omitempty"` // SELL | BUY
 	CLOBTokenID          string  `json:"clobTokenId,omitempty"`
 	TickSize             string  `json:"tickSize,omitempty"`
@@ -93,6 +105,8 @@ func marshalCloseAttemptSnapshot(
 		snap.HedgeSizing = extras.HedgeSizing
 		snap.LadderTier = extras.LadderTier
 		snap.LadderAttempt = extras.LadderAttempt
+		snap.SlippageProjectedBps = extras.SlippageProjectedBps
+		snap.RealizedPnLUSD = extras.RealizedPnLUSD
 	}
 	if sellRep != nil {
 		snap.Side = "SELL"

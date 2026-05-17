@@ -195,6 +195,12 @@ func (s *Store) SeedDefaultConfig(ctx context.Context) error {
 		{"onboardingComplete", "false"},
 		{"riskCloseExecutionMode", "fok_sell"},
 		{"riskCloseFakWorstPrice", "0.01"},
+		// SELL-side slippage cap in basis points. > 0 refuses FOK/FAK SELL
+		// attempts whose projected limit floor would drop more than this
+		// many bps below the eval bid (= panic-dump territory). The hedge
+		// tier is exempt because it's the lock-losses-at-any-price
+		// fallback. 0 disables; suggested production value: 1000 (10%).
+		{"riskCloseMaxSlippageBps", "0"},
 		{"riskHedgeBuySizing", "notional"},
 		{"riskHedgeAutoHidePosition", "true"},
 		// Trade gate / kill-switch defaults. All <= 0 / falsy keys are no-ops

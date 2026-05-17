@@ -44,6 +44,11 @@ const (
 	// <= 0 disables. Tokens that fail to resolve to an event slug skip
 	// this gate (sync issue, fail-open by design).
 	botKeyMaxMarketExposureUSD = "riskMaxMarketExposureUSD"
+
+	// botKeyBlockOpenAfterStartSec refuses new opens when the market start
+	// time is more than this many seconds in the past. > 0 enables; <= 0
+	// disables. Markets with unknown start_time are NOT blocked.
+	botKeyBlockOpenAfterStartSec = "riskBlockOpenAfterStartSec"
 )
 
 // degradedReason captures the most recent self-degradation cause.
