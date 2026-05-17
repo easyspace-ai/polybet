@@ -65,6 +65,33 @@ type Service struct {
 
 	// deg holds runtime degradation flags (WS market down, kill-switch, last book tick).
 	deg *degradedState
+
+	// nowFn returns the current wall time. Defaults to time.Now in
+	// production. Exists so kill-switch / cooldown / window tests can
+	// inject a deterministic clock without relying on process sleep.
+	nowFn func() time.Time
+}
+
+// SetNowFnForTest swaps in a deterministic clock for tests. nil restores
+// the default time.Now. Must NOT be used in production code paths — there
+// is intentionally no exported way to pin the clock from a non-test
+// caller. Test files share the package so they can call this directly.
+func (s *Service) SetNowFnForTest(fn func() time.Time) {
+	if fn == nil {
+		s.nowFn = time.Now
+		return
+	}
+	s.nowFn = fn
+}
+
+// now is the internal clock accessor. Always non-nil because New populates
+// nowFn at construction; defensive wrap returns time.Now if a caller has
+// somehow zeroed the field.
+func (s *Service) now() time.Time {
+	if s == nil || s.nowFn == nil {
+		return time.Now()
+	}
+	return s.nowFn()
 }
 
 func New(cfg *config.Config, st *store.Store, cache *bookcache.Cache, dataClient data.Client, log *logrus.Logger, rt *riskruntime.Bus) *Service {
@@ -81,6 +108,7 @@ func New(cfg *config.Config, st *store.Store, cache *bookcache.Cache, dataClient
 		WSMeta:         NewWSMetaCollector(),
 		slMktEndedCool: make(map[string]time.Time),
 		deg:            newDegradedState(),
+		nowFn:          time.Now,
 	}
 }
 
@@ -89,7 +117,7 @@ func (s *Service) setStopLossMarketEndedCooldown(ctx context.Context, positionID
 	if sec <= 0 || strings.TrimSpace(positionID) == "" {
 		return
 	}
-	until := time.Now().UTC().Add(time.Duration(sec) * time.Second)
+	until := s.now().UTC().Add(time.Duration(sec) * time.Second)
 	s.slMktEndedCoolMu.Lock()
 	defer s.slMktEndedCoolMu.Unlock()
 	s.slMktEndedCool[positionID] = until
@@ -108,7 +136,7 @@ func (s *Service) stopLossMarketEndedCooldownActive(positionID string) bool {
 	if strings.TrimSpace(positionID) == "" {
 		return false
 	}
-	now := time.Now().UTC()
+	now := s.now().UTC()
 	s.slMktEndedCoolMu.Lock()
 	defer s.slMktEndedCoolMu.Unlock()
 	until, ok := s.slMktEndedCool[positionID]

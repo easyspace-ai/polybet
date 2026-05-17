@@ -46,13 +46,16 @@ func TestMigration010BackfillsConfigForLegacyPositions(t *testing.T) {
 		t.Fatalf("insert modern config: %v", err)
 	}
 
-	// Force the schema_migrations version back so Migrate re-runs 010.
-	_, err = db.Exec(`DELETE FROM schema_migrations WHERE version = 10`)
+	// Re-apply the 010 backfill SQL directly. We cannot rewind schema_migrations
+	// and call Migrate() once later migrations (011+) have landed — those ALTER
+	// TABLE steps are not idempotent. The production path only ever runs 010
+	// once; here we verify the embedded SQL itself is idempotent.
+	b, err := migrations.ReadFile("migrations/010_risk_position_configs_backfill.sql")
 	if err != nil {
-		t.Fatalf("rewind: %v", err)
+		t.Fatalf("read 010: %v", err)
 	}
-	if err := Migrate(context.Background(), db); err != nil {
-		t.Fatalf("re-migrate: %v", err)
+	if _, err := db.ExecContext(context.Background(), string(b)); err != nil {
+		t.Fatalf("apply 010: %v", err)
 	}
 
 	// Legacy row should now have a config with avg_entry_cents as HW and 20% stop.
@@ -77,13 +80,9 @@ func TestMigration010BackfillsConfigForLegacyPositions(t *testing.T) {
 		t.Fatalf("modern row was overwritten: hw=%v pct=%v want 80/5", hw, pct)
 	}
 
-	// Re-run migration once more to confirm idempotency.
-	_, err = db.Exec(`DELETE FROM schema_migrations WHERE version = 10`)
-	if err != nil {
-		t.Fatalf("rewind 2: %v", err)
-	}
-	if err := Migrate(context.Background(), db); err != nil {
-		t.Fatalf("third migrate: %v", err)
+	// Re-run the backfill once more to confirm idempotency.
+	if _, err := db.ExecContext(context.Background(), string(b)); err != nil {
+		t.Fatalf("reapply 010: %v", err)
 	}
 	err = db.QueryRow(`SELECT high_water_cents, stop_loss_pct FROM risk_position_configs WHERE position_id = 'modern'`).Scan(&hw, &pct)
 	if err != nil {

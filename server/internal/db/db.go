@@ -111,6 +111,7 @@ func Migrate(ctx context.Context, conn *sql.DB) error {
 		{9, "migrations/009_trade_quality.sql"},
 		{10, "migrations/010_risk_position_configs_backfill.sql"},
 		{11, "migrations/011_risk_positions_realized_pnl.sql"},
+		{12, "migrations/012_trade_quality_realized_pnl.sql"},
 	}
 	for _, step := range steps {
 		if v >= step.version {
