@@ -197,6 +197,16 @@ func (s *Store) SeedDefaultConfig(ctx context.Context) error {
 		{"riskCloseFakWorstPrice", "0.01"},
 		{"riskHedgeBuySizing", "notional"},
 		{"riskHedgeAutoHidePosition", "true"},
+		// Hedge collateral protection. The hedge_fok_buy path needs USDC
+		// to fund the BUY; without these checks a small or empty wallet
+		// produces a CLOB rejection that leaves the original position
+		// uncovered. reservePct is a fraction kept UNUSED for fees and
+		// rounding (5% headroom by default). minUSDC is the smallest
+		// hedge the close path is willing to submit; below it, the
+		// hedge tier aborts so the operator notices instead of
+		// silently misfiring on a dust BUY.
+		{"riskHedgeCollateralReservePct", "0.05"},
+		{"riskHedgeMinUSDC", "1.0"},
 		// Trade gate / kill-switch defaults. All <= 0 / falsy keys are no-ops
 		// so existing deployments are unaffected until operators opt in.
 		{"riskTradingHalted", "false"},
