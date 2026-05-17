@@ -21,6 +21,17 @@ type closeAttemptExtras struct {
 	HedgeRequestedUSDC   float64
 	HedgeAvailableUSDC   float64
 	HedgeCollateralClamp bool
+
+	// Pre-submit slippage projection (only populated when the slippage
+	// gate is configured > 0). Helps operators tune the cap.
+	SlippageProjectedBps float64
+
+	// Realized PnL recorded at SELL completion (= filledShares ×
+	// fillPrice − costBasis). Surfaced in the forensic JSON so the
+	// dashboard can render closure outcomes inline. Set by the close
+	// paths after ExecuteFOK(/FAK)Sell succeeds.
+	RealizedPnLUSD float64
+>>>>>>> dcdb3c8 (feat(risk): SELL slippage cap so FOK/FAK refuses panic-dump prices)
 }
 
 // closeAttemptSnapshot is stored in risk_tasks.last_attempt_detail and returned to the API for replay.
@@ -40,6 +51,8 @@ type closeAttemptSnapshot struct {
 	HedgeRequestedUSDC   float64 `json:"hedgeRequestedUSDC,omitempty"`
 	HedgeAvailableUSDC   float64 `json:"hedgeAvailableUSDC,omitempty"`
 	HedgeCollateralClamp bool    `json:"hedgeCollateralClamp,omitempty"`
+	SlippageProjectedBps float64 `json:"slippageProjectedBps,omitempty"`
+	RealizedPnLUSD       float64 `json:"realizedPnLUSD,omitempty"`
 	Side                 string  `json:"side,omitempty"` // SELL | BUY
 	CLOBTokenID          string  `json:"clobTokenId,omitempty"`
 	TickSize             string  `json:"tickSize,omitempty"`
@@ -104,6 +117,8 @@ func marshalCloseAttemptSnapshot(
 		snap.HedgeRequestedUSDC = extras.HedgeRequestedUSDC
 		snap.HedgeAvailableUSDC = extras.HedgeAvailableUSDC
 		snap.HedgeCollateralClamp = extras.HedgeCollateralClamp
+		snap.SlippageProjectedBps = extras.SlippageProjectedBps
+		snap.RealizedPnLUSD = extras.RealizedPnLUSD
 	}
 	if sellRep != nil {
 		snap.Side = "SELL"
