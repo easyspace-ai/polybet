@@ -251,6 +251,7 @@ func (a *App) rebuildAndBroadcastCache() {
 	if a == nil {
 		return
 	}
+	a.invalidateOpenPosCount()
 	meta := risksvc.Meta{OutboundProxyConfigured: a.Cfg.HTTPPlatformProxy != ""}
 	acct, _ := a.Store.GetActivePolymarketAccount(context.Background())
 	accountID := ""

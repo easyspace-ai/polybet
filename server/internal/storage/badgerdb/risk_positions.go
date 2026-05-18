@@ -31,6 +31,7 @@ type RiskPosition struct {
 	StopLossPct    float64
 	Source         string
 	Status         string
+	PositionSeq    int64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
@@ -41,6 +42,7 @@ func docToRisk(p *RiskPosDoc) RiskPosition {
 		Title: p.Title, SideLabel: p.SideLabel, PolyEventSlug: p.PolyEventSlug, PolyMarketSlug: p.PolyMarketSlug,
 		AvgEntryCents: p.AvgEntryCents, SizeShares: p.SizeShares, CostUSD: p.CostUSD,
 		HighWaterCents: p.HighWaterCents, StopLossPct: p.StopLossPct, Source: p.Source, Status: p.Status,
+		PositionSeq: p.PositionSeq,
 		CreatedAt: ParseTimeFlexible(p.CreatedAt), UpdatedAt: ParseTimeFlexible(p.UpdatedAt),
 	}
 	if strings.TrimSpace(p.OutcomeID) != "" {
@@ -73,6 +75,7 @@ func riskToDoc(p *RiskPosition) *RiskPosDoc {
 		Title: p.Title, SideLabel: p.SideLabel, PolyEventSlug: p.PolyEventSlug, PolyMarketSlug: p.PolyMarketSlug,
 		AvgEntryCents: p.AvgEntryCents, SizeShares: p.SizeShares, CostUSD: p.CostUSD,
 		HighWaterCents: hw, StopLossPct: slp, Source: p.Source, Status: p.Status,
+		PositionSeq: p.PositionSeq,
 		RealizedPnLUSD: nil,
 		ClosedAt:       nil,
 		CreatedAt:      p.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -183,8 +186,44 @@ func (d *DB) ListOpenRiskPositionsMinShares(ctx context.Context, minShares float
 }
 
 func (d *DB) CountOpenRiskPositionsMinShares(ctx context.Context, minShares float64, accountID string) (int64, error) {
-	rows, err := d.ListOpenRiskPositionsMinShares(ctx, minShares, accountID)
-	return int64(len(rows)), err
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return 0, nil
+	}
+	var count int64
+	pfx := []byte("risk/open/" + accountID + "/")
+	err := d.View(func(txn *badger.Txn) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		for it.Seek(pfx); it.ValidForPrefix(pfx); it.Next() {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			var posID string
+			if err := it.Item().Value(func(v []byte) error {
+				posID = string(v)
+				return nil
+			}); err != nil || posID == "" {
+				continue
+			}
+			p, err := d.readRiskPos(txn, posID)
+			if err != nil || p == nil {
+				continue
+			}
+			if p.Status == "open" && p.SizeShares >= minShares {
+				count++
+			}
+		}
+		return nil
+	})
+	return count, err
 }
 
 func (d *DB) ListOpenOrClosingRiskPositions(ctx context.Context, accountID string) ([]RiskPosition, error) {
@@ -282,6 +321,11 @@ func (d *DB) CreateRiskPosition(ctx context.Context, p *RiskPosition) error {
 		doc := riskToDoc(&pc)
 		doc.CreatedAt = now
 		doc.UpdatedAt = now
+		seq, err := d.nextRiskPositionSeq(txn)
+		if err != nil {
+			return err
+		}
+		doc.PositionSeq = seq
 		if doc.StopLossPct == 0 {
 			doc.StopLossPct = DefaultStopLossPct
 		}

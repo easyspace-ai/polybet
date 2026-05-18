@@ -60,6 +60,8 @@ func NewRouter(d Deps) *gin.Engine {
 
 		// Risk
 		api.GET("/risk/positions", h.handleRiskPositions)
+		api.GET("/risk/book", h.handleRiskBook)
+		api.GET("/risk/book-subscriptions", h.handleRiskBookSubscriptions)
 		api.POST("/risk/refresh", h.handleRiskRefresh)
 		api.GET("/risk/tasks", h.handleRiskTasks)
 		api.POST("/risk/tasks/clear", h.handleRiskTasksClear)

@@ -22,6 +22,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/riskruntime"
 	"github.com/easyspace-ai/polybet/internal/service/risksvc"
 	"github.com/easyspace-ai/polybet/internal/storage"
+	"github.com/easyspace-ai/polybet/internal/store"
 	"github.com/easyspace-ai/polybet/internal/wsconfig"
 	"github.com/easyspace-ai/polybet/internal/wsrelay"
 )
@@ -144,6 +145,122 @@ func (e *Engine) EnsureTokenSubscribed(tokenID string) {
 			"channel": "clob_market", "addedCount": 1, "reason": "client_subscribe",
 		})
 	}
+}
+
+// TryReleaseToken unsubscribes one CLOB asset when it is no longer monitored.
+func (e *Engine) TryReleaseToken(tokenID string) {
+	tid := normalizeTokenID(tokenID)
+	if tid == "" {
+		return
+	}
+	dec := polyexec.CLOBAssetIDForAPI(tid)
+	if dec == "" {
+		return
+	}
+	ctx := context.Background()
+	acct, err := e.st.GetActivePolymarketAccount(ctx)
+	if err != nil || acct == nil {
+		return
+	}
+	if e.tokenMonitoredByOpenPosition(ctx, acct.ID, tid) {
+		return
+	}
+	e.mu.Lock()
+	ms := e.market
+	_, subscribed := e.subscribed[dec]
+	e.mu.Unlock()
+	if !subscribed || ms == nil {
+		return
+	}
+	if err := ms.Unsubscribe(dec); err != nil {
+		fields := logx.Pairs("token_id", tid, "clob_token_dec", dec, "err", err.Error())
+		e.log.WithFields(fields).Warn("止损引擎：按需取消订阅失败")
+		logx.StopLoss().WithFields(fields).Warn("止损引擎：按需取消订阅失败")
+		return
+	}
+	e.mu.Lock()
+	delete(e.subscribed, dec)
+	n := len(e.subscribed)
+	e.mu.Unlock()
+	fields := logx.Pairs("token_id", tid, "clob_token_dec", dec, "subscribed_assets", n)
+	e.log.WithFields(fields).Info("止损引擎：CLOB 订单簿已按需取消订阅")
+	logx.StopLoss().WithFields(fields).Info("止损引擎：CLOB 订单簿已按需取消订阅")
+	if e.runtime != nil {
+		e.runtime.Publish("market_sub", "info", "market.subscription.stopped", acct.ID, tid, "", "", map[string]any{
+			"channel": "clob_market", "removedCount": 1, "reason": "client_unsubscribe",
+		})
+	}
+	if n == 0 {
+		e.risk.SetOrderbookWSState(false, false)
+		e.broadcastOrderbookStatus(false)
+	}
+}
+
+func (e *Engine) tokenMonitoredByOpenPosition(ctx context.Context, accountID, tokenID string) bool {
+	min := e.st.GetBotConfigFloat(ctx, "minOpenRiskShares", 1)
+	rows, err := e.st.ListOpenRiskPositionsMinShares(ctx, min, accountID)
+	if err != nil {
+		return true
+	}
+	hiddenKeys, _ := e.st.ListRiskHiddenCompositeKeys(ctx, accountID)
+	normTok := normalizeTokenID(tokenID)
+	for _, p := range rows {
+		if normalizeTokenID(p.TokenID) != normTok {
+			continue
+		}
+		if _, hid := hiddenKeys[store.RiskPositionMonitorKey(p.TokenID, p.SideLabel)]; hid {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// IsTokenSubscribed reports whether the CLOB market WS is subscribed to tokenID.
+func (e *Engine) IsTokenSubscribed(tokenID string) bool {
+	tid := normalizeTokenID(tokenID)
+	if tid == "" {
+		return false
+	}
+	dec := polyexec.CLOBAssetIDForAPI(tid)
+	if dec == "" {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, ok := e.subscribed[dec]
+	return ok
+}
+
+// MonitoredPositionsForToken lists open risk rows tied to tokenID (for runtime book summaries).
+func (e *Engine) MonitoredPositionsForToken(ctx context.Context, accountID, tokenID string) []riskruntime.BookSummaryPosition {
+	return e.monitoredPositionsForToken(ctx, accountID, tokenID)
+}
+
+func (e *Engine) monitoredPositionsForToken(ctx context.Context, accountID, tokenID string) []riskruntime.BookSummaryPosition {
+	rows, err := e.st.ListOpenRiskPositionsByToken(ctx, tokenID, accountID)
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+	min := e.st.GetBotConfigFloat(ctx, "minOpenRiskShares", 1)
+	hiddenKeys, _ := e.st.ListRiskHiddenCompositeKeys(ctx, accountID)
+	out := make([]riskruntime.BookSummaryPosition, 0, len(rows))
+	for _, p := range rows {
+		if p.Status != "open" && p.Status != "closing" {
+			continue
+		}
+		if p.SizeShares < min && p.Status == "open" {
+			continue
+		}
+		if _, hid := hiddenKeys[store.RiskPositionMonitorKey(p.TokenID, p.SideLabel)]; hid {
+			continue
+		}
+		out = append(out, riskruntime.BookSummaryPosition{
+			PositionID:  p.ID,
+			PositionSeq: p.PositionSeq,
+		})
+	}
+	return out
 }
 
 // Run owns the market WebSocket until ctx is cancelled. The upstream stream is
@@ -375,9 +492,14 @@ func (e *Engine) reconcile(ctx context.Context, ms *marketstream.MarketStream) {
 		return
 	}
 
+	hiddenKeys, _ := e.st.ListRiskHiddenCompositeKeys(ctx, acct.ID)
+
 	want := make(map[string]struct{})
 	seen := make(map[string]struct{})
 	for _, p := range rows {
+		if _, hid := hiddenKeys[store.RiskPositionMonitorKey(p.TokenID, p.SideLabel)]; hid {
+			continue
+		}
 		tid := normalizeTokenID(p.TokenID)
 		if tid == "" {
 			continue
@@ -557,8 +679,8 @@ func (e *Engine) applyBookUpdate(assetIDRaw string, bid, ask float64, hasBook bo
 	if bestAsk == 0 && ask > 0 {
 		bestAsk = ask
 	}
-	bidCents := bestBid * 100
-	askCents := bestAsk * 100
+	bidCents := polyexec.CentsFromPrice01(bestBid)
+	askCents := polyexec.CentsFromPrice01(bestAsk)
 	wsMsg := map[string]any{
 		"type":    "polyBookUpdate",
 		"tokenId": assetID,
@@ -574,7 +696,9 @@ func (e *Engine) applyBookUpdate(assetIDRaw string, bid, ask float64, hasBook bo
 		e.riskHub.BroadcastJSON(wsMsg)
 	}
 	if e.runtime != nil {
-		e.runtime.MaybePublishMarketBookSummary(assetID, e.accountID(), bidCents, askCents)
+		acctID := e.accountID()
+		positions := e.monitoredPositionsForToken(context.Background(), acctID, assetID)
+		e.runtime.MaybePublishMarketBookSummary(assetID, acctID, bidCents, askCents, positions)
 	}
 	e.debounce.Trigger(assetID, func() {
 		_ = e.risk.RiskEvaluateTokenAfterBookUpdate(context.Background(), assetID)

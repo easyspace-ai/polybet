@@ -2,6 +2,25 @@ package risksvc
 
 import "testing"
 
+func TestStopTriggerReferenceCentsNormalized(t *testing.T) {
+	bid := CentsFromPrice01(0.28999999999999995)
+	ask := CentsFromPrice01(0.30)
+	trigger := FloorCents1(stopTriggerReferenceCents(bid, ask))
+	trail := FloorCents1(29.0)
+	if trigger != 29.0 {
+		t.Fatalf("trigger = %v, want 29.0", trigger)
+	}
+	// At exact trail: should trigger (29 <= 29).
+	if trigger > trail {
+		t.Fatalf("trigger %v should be at or below trail %v for equal-price case", trigger, trail)
+	}
+	// Raw float noise would read below trail without normalization.
+	rawBid := 0.28999999999999995 * 100
+	if rawBid >= trail && FloorCents1(rawBid) > trail {
+		t.Fatalf("unexpected: raw %v trail %v", rawBid, trail)
+	}
+}
+
 func TestFloorCents1(t *testing.T) {
 	tests := []struct {
 		in, want float64

@@ -133,3 +133,33 @@ func (r *RiskCache) RequestBackgroundRefresh(fetch RiskFetchFunc) {
 func (r *RiskCache) RefreshAsync(fetch RiskFetchFunc) {
 	r.RequestBackgroundRefresh(fetch)
 }
+
+// PatchPositionFields merges fields into a cached position row by id.
+// Used after PATCH /api/risk/positions/:id so GET/WS snapshots stay consistent
+// until the next background enrich rebuild.
+func (r *RiskCache) PatchPositionFields(id string, fields map[string]any) bool {
+	if r == nil || id == "" || len(fields) == 0 {
+		return false
+	}
+	r.dataMu.Lock()
+	defer r.dataMu.Unlock()
+	if r.data == nil {
+		return false
+	}
+	for i, row := range r.data.Positions {
+		rid, _ := row["id"].(string)
+		if rid != id {
+			continue
+		}
+		patched := make(map[string]any, len(row)+len(fields))
+		for k, v := range row {
+			patched[k] = v
+		}
+		for k, v := range fields {
+			patched[k] = v
+		}
+		r.data.Positions[i] = patched
+		return true
+	}
+	return false
+}

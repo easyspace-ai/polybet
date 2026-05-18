@@ -41,8 +41,9 @@ type Service struct {
 	dataClient data.Client
 	log        *logrus.Logger
 	rt         *riskruntime.Bus
-	closeMu    sync.Mutex
-	closeLocks sync.Map // map[string]*closeLockMeta per-position locks (GC'd by RunGC)
+	closeMu            sync.Mutex
+	closeLocks         sync.Map // map[string]*closeLockMeta per-position locks (GC'd by RunGC)
+	closeEnqueueRecent sync.Map // map[string]*closeEnqueueMeta recent enqueue dedup (GC'd by RunGC)
 
 	userWSConnected   atomic.Bool
 	userWSConnecting  atomic.Bool
@@ -292,7 +293,7 @@ func (s *Service) BestBidCents(ctx context.Context, tokenID string) (float64, bo
 func (s *Service) BestBidAskCentsFromCache(tokenID string) (bidCents, askCents float64, ok bool) {
 	tid := store.NormalizeRiskCLOBTokenID(tokenID)
 	bb, ba, topOk := s.cache.TopOfBook(tid)
-	bidCents, askCents = bb*100, ba*100
+	bidCents, askCents = CentsFromPrice01(bb), CentsFromPrice01(ba)
 	return bidCents, askCents, topOk && (bidCents > 0 || askCents > 0)
 }
 
@@ -300,7 +301,7 @@ func (s *Service) BestBidAskCentsFromCache(tokenID string) (bidCents, askCents f
 func (s *Service) BestBidAskCents(ctx context.Context, tokenID string) (bidCents, askCents float64, ok bool) {
 	tid := store.NormalizeRiskCLOBTokenID(tokenID)
 	bb, ba, topOk := s.cache.TopOfBook(tid)
-	bidCents, askCents = bb*100, ba*100
+	bidCents, askCents = CentsFromPrice01(bb), CentsFromPrice01(ba)
 	if topOk && (bidCents > 0 || askCents > 0) {
 		return bidCents, askCents, true
 	}
@@ -308,7 +309,7 @@ func (s *Service) BestBidAskCents(ctx context.Context, tokenID string) (bidCents
 	if err != nil {
 		return 0, 0, false
 	}
-	return b, a, b > 0 || a > 0
+	return FloorCents1(b), FloorCents1(a), b > 0 || a > 0
 }
 
 func maxCentsRatchet(a, b float64) float64 {
@@ -348,7 +349,8 @@ func (s *Service) UpdateHighWaterAndMaybeQueueStop(ctx context.Context, p store.
 		curVal = askCents
 	}
 	cur = &curVal
-	triggerCents := stopTriggerReferenceCents(bidCents, askCents)
+	triggerCents := FloorCents1(stopTriggerReferenceCents(bidCents, askCents))
+	trail = FloorCents1(trail)
 	if p.Status == "open" && p.SizeShares >= s.minShares(ctx) && triggerCents > 0 && triggerCents <= trail {
 		if s.log != nil && bidCents <= 0 && mark > 0 {
 			fields := logx.Pairs(
@@ -368,9 +370,6 @@ func (s *Service) UpdateHighWaterAndMaybeQueueStop(ctx context.Context, p store.
 
 // EnqueueClosePosition queues a manual close (same as Node enqueueClosePosition).
 func (s *Service) EnqueueClosePosition(ctx context.Context, positionID string) error {
-	fields := logx.Pairs("position_id", positionID)
-	s.log.WithFields(fields).Info("风控：平仓任务已入队")
-	logx.StopLoss().WithFields(fields).Info("风控：平仓任务已入队")
 	return s.ensureCloseTask(ctx, positionID, "manual")
 }
 
@@ -381,13 +380,17 @@ func (s *Service) ensureCloseTask(ctx context.Context, positionID, queueReason s
 	defer meta.mu.Unlock()
 	s.touchCloseLock(positionID)
 
+	if s.closeEnqueueRecently(positionID) {
+		return nil
+	}
+
 	has, err := s.st.FindPendingCloseTask(ctx, positionID)
 	if err != nil {
 		s.log.WithFields(logx.Pairs("position_id", positionID, "err", err.Error())).Warn("风控：查询待处理平仓任务失败")
 		return err
 	}
 	if has {
-		s.log.WithFields(logx.Pairs("position_id", positionID)).Info("风控：该持仓已有待处理平仓任务")
+		s.touchCloseEnqueue(positionID)
 		return nil
 	}
 	if queueReason == "manual" || queueReason == "" {
@@ -415,6 +418,7 @@ func (s *Service) ensureCloseTask(ctx context.Context, positionID, queueReason s
 		s.log.WithFields(logx.Pairs("position_id", positionID, "err", err.Error())).Error("风控：写入平仓任务失败")
 		return err
 	}
+	s.touchCloseEnqueue(positionID)
 	taskFields := logx.Pairs("position_id", positionID, "task_id", t.ID, "queue_reason", queueReason)
 	if pos != nil {
 		taskFields["token_id"] = pos.TokenID

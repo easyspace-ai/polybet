@@ -3,8 +3,10 @@ package httpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -26,6 +28,45 @@ import (
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+type wsReadEndReason string
+
+const (
+	wsReadEndClientClosed wsReadEndReason = "client_closed"
+	wsReadEndIdleTimeout  wsReadEndReason = "idle_timeout"
+	wsReadEndError        wsReadEndReason = "error"
+)
+
+func classifyWSReadErr(err error) wsReadEndReason {
+	if err == nil {
+		return ""
+	}
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		return wsReadEndClientClosed
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return wsReadEndIdleTimeout
+	}
+	return wsReadEndError
+}
+
+func logWSReadLoopEnd(label, rid, channel, ra string, err error) {
+	reason := classifyWSReadErr(err)
+	fields := logx.Pairs("request_id", rid, "ws_channel", channel, "remote_addr", ra, "reason", string(reason))
+	switch reason {
+	case wsReadEndClientClosed:
+		logrus.WithFields(fields).Debug(label + "：读循环结束")
+	case wsReadEndIdleTimeout:
+		logrus.WithFields(fields).Debug(label + "：读循环结束（空闲读超时）")
+	default:
+		if err != nil {
+			fields["err"] = err.Error()
+		}
+		logrus.WithFields(fields).Warn(label + "：读循环异常结束")
+	}
 }
 
 func normalizeTokenID(id string) string {
@@ -114,8 +155,44 @@ func logPolyBookSubscribe(rid, channel, tokenID, originalID string, cache *bookc
 	logrus.WithFields(fields).Info("WebSocket：订阅订单簿")
 }
 
+type polyBookApp interface {
+	PolyBookClientSubscribe(tokenID string)
+	PolyBookClientUnsubscribe(tokenID string)
+}
+
+func handlePolyBookSubscribe(app polyBookApp, connBooks map[string]struct{}, tid string) {
+	if tid == "" || app == nil {
+		return
+	}
+	if _, ok := connBooks[tid]; ok {
+		return
+	}
+	connBooks[tid] = struct{}{}
+	app.PolyBookClientSubscribe(tid)
+}
+
+func handlePolyBookUnsubscribe(app polyBookApp, connBooks map[string]struct{}, tid string) {
+	if tid == "" || app == nil {
+		return
+	}
+	if _, ok := connBooks[tid]; !ok {
+		return
+	}
+	delete(connBooks, tid)
+	app.PolyBookClientUnsubscribe(tid)
+}
+
+func releaseConnPolyBooks(app polyBookApp, connBooks map[string]struct{}) {
+	if app == nil {
+		return
+	}
+	for tid := range connBooks {
+		app.PolyBookClientUnsubscribe(tid)
+	}
+}
+
 // asyncSeedBookAndPushSnapshot avoids blocking the WS read loop on CLOB REST; pushes a second snapshot after warm.
-func asyncSeedBookAndPushSnapshot(ctx context.Context, cfg *config.Config, cache *bookcache.Cache, hub *wsrelay.Hub, conn *websocket.Conn, tokenID string) {
+func asyncSeedBookAndPushSnapshot(ctx context.Context, cfg *config.Config, cache *bookcache.Cache, hub *wsrelay.Hub, conn *websocket.Conn, tokenID string, app bookSummaryPublisher) {
 	if !bookCacheNeedsRESTWarm(cache, tokenID) {
 		return
 	}
@@ -134,6 +211,7 @@ func asyncSeedBookAndPushSnapshot(ctx context.Context, cfg *config.Config, cache
 			"best_ask", ba,
 		)).Info("WebSocket：订单簿 REST 预热完成")
 		_ = sendPolyBookSnapshot(conn, hub, cache, tokenID)
+		afterPolyBookSnapshot(app, tokenID)
 	}()
 }
 
@@ -143,10 +221,10 @@ func sendPolyBookSnapshot(conn *websocket.Conn, hub *wsrelay.Hub, cache *bookcac
 	bidCents := 0.0
 	askCents := 0.0
 	if bestBid > 0 {
-		bidCents = bestBid * 100
+		bidCents = polyexec.CentsFromPrice01(bestBid)
 	}
 	if bestAsk > 0 {
-		askCents = bestAsk * 100
+		askCents = polyexec.CentsFromPrice01(bestAsk)
 	}
 	msg := map[string]any{
 		"type":    "polyBookSnapshot",
@@ -160,6 +238,13 @@ func sendPolyBookSnapshot(conn *websocket.Conn, hub *wsrelay.Hub, cache *bookcac
 		return hub.WriteJSON(conn, msg)
 	}
 	return nil
+}
+
+func afterPolyBookSnapshot(app bookSummaryPublisher, tokenID string) {
+	if app == nil || tokenID == "" {
+		return
+	}
+	app.PublishBookSummaryTick(tokenID)
 }
 
 func (h *Handler) handleWSRisk(c *gin.Context) {
@@ -178,7 +263,9 @@ func (h *Handler) handleWSRisk(c *gin.Context) {
 		h.logService.Info("WebSocket", "Risk 监控连接: "+ra)
 	}
 	h.riskHub.Register(conn)
+	connPolyBooks := make(map[string]struct{})
 	defer func() {
+		releaseConnPolyBooks(h.app, connPolyBooks)
 		h.riskHub.Unregister(conn)
 		logrus.WithFields(logx.Pairs("request_id", rid, "remote_addr", ra)).Info("WebSocket 风控：客户端已断开")
 		if h.logService != nil {
@@ -186,11 +273,13 @@ func (h *Handler) handleWSRisk(c *gin.Context) {
 		}
 	}()
 
-	// 发送初始连接状态
+	// 发送初始连接状态（含 connecting 标志，避免 dashboard 在首次 REST 之前误判为重连中）
 	_ = h.riskHub.WriteJSON(conn, map[string]any{
-		"type":                   "poly_status",
-		"polyOrderbookConnected": h.risk.OrderbookWSConnected(),
-		"polyUserConnected":      h.risk.UserWSConnected(),
+		"type":                    "poly_status",
+		"polyOrderbookConnected":  h.risk.OrderbookWSConnected(),
+		"polyOrderbookConnecting": h.risk.OrderbookWSConnecting(),
+		"polyUserConnected":       h.risk.UserWSConnected(),
+		"polyUserConnecting":      h.risk.UserWSConnecting(),
 	})
 
 	// 发送初始仓位快照（优先读缓存，避免 WS 连接阻塞在 enrich 上）
@@ -219,7 +308,7 @@ func (h *Handler) handleWSRisk(c *gin.Context) {
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
-			logrus.WithFields(logx.Pairs("request_id", rid, "ws_channel", "risk_ws", "remote_addr", ra, "err", err.Error())).Info("WebSocket 风控：读循环结束")
+			logWSReadLoopEnd("WebSocket 风控", rid, "risk_ws", ra, err)
 			return
 		}
 		var m map[string]any
@@ -237,13 +326,18 @@ func (h *Handler) handleWSRisk(c *gin.Context) {
 			originalTid := tid
 			tid = normalizeTokenID(tid)
 			if tid != "" {
-				ensured := h.app != nil
-				if ensured {
-					h.app.EnsureOrderbookToken(tid)
-				}
-				logPolyBookSubscribe(rid, "risk_ws", tid, originalTid, h.cache, ensured)
+				handlePolyBookSubscribe(h.app, connPolyBooks, tid)
+				logPolyBookSubscribe(rid, "risk_ws", tid, originalTid, h.cache, h.app != nil)
 				_ = sendPolyBookSnapshot(conn, h.riskHub, h.cache, tid)
-				asyncSeedBookAndPushSnapshot(c.Request.Context(), h.cfg, h.cache, h.riskHub, conn, tid)
+				afterPolyBookSnapshot(h.app, tid)
+				asyncSeedBookAndPushSnapshot(c.Request.Context(), h.cfg, h.cache, h.riskHub, conn, tid, h.app)
+			}
+		case "unsubscribePolyBook":
+			tid, _ := m["tokenId"].(string)
+			tid = normalizeTokenID(tid)
+			if tid != "" {
+				handlePolyBookUnsubscribe(h.app, connPolyBooks, tid)
+				logrus.WithFields(logx.Pairs("request_id", rid, "channel", "risk_ws", "token_id", tid)).Info("WebSocket：取消订阅订单簿")
 			}
 		}
 	}
@@ -266,7 +360,9 @@ func registerWS(r *gin.Engine, d Deps) {
 			d.LogService.Info("WebSocket", "Dashboard 连接: "+ra)
 		}
 		d.Hub.Register(conn)
+		connPolyBooks := make(map[string]struct{})
 		defer func() {
+			releaseConnPolyBooks(d.App, connPolyBooks)
 			d.Hub.Unregister(conn)
 			logrus.WithFields(logx.Pairs("request_id", rid, "remote_addr", ra)).Info("WebSocket Dashboard：客户端已断开")
 			if d.LogService != nil {
@@ -297,7 +393,7 @@ func registerWS(r *gin.Engine, d Deps) {
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
-				logrus.WithFields(logx.Pairs("request_id", rid, "ws_channel", "dashboard", "remote_addr", ra, "err", err.Error())).Info("WebSocket Dashboard：读循环结束")
+				logWSReadLoopEnd("WebSocket Dashboard", rid, "dashboard", ra, err)
 				return
 			}
 			var m map[string]any
@@ -315,13 +411,18 @@ func registerWS(r *gin.Engine, d Deps) {
 				tid, _ := m["tokenId"].(string)
 				tid = normalizeTokenID(tid)
 				if tid != "" {
-					ensured := d.App != nil
-					if ensured {
-						d.App.EnsureOrderbookToken(tid)
-					}
-					logPolyBookSubscribe(rid, "dashboard_ws", tid, "", d.Cache, ensured)
+					handlePolyBookSubscribe(d.App, connPolyBooks, tid)
+					logPolyBookSubscribe(rid, "dashboard_ws", tid, "", d.Cache, d.App != nil)
 					_ = sendPolyBookSnapshot(conn, d.Hub, d.Cache, tid)
-					asyncSeedBookAndPushSnapshot(c.Request.Context(), d.Cfg, d.Cache, d.Hub, conn, tid)
+					afterPolyBookSnapshot(d.App, tid)
+					asyncSeedBookAndPushSnapshot(c.Request.Context(), d.Cfg, d.Cache, d.Hub, conn, tid, d.App)
+				}
+			case "unsubscribePolyBook":
+				tid, _ := m["tokenId"].(string)
+				tid = normalizeTokenID(tid)
+				if tid != "" {
+					handlePolyBookUnsubscribe(d.App, connPolyBooks, tid)
+					logrus.WithFields(logx.Pairs("request_id", rid, "channel", "dashboard_ws", "token_id", tid)).Info("WebSocket：取消订阅订单簿")
 				}
 			case "subscribePolyOdds":
 				if raw, ok := m["tokenIds"].([]any); ok {

@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useGlobalWSStatus } from "@/hooks/useGlobalWSStatus";
-import { postWSReconnect } from "@/lib/api";
 import type { ChannelId, ChannelSnapshot } from "@/lib/wsConnectionLog";
 import { cn } from "@/lib/utils";
 
@@ -120,7 +119,7 @@ function ChannelPill({ ch, onReconnect }: { ch: ChannelSnapshot; onReconnect: ()
 }
 
 export function GlobalWSStatusCluster() {
-  const { channels, reconnectRelay } = useGlobalWSStatus();
+  const { channels, reconnectRelay, reconnectUpstream } = useGlobalWSStatus();
 
   return (
     <div className="flex items-center gap-1.5">
@@ -132,9 +131,9 @@ export function GlobalWSStatusCluster() {
             if (ch.id === "relay") {
               reconnectRelay();
             } else if (ch.id === "ob") {
-              void postWSReconnect("orderbook");
+              void reconnectUpstream("orderbook");
             } else {
-              void postWSReconnect("user");
+              void reconnectUpstream("user");
             }
           }}
         />

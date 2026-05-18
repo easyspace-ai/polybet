@@ -33,6 +33,10 @@ func InitBadger(ctx context.Context, cfg *config.Config, b *Backend, log *logrus
 		return err
 	}
 
+	if err := db.MigrateRiskPositionSeq(ctx); err != nil {
+		return err
+	}
+
 	if log != nil {
 		log.WithFields(logx.Pairs("dir", db.Dir(), "sync_writes", cfg.BadgerSyncWrites)).Info("BadgerDB persistence ready")
 	}

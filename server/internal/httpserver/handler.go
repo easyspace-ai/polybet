@@ -2,7 +2,6 @@ package httpserver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +23,7 @@ import (
 	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/memcache"
 	"github.com/easyspace-ai/polybet/internal/polyprov"
+	"github.com/easyspace-ai/polybet/internal/polywarm"
 	"github.com/easyspace-ai/polybet/internal/riskruntime"
 	"github.com/easyspace-ai/polybet/internal/service/initsvc"
 	"github.com/easyspace-ai/polybet/internal/service/logsvc"
@@ -61,8 +61,15 @@ type Handler struct {
 		RequestRestart()
 		ForceWSReconnect(channel string)
 		EnsureOrderbookToken(tokenID string)
+		PolyBookClientSubscribe(tokenID string)
+		PolyBookClientUnsubscribe(tokenID string)
+		PublishBookSummaryTick(tokenID string)
+		PolyBookSubStatusesFor(tokenIDs []string) []map[string]any
+		NotifyRiskPositionsChanged()
 		OpenRiskPositionCount(ctx context.Context) int
+		CachedOpenRiskPositionCount(maxAge time.Duration) (int, bool)
 	}
+	wsStatusSnap *wsStatusSnap
 }
 
 func riskMetaForAPI(m risksvc.Meta) memcache.RiskMeta {
@@ -158,6 +165,7 @@ func NewHandler(d Deps) *Handler {
 		sportsCache:  d.SportsCache,
 		riskRuntime:  d.RiskRuntime,
 		app:          d.App,
+		wsStatusSnap: &wsStatusSnap{},
 	}
 }
 
@@ -374,15 +382,7 @@ func (h *Handler) handleStatus(c *gin.Context) {
 }
 
 func (h *Handler) handleWSStatus(c *gin.Context) {
-	hubSize := 0
-	if h.hub != nil {
-		hubSize = h.hub.ClientCount()
-	}
-	openN := 0
-	if h.app != nil {
-		openN = h.app.OpenRiskPositionCount(c.Request.Context())
-	}
-	c.JSON(200, buildWSStatusJSON(h.risk, h.cache, hubSize, openN))
+	c.JSON(200, h.wsStatusResponse(c.Request.Context()))
 }
 
 func (h *Handler) handleWSReconnect(c *gin.Context) {
@@ -390,10 +390,11 @@ func (h *Handler) handleWSReconnect(c *gin.Context) {
 		Channel string `json:"channel"`
 	}
 	_ = c.ShouldBindJSON(&body)
+	ch := body.Channel
 	if h.app != nil {
-		h.app.ForceWSReconnect(body.Channel)
+		go h.app.ForceWSReconnect(ch)
 	}
-	c.JSON(200, gin.H{"ok": true})
+	c.JSON(http.StatusAccepted, gin.H{"ok": true, "accepted": true})
 }
 
 func (h *Handler) handleSetupStatus(c *gin.Context) {
@@ -559,8 +560,12 @@ func (h *Handler) handleOrderbook(c *gin.Context) {
 	// Try cache first
 	levels := h.cache.GetLevels(polyTok)
 	if len(levels) == 0 {
-		// Cache miss -> fetch from Polymarket REST once
-		h.fetchAndCachePolyBook(c.Request.Context(), polyTok)
+		// Cache miss -> fetch from Polymarket REST once (via platform proxy when configured).
+		if err := polywarm.RefreshFromREST(c.Request.Context(), h.cfg.PolymarketAPIURL, h.cfg.HTTPPlatformProxy, polyTok, h.cache); err != nil {
+			fields := logx.Pairs("token_id", polyTok, "err", err)
+			logrus.WithFields(fields).Warn("订单簿：从 Polymarket 拉取失败")
+			logx.Trade().WithFields(fields).Warn("订单簿：从 Polymarket 拉取失败")
+		}
 		levels = h.cache.GetLevels(polyTok)
 	}
 
@@ -578,41 +583,6 @@ func (h *Handler) handleOrderbook(c *gin.Context) {
 		})
 	}
 	c.JSON(200, gin.H{"levels": out, "polyTokenId": polyTok})
-}
-
-func (h *Handler) fetchAndCachePolyBook(ctx context.Context, tokenID string) {
-	clobAPI := "https://clob.polymarket.com/book?token_id=" + tokenID
-	client := &http.Client{Timeout: 5 * time.Second}
-	if strings.TrimSpace(h.cfg.HTTPPlatformProxy) != "" {
-		pu, err := url.Parse(h.cfg.HTTPPlatformProxy)
-		if err == nil {
-			client.Transport = &http.Transport{Proxy: http.ProxyURL(pu)}
-		}
-	}
-
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, clobAPI, nil)
-	resp, err := client.Do(req)
-	if err != nil {
-		fields := logx.Pairs("token_id", tokenID, "err", err)
-		logrus.WithFields(fields).Warn("订单簿：从 Polymarket 拉取失败")
-		logx.Trade().WithFields(fields).Warn("订单簿：从 Polymarket 拉取失败")
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return
-	}
-
-	var data struct {
-		Bids []struct{ Price, Size string } `json:"bids"`
-		Asks []struct{ Price, Size string } `json:"asks"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return
-	}
-
-	h.cache.ReplaceBook(tokenID, data.Bids, data.Asks, time.Now().UnixMilli())
 }
 
 func (h *Handler) handleTradePreview(c *gin.Context) {
@@ -900,6 +870,46 @@ func (h *Handler) handleRiskPositions(c *gin.Context) {
 	c.JSON(200, gin.H{"positions": rows, "meta": meta2, "cached": found, "stale": stale})
 }
 
+func (h *Handler) handleRiskBookSubscriptions(c *gin.Context) {
+	if h.app == nil {
+		c.JSON(200, gin.H{"subscriptions": []any{}})
+		return
+	}
+	tokenIDs := c.QueryArray("tokenId")
+	if len(tokenIDs) == 0 {
+		raw := strings.TrimSpace(c.Query("tokenIds"))
+		if raw != "" {
+			for _, part := range strings.Split(raw, ",") {
+				if t := strings.TrimSpace(part); t != "" {
+					tokenIDs = append(tokenIDs, t)
+				}
+			}
+		}
+	}
+	if len(tokenIDs) == 0 {
+		rows, _, found := h.riskCache.Snapshot()
+		if found {
+			seen := make(map[string]struct{})
+			for _, row := range rows {
+				status, _ := row["status"].(string)
+				if status != "open" {
+					continue
+				}
+				tid, _ := row["tokenId"].(string)
+				if tid == "" {
+					continue
+				}
+				if _, ok := seen[tid]; ok {
+					continue
+				}
+				seen[tid] = struct{}{}
+				tokenIDs = append(tokenIDs, tid)
+			}
+		}
+	}
+	c.JSON(200, gin.H{"subscriptions": h.app.PolyBookSubStatusesFor(tokenIDs)})
+}
+
 func (h *Handler) handleRiskRefresh(c *gin.Context) {
 	rid := c.GetString("request_id")
 	if h.cfg.ReadOnlyMode {
@@ -1089,7 +1099,11 @@ func (h *Handler) handlePatchRiskPosition(c *gin.Context) {
 		fields["high_water_cents"] = floored
 	}
 	logx.Position().WithFields(fields).Info("风控持仓：PATCH 已更新")
-	c.JSON(200, gin.H{"ok": true, "position": h.riskRowFromPosition(c, p)})
+	row := h.riskRowFromPosition(c, p)
+	if h.riskCache != nil {
+		h.riskCache.PatchPositionFields(id, row)
+	}
+	c.JSON(200, gin.H{"ok": true, "position": row})
 }
 
 func (h *Handler) riskRowFromPosition(ctx context.Context, p *store.RiskPosition) gin.H {
@@ -1099,7 +1113,8 @@ func (h *Handler) riskRowFromPosition(ctx context.Context, p *store.RiskPosition
 	hw := risksvc.FloorCents1(p.HighWaterCents)
 	row["trailingStopCents"] = risksvc.TrailingStopCentsFromHWWithAbs(hw, p.StopLossPct, h.st.GetBotConfigFloat(ctx, "priceStopLossAbsCents", 0))
 
-	if bid, ask, ok := h.risk.BestBidAskCents(ctx, p.TokenID); ok {
+	// PATCH must return quickly — use in-memory book cache only (no REST /book).
+	if bid, ask, ok := h.risk.BestBidAskCentsFromCache(p.TokenID); ok {
 		cur := bid
 		if cur <= 0 && ask > 0 {
 			cur = ask
@@ -1119,7 +1134,7 @@ func riskRowFromPosition(p *store.RiskPosition) gin.H {
 	trail := risksvc.TrailingStopCentsFromHW(hw, p.StopLossPct)
 	tid := strings.ToLower(strings.TrimSpace(p.TokenID))
 	return gin.H{
-		"id": p.ID, "title": p.Title, "sideLabel": p.SideLabel, "tokenId": tid,
+		"id": p.ID, "positionSeq": p.PositionSeq, "title": p.Title, "sideLabel": p.SideLabel, "tokenId": tid,
 		"avgEntryCents": p.AvgEntryCents, "currentCents": nil,
 		"sizeShares": p.SizeShares, "costUsd": p.CostUSD,
 		"highWaterCents": hw, "stopLossPct": p.StopLossPct, "trailingStopCents": trail,
@@ -1388,6 +1403,7 @@ func (h *Handler) handleRiskHiddenPost(c *gin.Context) {
 	}
 	if h.app != nil {
 		h.app.ScheduleInvalidateAndRebuildCache()
+		h.app.NotifyRiskPositionsChanged()
 	}
 	c.JSON(200, gin.H{"ok": true})
 }
@@ -1419,6 +1435,7 @@ func (h *Handler) handleRiskHiddenDelete(c *gin.Context) {
 	}
 	if h.app != nil {
 		h.app.ScheduleInvalidateAndRebuildCache()
+		h.app.NotifyRiskPositionsChanged()
 	}
 	c.JSON(200, gin.H{"ok": true})
 }

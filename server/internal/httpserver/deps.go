@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"time"
 
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/config"
@@ -39,6 +40,12 @@ type Deps struct {
 		RequestRestart()
 		ForceWSReconnect(channel string)
 		EnsureOrderbookToken(tokenID string)
+		PolyBookClientSubscribe(tokenID string)
+		PolyBookClientUnsubscribe(tokenID string)
+		PublishBookSummaryTick(tokenID string)
+		PolyBookSubStatusesFor(tokenIDs []string) []map[string]any
+		NotifyRiskPositionsChanged()
 		OpenRiskPositionCount(ctx context.Context) int
+		CachedOpenRiskPositionCount(maxAge time.Duration) (int, bool)
 	}
 }

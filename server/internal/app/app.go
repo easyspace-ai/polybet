@@ -40,9 +40,11 @@ import (
 // shutdownWorkerDrain caps WaitGroup after HTTP stops; in-flight Gamma sync and
 // HTTP clients should abort when the root ctx is cancelled (usually a few seconds).
 // A stuck storage lock or blocking syscall can use the full drain window.
+// 15s gives dashboard WS handlers time to unwind after beginShutdown CloseAll during
+// Electron restart; Badger open retries cover the brief lock overlap after that.
 const (
-	shutdownHTTPTimeout = 10 * time.Second
-	shutdownWorkerDrain = 8 * time.Second
+	shutdownHTTPTimeout = 15 * time.Second
+	shutdownWorkerDrain = 10 * time.Second
 )
 
 type App struct {
@@ -69,6 +71,11 @@ type App struct {
 	publicSrv    *http.Server
 	wg           sync.WaitGroup
 	restartCh    chan struct{}
+	polyBookRefs *polyBookRefs
+
+	openPosCountMu sync.RWMutex
+	openPosCountN  int
+	openPosCountAt time.Time
 }
 
 func (a *App) RequestRestart() {
@@ -122,6 +129,7 @@ func New(cfg *config.Config, be *storage.Backend, log *logrus.Logger) *App {
 		LogService: logSvc,
 		restartCh:  make(chan struct{}, 1),
 		jobs:       workqueue.New(),
+		polyBookRefs: newPolyBookRefs(),
 	}
 	a.StopLoss = stoplossengine.New(cfg, be, cache, risk, a.Debounce, hub, riskHub, riskRuntime, log,
 		func() { a.rebuildAndBroadcastCache() },

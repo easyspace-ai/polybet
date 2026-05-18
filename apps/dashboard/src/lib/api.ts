@@ -87,7 +87,7 @@ export interface TradesResponse {
 export interface OrderBookLevel {
   odds: number;
   size: number;
-  platform: 'polymarket';
+  platform: "polymarket";
 }
 
 export interface OrderBookResponse {
@@ -125,19 +125,19 @@ export interface PolymarketAccountCreateBody {
   privateKey: string;
 }
 
-const BASE = import.meta.env.VITE_API_BASE_URL ?? '';
+const BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
 /** Short API error tokens that should not be shown alone as user-facing text. */
-const OPAQUE_API_ERROR_TOKENS = new Set(['db', 'ok', 'risk']);
+const OPAQUE_API_ERROR_TOKENS = new Set(["db", "ok", "risk"]);
 
 function formatApiErrorBody(body: unknown, status: number): string {
-  if (!body || typeof body !== 'object') {
+  if (!body || typeof body !== "object") {
     return `HTTP ${status}`;
   }
   const o = body as { detail?: unknown; message?: unknown; error?: unknown };
-  const detail = typeof o.detail === 'string' ? o.detail.trim() : '';
-  const message = typeof o.message === 'string' ? o.message.trim() : '';
-  const errTok = typeof o.error === 'string' ? o.error.trim() : '';
+  const detail = typeof o.detail === "string" ? o.detail.trim() : "";
+  const message = typeof o.message === "string" ? o.message.trim() : "";
+  const errTok = typeof o.error === "string" ? o.error.trim() : "";
   if (message) {
     return message;
   }
@@ -153,34 +153,55 @@ function formatApiErrorBody(body: unknown, status: number): string {
   return `HTTP ${status}`;
 }
 
-async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, options);
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(formatApiErrorBody(body, res.status));
+const DEFAULT_FETCH_TIMEOUT_MS = 20_000;
+const WS_STATUS_FETCH_TIMEOUT_MS = 8_000;
+
+type ApiFetchOptions = RequestInit & { timeoutMs?: number };
+
+async function apiFetch<T>(url: string, options?: ApiFetchOptions): Promise<T> {
+  const { timeoutMs, ...fetchOptions } = options ?? {};
+  const controller = new AbortController();
+  const limitMs = timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+  const timeout = setTimeout(() => controller.abort(), limitMs);
+  const signal = fetchOptions.signal ?? controller.signal;
+  try {
+    const res = await fetch(`${BASE}${url}`, { ...fetchOptions, signal });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(formatApiErrorBody(body, res.status));
+    }
+    return res.json() as Promise<T>;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(`请求超时（${limitMs / 1000}s）: ${url}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
   }
-  return res.json() as Promise<T>;
 }
 
-export const getMarkets = () => apiFetch<Market[]>('/api/markets');
+export const getMarkets = () => apiFetch<Market[]>("/api/markets");
 
 export const getOrderBook = (outcomeId: string) =>
   apiFetch<OrderBookResponse>(`/api/trade/orderbook?outcomeId=${encodeURIComponent(outcomeId)}`);
 
 export const getTradePreview = (outcomeId: string, side: string, size: number) =>
-  apiFetch<AllocationPlan>(`/api/trade/preview?outcomeId=${encodeURIComponent(outcomeId)}&side=${encodeURIComponent(side)}&size=${size}`);
+  apiFetch<AllocationPlan>(
+    `/api/trade/preview?outcomeId=${encodeURIComponent(outcomeId)}&side=${encodeURIComponent(side)}&size=${size}`,
+  );
 
 export const postTrade = (outcomeId: string, side: string, size: number) =>
-  apiFetch<TradeResponse>('/api/trade', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  apiFetch<TradeResponse>("/api/trade", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ outcomeId, side, size }),
   });
 
 export const getTrades = (page = 1, limit = 20) =>
   apiFetch<TradesResponse>(`/api/trades?page=${page}&limit=${limit}`);
 
-export const getConfig = () => apiFetch<ConfigRow[]>('/api/config');
+export const getConfig = () => apiFetch<ConfigRow[]>("/api/config");
 
 export interface WSStatusResponse {
   dashConnected?: boolean;
@@ -199,33 +220,80 @@ export interface WSStatusResponse {
   wsEvents?: { channel?: string; at?: string; level?: string; message?: string }[];
 }
 
-export const getWSStatus = () => apiFetch<WSStatusResponse>('/api/ws/status');
+let wsStatusApiInflight: Promise<WSStatusResponse> | null = null;
 
-export const postWSReconnect = (channel: 'orderbook' | 'user' | 'all' = 'all') =>
-  apiFetch<{ ok: boolean }>('/api/ws/reconnect', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ channel }),
+export const getWSStatus = () => {
+  if (wsStatusApiInflight) return wsStatusApiInflight;
+  wsStatusApiInflight = apiFetch<WSStatusResponse>("/api/ws/status", {
+    timeoutMs: WS_STATUS_FETCH_TIMEOUT_MS,
+  }).finally(() => {
+    wsStatusApiInflight = null;
   });
+  return wsStatusApiInflight;
+};
 
-export const getBalances = () => apiFetch<BalanceSummary>('/api/balances');
+export const postWSReconnect = async (
+  channel: "orderbook" | "user" | "all" = "all",
+): Promise<{ ok: boolean; accepted?: boolean }> => {
+  const controller = new AbortController();
+  const timeoutMs = 5_000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${BASE}/api/ws/reconnect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel }),
+      signal: controller.signal,
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      accepted?: boolean;
+      detail?: string;
+      message?: string;
+      error?: string;
+    };
+    // Server returns 202 Accepted with { ok, accepted }; treat 2xx explicitly.
+    if (res.status === 202 || res.ok) {
+      return { ok: body.ok ?? true, accepted: body.accepted };
+    }
+    throw new Error(formatApiErrorBody(body, res.status));
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(`请求超时（${timeoutMs / 1000}s）: /api/ws/reconnect`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
 
-export const listPolymarketAccounts = () => apiFetch<PolymarketAccountListItem[]>('/api/polymarket/accounts');
+export const getBalances = () => apiFetch<BalanceSummary>("/api/balances");
+
+export const listPolymarketAccounts = () =>
+  apiFetch<PolymarketAccountListItem[]>("/api/polymarket/accounts");
 
 export const createPolymarketAccount = (body: PolymarketAccountCreateBody) =>
-  apiFetch<{ id: string; name: string; funderAddress: string; isActive: boolean }>('/api/polymarket/accounts', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  apiFetch<{ id: string; name: string; funderAddress: string; isActive: boolean }>(
+    "/api/polymarket/accounts",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
 
 export const activatePolymarketAccount = (id: string) =>
-  apiFetch<{ ok: boolean; id: string }>(`/api/polymarket/accounts/${encodeURIComponent(id)}/activate`, {
-    method: 'PATCH',
-  });
+  apiFetch<{ ok: boolean; id: string }>(
+    `/api/polymarket/accounts/${encodeURIComponent(id)}/activate`,
+    {
+      method: "PATCH",
+    },
+  );
 
 export const deletePolymarketAccount = async (id: string): Promise<void> => {
-  const res = await fetch(`${BASE}/api/polymarket/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const res = await fetch(`${BASE}/api/polymarket/accounts/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(formatApiErrorBody(body, res.status));
@@ -238,7 +306,7 @@ export interface BestOddsCount {
 }
 
 export interface WinnerEdgeDepth {
-  venue: 'poly';
+  venue: "poly";
   avgSize: number;
   sampleCount: number;
 }
@@ -250,10 +318,12 @@ export interface MarketStatsResponse {
   edgeAllMatched24h: WinnerEdgeDepth | null;
 }
 
-export const getMarketStats = () => apiFetch<MarketStatsResponse>('/api/stats/markets');
+export const getMarketStats = () => apiFetch<MarketStatsResponse>("/api/stats/markets");
 
 export interface RiskPositionRow {
   id: string;
+  /** Monotonic display ID assigned when the position enters monitoring. */
+  positionSeq?: number;
   title: string;
   displayTitle?: string;
   sport?: string;
@@ -279,6 +349,16 @@ export interface RiskPositionRow {
   source?: string;
   bids?: OrderBookLevel[];
   asks?: OrderBookLevel[];
+  bookSub?: RiskBookSubscriptionStatus;
+}
+
+export interface RiskBookSubscriptionStatus {
+  tokenId: string;
+  clientSubscribed: boolean;
+  clientRefs: number;
+  upstreamSubscribed: boolean;
+  lastFrameMs?: number;
+  stale: boolean;
 }
 
 export interface RiskPositionsMeta {
@@ -313,18 +393,66 @@ export interface RiskTaskRow {
   lastAttemptDetail?: string | null;
 }
 
-export const getRiskPositions = () =>
-  apiFetch<{ positions: RiskPositionRow[]; meta?: RiskPositionsMeta; cached?: boolean; stale?: boolean }>('/api/risk/positions');
+type RiskPositionsResponse = {
+  positions: RiskPositionRow[];
+  meta?: RiskPositionsMeta;
+  cached?: boolean;
+  stale?: boolean;
+};
+
+let riskPositionsApiInflight: Promise<RiskPositionsResponse> | null = null;
+
+export const getRiskPositions = () => {
+  if (riskPositionsApiInflight) return riskPositionsApiInflight;
+  riskPositionsApiInflight = apiFetch<RiskPositionsResponse>("/api/risk/positions").finally(() => {
+    riskPositionsApiInflight = null;
+  });
+  return riskPositionsApiInflight;
+};
+
+export interface RiskBookResponse {
+  tokenId: string;
+  bids?: OrderBookLevel[];
+  asks?: OrderBookLevel[];
+  bestBid?: number;
+  bestAsk?: number;
+  source?: "cache" | "rest" | "rest_error" | string;
+  updatedAtMs?: number;
+  bookAgeMs?: number;
+  subscription?: RiskBookSubscriptionStatus;
+}
+
+export const getRiskBook = (tokenId: string, opts?: { refresh?: boolean; reason?: string }) => {
+  const q = new URLSearchParams({ tokenId });
+  if (opts?.refresh) q.set("refresh", "1");
+  if (opts?.reason) q.set("reason", opts.reason);
+  return apiFetch<RiskBookResponse>(`/api/risk/book?${q.toString()}`, { timeoutMs: 8_000 });
+};
+
+export const getRiskBookSubscriptions = (tokenIds?: string[]) => {
+  const q = new URLSearchParams();
+  if (tokenIds && tokenIds.length > 0) {
+    q.set("tokenIds", tokenIds.join(","));
+  }
+  const suffix = q.toString() ? `?${q.toString()}` : "";
+  return apiFetch<{ subscriptions: RiskBookSubscriptionStatus[] }>(
+    `/api/risk/book-subscriptions${suffix}`,
+    { timeoutMs: 8_000 },
+  );
+};
 
 export const getRiskTasks = (limit = 40) =>
   apiFetch<{ tasks: RiskTaskRow[] }>(`/api/risk/tasks?limit=${limit}`);
 
 /** Removes terminal task rows (succeeded / failed / cancelled); pending & running are kept. */
 export const postRiskTasksClear = () =>
-  apiFetch<{ ok: boolean; deleted: number }>('/api/risk/tasks/clear', { method: 'POST' });
+  apiFetch<{ ok: boolean; deleted: number }>("/api/risk/tasks/clear", { method: "POST" });
 
 export const postRiskOfficialRefresh = () =>
-  apiFetch<{ ok: boolean; accepted?: boolean; alreadyRunning?: boolean; message?: string }>('/api/risk/refresh', { method: 'POST' });
+  apiFetch<{ ok: boolean; accepted?: boolean; alreadyRunning?: boolean; message?: string }>(
+    "/api/risk/refresh",
+    { method: "POST" },
+  );
 
 export const patchRiskPosition = (
   id: string,
@@ -333,8 +461,8 @@ export const patchRiskPosition = (
   apiFetch<{ ok: boolean; position: RiskPositionRow }>(
     `/api/risk/positions/${encodeURIComponent(id)}`,
     {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     },
   );
@@ -342,7 +470,7 @@ export const patchRiskPosition = (
 export const postRiskClosePosition = (id: string) =>
   apiFetch<{ ok: boolean; positionId: string }>(
     `/api/risk/positions/${encodeURIComponent(id)}/close`,
-    { method: 'POST' },
+    { method: "POST" },
   );
 
 export interface StopLossHistoryTask {
@@ -381,7 +509,7 @@ export const getTradeHistory = (limit = 50) =>
   apiFetch<{ trades: OfficialTrade[] }>(`/api/risk/trade-history?limit=${limit}`);
 
 export const postRiskCloseAll = () =>
-  apiFetch<{ ok: boolean }>('/api/risk/close-all', { method: 'POST' });
+  apiFetch<{ ok: boolean }>("/api/risk/close-all", { method: "POST" });
 
 export interface RiskHiddenRow {
   tokenId: string;
@@ -390,32 +518,32 @@ export interface RiskHiddenRow {
 }
 
 export const getRiskHiddenPositions = () =>
-  apiFetch<{ hidden: RiskHiddenRow[] }>('/api/risk/hidden-positions');
+  apiFetch<{ hidden: RiskHiddenRow[] }>("/api/risk/hidden-positions");
 
 export const postRiskHidePosition = (body: { tokenId: string; sideLabel: string }) =>
-  apiFetch<{ ok: boolean }>('/api/risk/hidden-positions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  apiFetch<{ ok: boolean }>("/api/risk/hidden-positions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
 
 export const deleteRiskUnhidePosition = (body: { tokenId: string; sideLabel: string }) =>
-  apiFetch<{ ok: boolean }>('/api/risk/hidden-positions', {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
+  apiFetch<{ ok: boolean }>("/api/risk/hidden-positions", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
 
 export const putConfig = (key: string, value: string) =>
   apiFetch<ConfigRow>(`/api/config/${encodeURIComponent(key)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ value }),
   });
 
 export const testTelegram = () =>
-  apiFetch<{ ok: boolean; message: string }>('/api/telegram/test', {
-    method: 'POST',
+  apiFetch<{ ok: boolean; message: string }>("/api/telegram/test", {
+    method: "POST",
   });
 
 export interface SetupStatus {
@@ -424,16 +552,16 @@ export interface SetupStatus {
   polymarketConfigured: boolean;
 }
 
-export const getSetupStatus = () => apiFetch<SetupStatus>('/api/setup/status');
+export const getSetupStatus = () => apiFetch<SetupStatus>("/api/setup/status");
 
 export const postSetupComplete = () =>
-  apiFetch<{ ok: boolean }>('/api/setup/complete', { method: 'POST' });
+  apiFetch<{ ok: boolean }>("/api/setup/complete", { method: "POST" });
 
 export const postCacheRefresh = () =>
-  apiFetch<{ ok: boolean; message: string }>('/api/cache/refresh', { method: 'POST' });
+  apiFetch<{ ok: boolean; message: string }>("/api/cache/refresh", { method: "POST" });
 
 export const postMarketsRefresh = () =>
-  apiFetch<{ ok: boolean; message: string }>('/api/markets/refresh?force=1', { method: 'POST' });
+  apiFetch<{ ok: boolean; message: string }>("/api/markets/refresh?force=1", { method: "POST" });
 
 export const postMarketsRefreshFull = () =>
   apiFetch<{
@@ -442,7 +570,7 @@ export const postMarketsRefreshFull = () =>
     alreadyRunning?: boolean;
     message?: string;
     cache?: string;
-  }>('/api/markets/refresh-full', { method: 'POST' });
+  }>("/api/markets/refresh-full", { method: "POST" });
 
 export interface GammaSport {
   id: number;
@@ -455,7 +583,7 @@ export interface GammaSport {
   createdAt: string;
 }
 
-export const getSports = () => apiFetch<GammaSport[]>('/api/sports');
+export const getSports = () => apiFetch<GammaSport[]>("/api/sports");
 
 export interface RiskRuntimeLogEnvelope {
   seq: number;

@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/easyspace-ai/polybet/internal/polyexec"
 	"github.com/easyspace-ai/polybet/internal/wsrelay"
 )
 
@@ -164,20 +165,28 @@ func summaryTickMinGap() time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+// BookSummaryPosition links a runtime log line to one monitored risk row.
+type BookSummaryPosition struct {
+	PositionID  string
+	PositionSeq int64
+}
+
 // MaybePublishMarketBookSummary emits market.book.summary_tick throttled per token (time + epsilon on bid/ask cents).
 // Set POLYBET_RUNTIME_BOOK_SUMMARY_DISABLE=true to skip entirely (reduces risk_runtime_log volume).
-func (b *Bus) MaybePublishMarketBookSummary(tokenID string, accountID string, bestBidCents, bestAskCents float64) {
+func (b *Bus) MaybePublishMarketBookSummary(tokenID string, accountID string, bestBidCents, bestAskCents float64, positions []BookSummaryPosition) {
 	if b == nil || b.hub == nil || tokenID == "" {
 		return
 	}
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("POLYBET_RUNTIME_BOOK_SUMMARY_DISABLE")), "true") {
 		return
 	}
+	bestBidCents = polyexec.FloorCents1(bestBidCents)
+	bestAskCents = polyexec.FloorCents1(bestAskCents)
 	minGap := summaryTickMinGap()
 	const eps = 0.5 // half cent
 
 	now := time.Now()
-	spread := bestAskCents - bestBidCents
+	spread := polyexec.FloorCents1(bestAskCents - bestBidCents)
 
 	b.bookMu.Lock()
 	last, okT := b.bookLast[tokenID]
@@ -197,6 +206,30 @@ func (b *Bus) MaybePublishMarketBookSummary(tokenID string, accountID string, be
 		"bestAsk":       bestAskCents,
 		"spread":        spread,
 		"schemaVersion": 1,
+	}
+	if len(positions) > 0 {
+		detail["positionId"] = positions[0].PositionID
+		if positions[0].PositionSeq > 0 {
+			detail["positionSeq"] = positions[0].PositionSeq
+		}
+		if len(positions) > 1 {
+			ids := make([]string, 0, len(positions))
+			seqs := make([]int64, 0, len(positions))
+			for _, p := range positions {
+				if p.PositionID != "" {
+					ids = append(ids, p.PositionID)
+				}
+				if p.PositionSeq > 0 {
+					seqs = append(seqs, p.PositionSeq)
+				}
+			}
+			if len(ids) > 0 {
+				detail["positionIds"] = ids
+			}
+			if len(seqs) > 0 {
+				detail["positionSeqs"] = seqs
+			}
+		}
 	}
 	b.Publish("market_data", "info", "market.book.summary_tick", accountID, "", tokenID, "", detail)
 }

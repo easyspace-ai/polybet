@@ -262,7 +262,7 @@ func (s *Service) listRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 			image = icon
 		}
 		m := map[string]any{
-			"id": p.ID, "title": p.Title, "sideLabel": p.SideLabel,
+			"id": p.ID, "positionSeq": p.PositionSeq, "title": p.Title, "sideLabel": p.SideLabel,
 			"displayTitle": displayTitle, "sport": sport,
 			"polySlug":    polySlug,
 			"officialUrl": eventURL, "officialSearchUrl": searchURL,
@@ -324,7 +324,7 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 		}
 		avgPrice := avgPriceUSDFromDataPosition(pos)
 		initialVal, _ := pos.InitialValue.Float64()
-		entryCents := avgPrice * 100
+		entryCents := CentsFromPrice01(avgPrice)
 		costUsd := initialVal
 		if costUsd <= 0 {
 			costUsd = size * avgPrice
@@ -447,7 +447,7 @@ func (s *Service) ListOfficialTrades(ctx context.Context, limit int) ([]map[stri
 			"outcome":     t.Outcome,
 			"size":        size,
 			"price":       price,
-			"priceCents":  price * 100,
+			"priceCents":  CentsFromPrice01(price),
 			"timestamp":   time.Unix(t.Timestamp, 0).UTC().Format(time.RFC3339),
 			"icon":        t.Icon,
 			"polySlug":    polySlug,

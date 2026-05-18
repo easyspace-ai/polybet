@@ -167,8 +167,7 @@ func (s *Service) checkProxy(ctx context.Context) error {
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	proxyStr := config.OutboundProxyURL()
-	if proxyStr != "" {
+	if proxyStr := strings.TrimSpace(s.cfg.HTTPPlatformProxy); proxyStr != "" {
 		if proxyu, err := url.Parse(proxyStr); err == nil {
 			client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyu)}
 		}

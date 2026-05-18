@@ -96,10 +96,39 @@ func (a *App) runWSHealthCheck(ctx context.Context, ws wsconfig.Settings) {
 	a.broadcastPolyStatus()
 }
 
+// CachedOpenRiskPositionCount returns the last counted value without touching storage.
+func (a *App) CachedOpenRiskPositionCount(maxAge time.Duration) (int, bool) {
+	if a == nil {
+		return 0, false
+	}
+	if maxAge <= 0 {
+		maxAge = 2 * time.Second
+	}
+	a.openPosCountMu.RLock()
+	defer a.openPosCountMu.RUnlock()
+	if a.openPosCountAt.IsZero() || time.Since(a.openPosCountAt) > maxAge {
+		return 0, false
+	}
+	return a.openPosCountN, true
+}
+
 // OpenRiskPositionCount returns open risk positions for the active account.
 func (a *App) OpenRiskPositionCount(ctx context.Context) int {
+	if a == nil {
+		return 0
+	}
+	const ttl = 2 * time.Second
+	a.openPosCountMu.RLock()
+	if !a.openPosCountAt.IsZero() && time.Since(a.openPosCountAt) < ttl {
+		n := a.openPosCountN
+		a.openPosCountMu.RUnlock()
+		return n
+	}
+	a.openPosCountMu.RUnlock()
+
 	acct, _ := a.Store.GetActivePolymarketAccount(ctx)
 	if acct == nil {
+		a.storeOpenPosCount(0)
 		return 0
 	}
 	minShares := a.Store.GetBotConfigFloat(ctx, "minOpenRiskShares", 1)
@@ -107,5 +136,20 @@ func (a *App) OpenRiskPositionCount(ctx context.Context) int {
 	if err != nil {
 		return 0
 	}
-	return int(n)
+	out := int(n)
+	a.storeOpenPosCount(out)
+	return out
+}
+
+func (a *App) storeOpenPosCount(n int) {
+	a.openPosCountMu.Lock()
+	a.openPosCountN = n
+	a.openPosCountAt = time.Now()
+	a.openPosCountMu.Unlock()
+}
+
+func (a *App) invalidateOpenPosCount() {
+	a.openPosCountMu.Lock()
+	a.openPosCountAt = time.Time{}
+	a.openPosCountMu.Unlock()
 }

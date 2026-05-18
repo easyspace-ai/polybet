@@ -11,6 +11,8 @@ import (
 
 	"github.com/easyspace-ai/polybet/internal/logx"
 	"github.com/easyspace-ai/polybet/internal/marketstream"
+	"github.com/easyspace-ai/polybet/internal/polyexec"
+	"github.com/easyspace-ai/polybet/internal/riskruntime"
 	"github.com/easyspace-ai/polybet/internal/wsconfig"
 )
 
@@ -202,8 +204,8 @@ func (a *App) applyRiskPolyBookUpdate(assetIDRaw string, bid, ask float64, hasBo
 		bestAsk = ask
 	}
 
-	bidCents := bestBid * 100
-	askCents := bestAsk * 100
+	bidCents := polyexec.CentsFromPrice01(bestBid)
+	askCents := polyexec.CentsFromPrice01(bestAsk)
 
 	wsMsg := map[string]any{
 		"type":    "polyBookUpdate",
@@ -215,6 +217,18 @@ func (a *App) applyRiskPolyBookUpdate(assetIDRaw string, bid, ask float64, hasBo
 	}
 	a.Hub.BroadcastJSON(wsMsg)
 	a.RiskHub.BroadcastJSON(wsMsg)
+
+	if a.RiskRuntime != nil {
+		acctID := ""
+		if acct, err := a.Store.GetActivePolymarketAccount(context.Background()); err == nil && acct != nil {
+			acctID = acct.ID
+		}
+		var positions []riskruntime.BookSummaryPosition
+		if a.StopLoss != nil {
+			positions = a.StopLoss.MonitoredPositionsForToken(context.Background(), acctID, assetID)
+		}
+		a.RiskRuntime.MaybePublishMarketBookSummary(assetID, acctID, bidCents, askCents, positions)
+	}
 
 	a.Debounce.Trigger(assetID, func() {
 		_ = a.Risk.RiskEvaluateTokenAfterBookUpdate(context.Background(), assetID)
