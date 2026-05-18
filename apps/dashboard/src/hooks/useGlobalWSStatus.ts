@@ -15,8 +15,8 @@ import { getWSConfig } from "@/hooks/useWSConfig";
 import { getWSStatus, postWSReconnect } from "@/lib/api";
 
 const DISCOVERY_BASE_MS = 1000;
-const DISCOVERY_MAX_MS = 30_000;
-const RECONNECT_MIN_INTERVAL_MS = 15_000;
+const DISCOVERY_MAX_MS = 10_000;
+const RECONNECT_MIN_INTERVAL_MS = 5_000;
 const RECONNECT_BURST_COUNT = 5;
 const RECONNECT_BURST_INTERVAL_MS = 750;
 const CHANNEL_IDS: ChannelId[] = ["relay", "ob", "user"];
@@ -157,8 +157,14 @@ async function requestUpstreamReconnect(
   reconnectInflight.add(channel);
   reconnectLastAt[channel] = now;
   try {
+    // Poll with a short timeout so a stuck status API never blocks the
+    // manual-reconnect path.  If it times out we still proceed.
     try {
-      await pollWSStatusOnce();
+      const pollPromise = pollWSStatusOnce();
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("poll timeout")), 2_000),
+      );
+      await Promise.race([pollPromise, timeoutPromise]);
       const alreadyConnected =
         channel === "orderbook"
           ? getUpstreamConnectedState("ob") === true
@@ -174,8 +180,7 @@ async function requestUpstreamReconnect(
     markUpstreamReconnecting(channel === "orderbook" ? "ob" : "user");
     const res = await postWSReconnect(channel);
     if (res.ok || res.accepted) {
-      await pollWSStatusOnce();
-      startReconnectBurstPoll();
+      void pollWSStatusOnce().then(() => startReconnectBurstPoll());
     } else {
       refreshWSStatus({ resetBackoff: true });
     }
@@ -221,7 +226,10 @@ async function pollWSStatusOnce() {
         void requestUpstreamReconnect("user", { nextRetryAt: st.userNextRetryAt });
       }
     } catch {
-      /* ignore — discovery loop will retry */
+      /* poll failed (timeout or network error) — keep backoff low and retry soon */
+      resetDiscoveryBackoff();
+    } finally {
+      syncDiscoveryLoop();
     }
   })().finally(() => {
     wsStatusInflight = null;
@@ -264,10 +272,27 @@ function installWSStatusBootstrap() {
 
   const cfg = getWSConfig();
   const steadyPollMs = cfg.wsRiskPollIntervalSec * 1000;
+
+  // Steady state polling
   setInterval(() => {
     if (pollHidden) return;
     void pollWSStatusOnce();
   }, steadyPollMs);
+
+  // Startup burst: poll more aggressively for the first 90s so we catch
+  // sidecar initialization / upstream reconnect quickly without waiting
+  // for the discovery backoff to grow.
+  const BOOTSTRAP_BURST_MS = 3_000;
+  const BOOTSTRAP_BURST_DURATION_MS = 90_000;
+  let bootstrapTick = 0;
+  const bootstrapBurst = setInterval(() => {
+    if (pollHidden) return;
+    void pollWSStatusOnce();
+    bootstrapTick += BOOTSTRAP_BURST_MS;
+    if (bootstrapTick >= BOOTSTRAP_BURST_DURATION_MS) {
+      clearInterval(bootstrapBurst);
+    }
+  }, BOOTSTRAP_BURST_MS);
 
   startWSDiscovery();
 }

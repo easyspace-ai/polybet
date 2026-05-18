@@ -110,8 +110,11 @@ const WS_URL = (() => {
   const base = import.meta.env.VITE_API_BASE_URL as string | undefined;
   if (base) return base.replace(/^http/, "ws") + "/ws";
   if (typeof window === "undefined") return "ws://127.0.0.1:7633/ws";
+  // Electron loadFile uses file:// where host is empty; fall back to local sidecar.
+  const isFileProtocol = window.location.protocol === "file:";
+  const host = isFileProtocol ? "127.0.0.1:7633" : (window.location.host || "127.0.0.1:7633");
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${window.location.host}/ws`;
+  return `${proto}//${host}/ws`;
 })();
 
 const RISK_WS_URL = WS_URL + "/risk";
