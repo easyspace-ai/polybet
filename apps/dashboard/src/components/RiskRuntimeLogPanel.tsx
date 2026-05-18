@@ -50,7 +50,11 @@ function matchesChip(entry: RiskRuntimeLogEnvelope, chip: Chip): boolean {
     case "transport":
       return category === "transport" || category === "market_sub";
     case "book":
-      return category === "market_data";
+      return (
+        category === "market_data" ||
+        ty.includes("summary_tick") ||
+        ty.includes("market.book")
+      );
     case "stop":
       return (
         category === "position" &&

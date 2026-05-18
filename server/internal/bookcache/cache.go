@@ -249,6 +249,17 @@ func (c *Cache) BookAge(tokenID string) (time.Duration, bool) {
 	return time.Since(updated), true
 }
 
+// BookUpdatedAtMs returns the last book update unix-ms for tokenID, or 0 if unknown.
+func (c *Cache) BookUpdatedAtMs(tokenID string) int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	tb := c.books[tokenID]
+	if tb == nil || tb.ts <= 0 {
+		return 0
+	}
+	return tb.ts
+}
+
 // LastBookUpdateMs returns the latest book timestamp across all tokens (ms), or 0.
 func (c *Cache) LastBookUpdateMs() int64 {
 	c.mu.RLock()

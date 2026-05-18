@@ -52,5 +52,5 @@ func (a *App) ForceWSReconnect(channel string) {
 	default:
 		a.ForceWSReconnect("all")
 	}
-	a.broadcastPolyStatus()
+	a.broadcastPolyStatusAsync()
 }

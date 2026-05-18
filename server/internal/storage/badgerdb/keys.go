@@ -6,6 +6,9 @@ import "strconv"
 
 func KeyMetaSchemaVersion() []byte { return []byte("meta/schema_version") }
 
+// KeyRiskPositionSeq stores the monotonic counter for risk position display IDs.
+func KeyRiskPositionSeq() []byte { return []byte("meta/risk_position_seq") }
+
 func KeyConfigBot() []byte { return []byte("config/bot") }
 
 func KeyAccount(id string) []byte {

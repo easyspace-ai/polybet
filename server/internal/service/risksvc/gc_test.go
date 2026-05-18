@@ -68,3 +68,35 @@ func TestLoadOrStoreCloseLockUpgradesLegacy(t *testing.T) {
 		t.Fatalf("legacy entry was not upgraded in the map")
 	}
 }
+
+func TestCloseEnqueueRecently(t *testing.T) {
+	t.Parallel()
+	s := &Service{closeEnqueueRecent: sync.Map{}}
+	pid := "pos-1"
+	if s.closeEnqueueRecently(pid) {
+		t.Fatal("expected no recent enqueue before touch")
+	}
+	s.touchCloseEnqueue(pid)
+	if !s.closeEnqueueRecently(pid) {
+		t.Fatal("expected recent enqueue immediately after touch")
+	}
+}
+
+func TestGcCloseEnqueueRecent(t *testing.T) {
+	t.Parallel()
+	s := &Service{closeEnqueueRecent: sync.Map{}}
+	now := time.Now().UnixMilli()
+	s.closeEnqueueRecent.Store("stale", &closeEnqueueMeta{
+		lastMs: now - closeEnqueueDedupeWindow.Milliseconds() - 1,
+	})
+	s.closeEnqueueRecent.Store("fresh", &closeEnqueueMeta{lastMs: now})
+	if got := s.gcCloseEnqueueRecent(); got != 1 {
+		t.Fatalf("expected 1 stale eviction, got %d", got)
+	}
+	if _, ok := s.closeEnqueueRecent.Load("stale"); ok {
+		t.Fatal("stale entry should be removed")
+	}
+	if _, ok := s.closeEnqueueRecent.Load("fresh"); !ok {
+		t.Fatal("fresh entry must survive")
+	}
+}

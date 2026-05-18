@@ -132,7 +132,7 @@ func marshalCloseAttemptSnapshot(
 		snap.LimitPrice = sellRep.LimitPrice
 		snap.LimitPriceDecimal = sellRep.LimitPriceDecimal
 		if sellRep.LimitPrice > 0 {
-			snap.LimitPriceCents = sellRep.LimitPrice * 100
+			snap.LimitPriceCents = CentsFromPrice01(sellRep.LimitPrice)
 		}
 		snap.SharesSubmitted = sellRep.SharesSubmitted
 		if sellRep.SharesRequested > 0 {
@@ -157,7 +157,7 @@ func marshalCloseAttemptSnapshot(
 		snap.LimitPrice = br.LimitPrice
 		snap.LimitPriceDecimal = br.LimitPriceDecimal
 		if br.LimitPrice > 0 {
-			snap.LimitPriceCents = br.LimitPrice * 100
+			snap.LimitPriceCents = CentsFromPrice01(br.LimitPrice)
 		}
 		snap.SizeUSDC = br.SizeUSDC
 		snap.ExpectedOdds = br.ExpectedOdds

@@ -120,7 +120,7 @@ func BestBidCents(ctx context.Context, clobBaseURL, httpProxy, tokenID string) (
 	if best <= 0 {
 		return 0, fmt.Errorf("no_bid")
 	}
-	return best * 100, nil
+	return polyexec.CentsFromPrice01(best), nil
 }
 
 // BestBidAskCents returns best bid and best ask in cents (probability × 100) from one /book fetch.
@@ -175,7 +175,7 @@ func BestBidAskCents(ctx context.Context, clobBaseURL, httpProxy, tokenID string
 	if bestBid <= 0 && bestAsk <= 0 {
 		return 0, 0, fmt.Errorf("empty_book")
 	}
-	return bestBid * 100, bestAsk * 100, nil
+	return polyexec.CentsFromPrice01(bestBid), polyexec.CentsFromPrice01(bestAsk), nil
 }
 
 // BookJSONHTTPOK reports whether CLOB GET /book returned HTTP 200 and the body decoded as a book payload.

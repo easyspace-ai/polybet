@@ -2,12 +2,64 @@ package badgerdb
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
 )
+
+func TestIsDirLockError(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"Cannot acquire directory lock on \"/tmp/badger\"", true},
+		{"resource temporarily unavailable", true},
+		{"permission denied", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isDirLockError(errors.New(tc.msg)); got != tc.want {
+			t.Fatalf("isDirLockError(%q)=%v want %v", tc.msg, got, tc.want)
+		}
+	}
+	if isDirLockError(nil) {
+		t.Fatal("nil should be false")
+	}
+}
+
+func TestOpenDirLockContended(t *testing.T) {
+	dir := t.TempDir()
+	holder, err := Open(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = holder.Close() })
+
+	prevSleep := openSleep
+	openSleep = func(time.Duration) {}
+	t.Cleanup(func() { openSleep = prevSleep })
+
+	t.Setenv("POLYBET_BADGER_OPEN_RETRIES", "2")
+	_, err = Open(dir, false)
+	if err == nil {
+		t.Fatal("expected lock error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "directory lock 未释放") || !strings.Contains(msg, "lock still held") {
+		t.Fatalf("missing bilingual lock message: %s", msg)
+	}
+	if !strings.Contains(msg, "POLYBET_BADGER_DIR") || !strings.Contains(msg, "lsof") {
+		t.Fatalf("missing actionable hint: %s", msg)
+	}
+	if !strings.Contains(msg, filepath.Join(dir, badgerLockFile)) {
+		t.Fatalf("missing LOCK path hint: %s", msg)
+	}
+}
 
 func TestOpenClose(t *testing.T) {
 	dir := t.TempDir()

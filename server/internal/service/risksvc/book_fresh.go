@@ -33,7 +33,7 @@ func (s *Service) bookTopForClose(ctx context.Context, tokenID string) (bidCents
 			if topOk && (bb > 0 || ba > 0) && (len(bids) > 0 || len(asks) > 0) && !looksLikeJunkTop(bb, ba) {
 				needsREST = false
 				meta["book_source"] = "cache"
-				return bb * 100, ba * 100, meta
+				return CentsFromPrice01(bb), CentsFromPrice01(ba), meta
 			}
 		}
 	}
@@ -54,7 +54,7 @@ func (s *Service) bookTopForClose(ctx context.Context, tokenID string) (bidCents
 	if !ok {
 		return 0, 0, meta
 	}
-	return bb * 100, ba * 100, meta
+	return CentsFromPrice01(bb), CentsFromPrice01(ba), meta
 }
 
 func looksLikeJunkTop(bestBid, bestAsk float64) bool {

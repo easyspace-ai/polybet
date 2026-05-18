@@ -30,6 +30,7 @@ type RiskPosDoc struct {
 	StopLossPct    float64  `json:"stopLossPct"`
 	Source         string   `json:"source"`
 	Status         string   `json:"status"`
+	PositionSeq    int64    `json:"positionSeq,omitempty"`
 	RealizedPnLUSD *float64 `json:"realizedPnlUsd,omitempty"`
 	ClosedAt       *string  `json:"closedAt,omitempty"`
 	CreatedAt      string   `json:"createdAt"`

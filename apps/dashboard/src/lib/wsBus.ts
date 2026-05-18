@@ -2,7 +2,7 @@
 
 import type { Market, RiskRuntimeLogEnvelope } from "./api";
 import { getWSConfig, subscribeWSConfig, type WSClientConfig } from "@/hooks/useWSConfig";
-import { appendWSLog, setRelayState, setUpstreamFromPolyStatus } from "@/lib/wsConnectionLog";
+import { appendWSLog, applyUpstreamPolyStatus, setRelayState } from "@/lib/wsConnectionLog";
 
 export type WSConnectionState = "IDLE" | "CONNECTING" | "CONNECTED" | "RECONNECTING" | "STALE";
 
@@ -156,6 +156,7 @@ class WsBus {
   private oddsSubRefs = new Set<string>();
   private bookSubRefs = new Set<string>();
   private polyBookSubRefs = new Map<string, number>();
+  private polyBookLastFrameMs = new Map<string, number>();
   private polyOddsSubRefs = new Map<string, number>();
 
   constructor(url: string, label: string) {
@@ -365,13 +366,16 @@ class WsBus {
         bestBid: msg.bestBid,
         bestAsk: msg.bestAsk,
       };
+      if (frame.tokenId) {
+        this.polyBookLastFrameMs.set(frame.tokenId, Date.now());
+      }
       for (const l of this.polyBookListeners) l(frame);
     } else if (msg.type === "polyOddsSnapshot" || msg.type === "polyOddsUpdate") {
       for (const l of this.polyOddsListeners) l(msg);
     } else if (msg.type === "marketsSnapshot" || msg.type === "marketUpsert" || msg.type === "marketRemoved") {
       for (const l of this.marketLifecycleListeners) l(msg);
     } else if (msg.type === "poly_status") {
-      setUpstreamFromPolyStatus(msg);
+      applyUpstreamPolyStatus(msg);
       for (const l of this.polyStatusListeners) l(msg);
     } else if (msg.type === "balance_update") {
       for (const l of this.balanceUpdateListeners) l(msg);
@@ -473,10 +477,25 @@ class WsBus {
       const newCount = (this.polyBookSubRefs.get(tokenId) || 1) - 1;
       if (newCount <= 0) {
         this.polyBookSubRefs.delete(tokenId);
+        this.send({ type: "unsubscribePolyBook", tokenId });
       } else {
         this.polyBookSubRefs.set(tokenId, newCount);
       }
     };
+  }
+
+  /** Local WS ref-count + last polyBook frame time for one token. */
+  getPolyBookLocalState(tokenId: string): { subscribed: boolean; lastFrameMs: number | null } {
+    const refs = this.polyBookSubRefs.get(tokenId) || 0;
+    const last = this.polyBookLastFrameMs.get(tokenId);
+    return { subscribed: refs > 0, lastFrameMs: last ?? null };
+  }
+
+  /** Re-send subscribePolyBook without changing listener ref counts. */
+  resendPolyBookSubscribe(tokenId: string) {
+    if ((this.polyBookSubRefs.get(tokenId) || 0) > 0) {
+      this.send({ type: "subscribePolyBook", tokenId });
+    }
   }
 
   subscribePolyOdds(tokenId: string, l: PolyOddsListener) {

@@ -21,6 +21,10 @@ const gcInterval = 5 * time.Minute
 // window (max ~60s) keep the same lock.
 const closeLockMaxIdle = 30 * time.Minute
 
+// closeEnqueueDedupeWindow suppresses duplicate close enqueue attempts for
+// the same position (HTTP storms, book ticks) without re-scanning tasks.
+const closeEnqueueDedupeWindow = 30 * time.Second
+
 // bookCachePruneAge mirrors closeLockMaxIdle — token caches that have not
 // been touched in this long are evicted on every sweep.
 const bookCachePruneAge = 4 * time.Hour
@@ -31,6 +35,36 @@ const bookCachePruneAge = 4 * time.Hour
 type closeLockMeta struct {
 	mu     sync.Mutex
 	lastMs int64
+}
+
+type closeEnqueueMeta struct {
+	lastMs int64
+}
+
+func (s *Service) touchCloseEnqueue(positionID string) {
+	if s == nil || positionID == "" {
+		return
+	}
+	now := time.Now().UnixMilli()
+	v, _ := s.closeEnqueueRecent.LoadOrStore(positionID, &closeEnqueueMeta{lastMs: now})
+	if m, ok := v.(*closeEnqueueMeta); ok {
+		m.lastMs = now
+	}
+}
+
+func (s *Service) closeEnqueueRecently(positionID string) bool {
+	if s == nil || positionID == "" {
+		return false
+	}
+	v, ok := s.closeEnqueueRecent.Load(positionID)
+	if !ok {
+		return false
+	}
+	m, ok := v.(*closeEnqueueMeta)
+	if !ok || m == nil {
+		return false
+	}
+	return time.Now().UnixMilli()-m.lastMs < closeEnqueueDedupeWindow.Milliseconds()
 }
 
 // touchCloseLock records that a close path used the lock (called inside
@@ -94,6 +128,23 @@ func (s *Service) gcCloseLocks() int {
 	return removed
 }
 
+func (s *Service) gcCloseEnqueueRecent() int {
+	if s == nil {
+		return 0
+	}
+	cutoff := time.Now().UnixMilli() - closeEnqueueDedupeWindow.Milliseconds()
+	removed := 0
+	s.closeEnqueueRecent.Range(func(k, v any) bool {
+		m, ok := v.(*closeEnqueueMeta)
+		if !ok || m == nil || m.lastMs < cutoff {
+			s.closeEnqueueRecent.Delete(k)
+			removed++
+		}
+		return true
+	})
+	return removed
+}
+
 // gcStopLossCooldown drops cooldown entries whose deadline has already
 // passed. The legacy code only cleaned them lazily (on read); a position
 // that closes and never re-evaluates leaves the entry in the map forever.
@@ -129,14 +180,16 @@ func (s *Service) RunGC(ctx context.Context, cache *bookcache.Cache) {
 			return
 		case <-t.C:
 			locksRemoved := s.gcCloseLocks()
+			enqueueRemoved := s.gcCloseEnqueueRecent()
 			cooldownRemoved := s.gcStopLossCooldown()
 			cacheRemoved := 0
 			if cache != nil {
 				cacheRemoved = cache.PruneIdle(bookCachePruneAge)
 			}
-			if s.log != nil && (locksRemoved > 0 || cooldownRemoved > 0 || cacheRemoved > 0) {
+			if s.log != nil && (locksRemoved > 0 || enqueueRemoved > 0 || cooldownRemoved > 0 || cacheRemoved > 0) {
 				s.log.WithFields(logx.Pairs(
 					"close_locks_removed", locksRemoved,
+					"close_enqueue_removed", enqueueRemoved,
 					"sl_cooldown_removed", cooldownRemoved,
 					"book_cache_removed", cacheRemoved,
 				)).Info("风控：周期 GC 完成")

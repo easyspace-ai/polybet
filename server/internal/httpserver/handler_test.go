@@ -1,9 +1,14 @@
 package httpserver
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/easyspace-ai/polybet/internal/service/routersvc"
 	"github.com/easyspace-ai/polybet/internal/service/tradesvc"
 	"github.com/easyspace-ai/polybet/internal/store"
@@ -142,4 +147,66 @@ func TestTradeResultsLog_multiple(t *testing.T) {
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}
+}
+
+type slowWSReconnectApp struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (a *slowWSReconnectApp) ScheduleInvalidateAndRebuildCache()             {}
+func (a *slowWSReconnectApp) ScheduleRiskOfficialRefresh() bool                { return false }
+func (a *slowWSReconnectApp) ScheduleMarketsFullRefresh() bool                 { return false }
+func (a *slowWSReconnectApp) ScheduleMarketsRefresh(force bool) bool           { return false }
+func (a *slowWSReconnectApp) RequestRestart()                                  {}
+func (a *slowWSReconnectApp) EnsureOrderbookToken(tokenID string)              {}
+func (a *slowWSReconnectApp) PolyBookClientSubscribe(tokenID string)           {}
+func (a *slowWSReconnectApp) PolyBookClientUnsubscribe(tokenID string)         {}
+func (a *slowWSReconnectApp) PublishBookSummaryTick(tokenID string)            {}
+func (a *slowWSReconnectApp) PolyBookSubStatusesFor(tokenIDs []string) []map[string]any {
+	return nil
+}
+func (a *slowWSReconnectApp) NotifyRiskPositionsChanged()                      {}
+func (a *slowWSReconnectApp) OpenRiskPositionCount(ctx context.Context) int { return 0 }
+func (a *slowWSReconnectApp) CachedOpenRiskPositionCount(time.Duration) (int, bool) {
+	return 0, false
+}
+func (a *slowWSReconnectApp) ForceWSReconnect(channel string) {
+	close(a.started)
+	<-a.release
+}
+
+func TestHandleWSReconnect_returnsAcceptedWithoutBlocking(t *testing.T) {
+	mock := &slowWSReconnectApp{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	h := &Handler{app: mock}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/ws/reconnect", strings.NewReader(`{"channel":"user"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	done := make(chan struct{})
+	go func() {
+		h.handleWSReconnect(c)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("handleWSReconnect blocked on ForceWSReconnect")
+	}
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case <-mock.started:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected ForceWSReconnect to run in background")
+	}
+	close(mock.release)
 }
