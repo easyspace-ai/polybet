@@ -125,7 +125,14 @@ export interface PolymarketAccountCreateBody {
   privateKey: string;
 }
 
-const BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+const BASE = (() => {
+  const env = import.meta.env.VITE_API_BASE_URL as string | undefined;
+  if (env) return env;
+  if (typeof window !== "undefined" && window.location.protocol === "file:") {
+    return "http://127.0.0.1:7633";
+  }
+  return "";
+})();
 
 /** Short API error tokens that should not be shown alone as user-facing text. */
 const OPAQUE_API_ERROR_TOKENS = new Set(["db", "ok", "risk"]);
@@ -154,7 +161,7 @@ function formatApiErrorBody(body: unknown, status: number): string {
 }
 
 const DEFAULT_FETCH_TIMEOUT_MS = 20_000;
-const WS_STATUS_FETCH_TIMEOUT_MS = 8_000;
+const WS_STATUS_FETCH_TIMEOUT_MS = 3_000;
 
 type ApiFetchOptions = RequestInit & { timeoutMs?: number };
 

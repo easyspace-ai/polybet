@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/easyspace-ai/polybet/internal/bookcache"
@@ -198,18 +197,29 @@ func (h *Handler) buildWSStatus(ctx context.Context) map[string]any {
 	start := time.Now()
 	var hubSize, openN int
 
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		if h.hub != nil {
-			hubSize = h.hub.ClientCount()
-		}
-		return nil
-	})
-	g.Go(func() error {
-		openN = h.openRiskPositionCount(gctx)
-		return nil
-	})
-	_ = g.Wait()
+	done := make(chan struct{})
+	go func() {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if h.hub != nil {
+				hubSize = h.hub.ClientCount()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			openN = h.openRiskPositionCount(ctx)
+		}()
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+	case <-time.After(wsStatusBuildTimeout):
+	}
 
 	out := buildWSStatusJSON(h.risk, h.cache, hubSize, openN)
 	logrus.WithFields(logx.Pairs(
