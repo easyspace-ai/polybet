@@ -7,13 +7,18 @@ import {
   type MonitorClobSession,
   type RiskPositionRow,
 } from "@/lib/api";
-import { floorCents1, trailingStopCentsFromHW } from "@/lib/cents";
+import { floorCents1, isTrailingStopActive, trailingStopCentsFromHW } from "@/lib/cents";
+import { clobAssetIdForAPI, normalizeTokenId } from "@/lib/clobTokenId";
 import {
   clobBookToPolyFrame,
   clobPriceChangeToPolyFrames,
   shouldSyncPositionsOnTrade,
 } from "@/lib/monitor/clobAdapter";
-import { bestBidCentsFromBookFrame, topOfBookMarkCents } from "@/lib/riskBook";
+import {
+  bestBidCentsFromBookFrame,
+  mergePolyBookFrame,
+  topOfBookMarkCents,
+} from "@/lib/riskBook";
 import { markUpstreamReconnecting, setUpstreamFromPolyStatus } from "@/lib/wsConnectionLog";
 import { riskWsBus, wsBus, type PolyBookFrame } from "@/lib/wsBus";
 import {
@@ -45,6 +50,8 @@ class MonitorCoordinatorImpl {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private bookListeners = new Set<BookListener>();
   private positionsListeners = new Set<PositionsListener>();
+  /** Ref-counted book subs outside open positions (e.g. /market trade panel). */
+  private extraBookRefs = new Map<string, number>();
   private tokenBookMap = new Map<string, PolyBookFrame>();
   private positions: RiskPositionRow[] = [];
   private stopLossGuard = new Map<
@@ -89,6 +96,20 @@ class MonitorCoordinatorImpl {
     return this.tokenBookMap.get(normalizeTokenId(tokenId));
   }
 
+  /** Subscribe CLOB market WS for a token (ref-counted; hex or decimal id). */
+  subscribeBookToken(tokenId: string): () => void {
+    const tid = normalizeTokenId(tokenId);
+    if (!tid) return () => {};
+    this.extraBookRefs.set(tid, (this.extraBookRefs.get(tid) ?? 0) + 1);
+    this.reconcileMarketSubs();
+    return () => {
+      const next = (this.extraBookRefs.get(tid) ?? 1) - 1;
+      if (next <= 0) this.extraBookRefs.delete(tid);
+      else this.extraBookRefs.set(tid, next);
+      this.reconcileMarketSubs();
+    };
+  }
+
   getSubscribedTokens(): string[] {
     return this.marketClient?.getSubscribedAssets() ?? [];
   }
@@ -107,6 +128,11 @@ class MonitorCoordinatorImpl {
     this.lastReconnectAt = now;
     this.teardownStreams();
     void this.bootstrap();
+  }
+
+  /** Pull latest positions from REST (e.g. after avg-entry backfill). */
+  refreshPositionsNow() {
+    void this.refreshPositions();
   }
 
   private async bootstrap() {
@@ -186,29 +212,31 @@ class MonitorCoordinatorImpl {
   private applyBookFrame(frame: PolyBookFrame) {
     const tid = normalizeTokenId(frame.tokenId);
     if (!tid) return;
-    this.tokenBookMap.set(tid, frame);
-    for (const fn of this.bookListeners) fn(tid, frame);
-    this.evaluateStopLossFromBook(tid, frame);
+    const merged = mergePolyBookFrame({ ...frame, tokenId: tid }, this.tokenBookMap.get(tid));
+    this.tokenBookMap.set(tid, merged);
+    for (const fn of this.bookListeners) fn(tid, merged);
+    this.evaluateStopLossFromBook(tid, merged);
   }
 
   private reconcileMarketSubs() {
-    const openTokens = Array.from(
-      new Set(
-        this.positions
-          .filter((p) => p.status === "open" && p.tokenId)
-          .map((p) => normalizeTokenId(p.tokenId)),
-      ),
-    );
-    if (openTokens.length === 0) {
-      this.obConnected = false;
-      this.pushUpstreamState();
+    const positionTokens = this.positions
+      .filter((p) => p.status === "open" && p.tokenId)
+      .map((p) => clobAssetIdForAPI(normalizeTokenId(p.tokenId)))
+      .filter((id) => id !== "");
+    const extraTokens = Array.from(this.extraBookRefs.keys())
+      .map((tid) => clobAssetIdForAPI(tid))
+      .filter((id) => id !== "");
+    const want = Array.from(new Set([...positionTokens, ...extraTokens]));
+    if (want.length === 0) {
+      const current = this.marketClient?.getSubscribedAssets() ?? [];
+      if (current.length > 0) this.marketClient?.unsubscribe(current);
       return;
     }
     this.ensureMarket();
     const current = new Set(this.marketClient?.getSubscribedAssets() ?? []);
-    const want = new Set(openTokens);
-    const toAdd = openTokens.filter((t) => !current.has(t));
-    const toRemove = [...current].filter((t) => !want.has(t));
+    const wantSet = new Set(want);
+    const toAdd = want.filter((t) => !current.has(t));
+    const toRemove = [...current].filter((t) => !wantSet.has(t));
     if (toAdd.length) this.marketClient?.subscribe(toAdd);
     if (toRemove.length) this.marketClient?.unsubscribe(toRemove);
   }
@@ -276,6 +304,7 @@ class MonitorCoordinatorImpl {
   private evaluateStopLossFromBook(tid: string, frame: PolyBookFrame) {
     for (const pos of this.positions) {
       if (pos.status !== "open" || normalizeTokenId(pos.tokenId) !== tid) continue;
+      if (!isTrailingStopActive(pos)) continue;
       const bid = bestBidCentsFromBookFrame(frame);
       const mark = topOfBookMarkCents(frame);
       const effHw = floorCents1(Math.max(floorCents1(pos.highWaterCents), mark ?? 0));
@@ -343,16 +372,6 @@ class MonitorCoordinatorImpl {
     this.teardownUser();
     this.teardownMarket();
   }
-}
-
-function normalizeTokenId(tid: string): string {
-  const t = tid.trim().toLowerCase();
-  if (!t) return t;
-  if (t.startsWith("0x") && t.length < 66) {
-    return "0x" + t.slice(2).padStart(64, "0");
-  }
-  if (!t.startsWith("0x")) return "0x" + t.padStart(64, "0");
-  return t;
 }
 
 export const monitorCoordinator = new MonitorCoordinatorImpl();

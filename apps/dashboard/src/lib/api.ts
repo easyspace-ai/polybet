@@ -510,11 +510,15 @@ export interface OfficialTrade {
   officialUrl?: string;
 }
 
-export const getStopLossHistory = (limit = 50) =>
-  apiFetch<{ tasks: StopLossHistoryTask[] }>(`/api/risk/stop-loss-history?limit=${limit}`);
+export const getStopLossHistory = (limit = 50, refresh = false) =>
+  apiFetch<{ tasks: StopLossHistoryTask[] }>(
+    `/api/risk/stop-loss-history?limit=${limit}${refresh ? "&refresh=true" : ""}`,
+  );
 
-export const getTradeHistory = (limit = 50) =>
-  apiFetch<{ trades: OfficialTrade[] }>(`/api/risk/trade-history?limit=${limit}`);
+export const getTradeHistory = (limit = 50, refresh = false) =>
+  apiFetch<{ trades: OfficialTrade[] }>(
+    `/api/risk/trade-history?limit=${limit}${refresh ? "&refresh=true" : ""}`,
+  );
 
 export const postRiskCloseAll = () =>
   apiFetch<{ ok: boolean }>("/api/risk/close-all", { method: "POST" });

@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { TopBar } from "@/components/TopBar";
 import { RiskRuntimeLogPanel } from "@/components/RiskRuntimeLogPanel";
 import { RefreshCw, AlertTriangle, ExternalLink, EyeOff } from "lucide-react";
@@ -12,13 +12,16 @@ import {
   postMonitorOfficialRefresh,
   postMonitorHidePosition,
   postMonitorTasksClear,
+  type RiskPositionRow,
 } from "@/lib/api";
 import { resolvePolymarketEventUrl } from "@/lib/polymarketLinks";
 import { cn } from "@/lib/utils";
 import {
   floorCents1,
+  isTrailingStopActive,
   linkTrailingStopDraft,
   trailingStopCentsFromHW,
+  type TrailingStopDraft,
   type TrailingStopEditField,
 } from "@/lib/cents";
 import { toast } from "sonner";
@@ -164,20 +167,48 @@ function riskCloseModeBanner(
 }
 
 function trailDraftFor(
-  p: { stopLossPct: number; highWaterCents: number; trailingStopCents?: number },
+  p: {
+    avgEntryCents: number;
+    stopLossPct: number;
+    highWaterCents: number;
+    trailingStopCents?: number;
+  },
   prev?: { sl: string; hw: string; trigger: string },
 ) {
+  if (!isTrailingStopActive(p)) {
+    return { sl: "", hw: "", trigger: "" };
+  }
   const hw = prev?.hw ?? String(floorCents1(p.highWaterCents));
   const sl = prev?.sl ?? String(p.stopLossPct);
   const hwNum = floorCents1(p.highWaterCents);
   const trigger =
     prev?.trigger ??
     String(
-      p.trailingStopCents != null && Number.isFinite(p.trailingStopCents)
+      p.trailingStopCents != null && Number.isFinite(p.trailingStopCents) && p.trailingStopCents > 0
         ? floorCents1(p.trailingStopCents)
         : trailingStopCentsFromHW(hwNum, p.stopLossPct),
     );
   return { sl, hw, trigger };
+}
+
+function parseTrailDraftValues(d: TrailingStopDraft): { sl: number; hw: number } | null {
+  const sl = parseFloat(d.sl);
+  const hwRaw = parseFloat(d.hw);
+  if (!Number.isFinite(sl) || sl < 1 || sl > 99) return null;
+  if (!Number.isFinite(hwRaw) || hwRaw <= 0 || hwRaw > 100) return null;
+  return { sl, hw: floorCents1(hwRaw) };
+}
+
+function trailDraftDiffersFromServer(
+  d: TrailingStopDraft,
+  p: { stopLossPct: number; highWaterCents: number },
+): boolean {
+  const parsed = parseTrailDraftValues(d);
+  if (!parsed) return false;
+  return (
+    Math.abs(parsed.sl - p.stopLossPct) > 1e-6 ||
+    Math.abs(parsed.hw - floorCents1(p.highWaterCents)) > 1e-6
+  );
 }
 
 function MonitorPage() {
@@ -210,6 +241,9 @@ function MonitorPage() {
   >({});
   const trailDirtyRef = useRef(trailDirty);
   trailDirtyRef.current = trailDirty;
+  const draftsRef = useRef(drafts);
+  draftsRef.current = drafts;
+  const syncTrailInFlightRef = useRef<Set<string>>(new Set());
 
   const markTrailDirty = (rowId: string, field: TrailingStopEditField) => {
     setTrailDirty((prev) => ({
@@ -239,13 +273,18 @@ function MonitorPage() {
       const editing = trailEditingRef.current;
       const dirtyMap = trailDirtyRef.current;
       for (const p of positions) {
-        const sl0 = String(p.stopLossPct);
-        const hw0 = String(floorCents1(p.highWaterCents));
-        const trigger0 = String(
-          p.trailingStopCents != null && Number.isFinite(p.trailingStopCents)
-            ? floorCents1(p.trailingStopCents)
-            : trailingStopCentsFromHW(floorCents1(p.highWaterCents), p.stopLossPct),
-        );
+        const pending = !isTrailingStopActive(p);
+        const sl0 = pending ? "" : String(p.stopLossPct);
+        const hw0 = pending ? "" : String(floorCents1(p.highWaterCents));
+        const trigger0 = pending
+          ? ""
+          : String(
+              p.trailingStopCents != null &&
+                Number.isFinite(p.trailingStopCents) &&
+                p.trailingStopCents > 0
+                ? floorCents1(p.trailingStopCents)
+                : trailingStopCentsFromHW(floorCents1(p.highWaterCents), p.stopLossPct),
+            );
         if (!next[p.id]) {
           next[p.id] = { sl: sl0, hw: hw0, trigger: trigger0 };
           changed = true;
@@ -336,39 +375,75 @@ function MonitorPage() {
     }
   };
 
-  const applyRiskControls = async (id: string) => {
-    const d = drafts[id];
-    if (!d) return;
-    const sl = parseFloat(d.sl);
-    const hwRaw = parseFloat(d.hw);
-    if (!Number.isFinite(sl) || sl < 1 || sl > 99) {
-      toast.error("无效", { description: "止损% 须在 1–99 之间" });
-      return;
-    }
-    if (!Number.isFinite(hwRaw) || hwRaw <= 0 || hwRaw > 100) {
-      toast.error("无效", { description: "最高水位须在 (0, 100]（¢）" });
-      return;
-    }
-    const hw = floorCents1(hwRaw);
-    setPatchingKey(`${id}:risk`);
-    try {
-      const resp = await patchMonitorPosition(id, { stopLossPct: sl, highWaterCents: hw });
-      if (resp.position) {
-        applyMonitorPositionPatch(resp.position);
-        setDrafts((prev) => ({
-          ...prev,
-          [id]: trailDraftFor(resp.position),
-        }));
+  const commitTrailDraftToServer = useCallback(
+    async (
+      id: string,
+      serverPos: RiskPositionRow,
+      draft: TrailingStopDraft,
+      opts?: { showSuccessToast?: boolean },
+    ) => {
+      if (serverPos.status !== "open" || !isTrailingStopActive(serverPos)) return;
+      if (!trailDraftDiffersFromServer(draft, serverPos)) {
         clearTrailDirty(id);
-        setTrailEditing((e) => (e?.rowId === id ? null : e));
+        return;
       }
-      toast.success("已更新", { description: `高水位 ${hw}¢ · 止损 ${sl}%` });
-    } catch (err) {
-      toast.error("失败", { description: err instanceof Error ? err.message : "未知错误" });
-    } finally {
-      setPatchingKey(null);
-    }
+      const parsed = parseTrailDraftValues(draft);
+      if (!parsed) {
+        toast.error("无效", {
+          description: "止损% 须在 1–99；最高水位须在 (0, 100]（¢）",
+        });
+        return;
+      }
+      if (syncTrailInFlightRef.current.has(id)) return;
+      syncTrailInFlightRef.current.add(id);
+      setPatchingKey(`${id}:risk`);
+      try {
+        const resp = await patchMonitorPosition(id, {
+          stopLossPct: parsed.sl,
+          highWaterCents: parsed.hw,
+        });
+        if (resp.position) {
+          applyMonitorPositionPatch(resp.position);
+          setDrafts((prev) => ({
+            ...prev,
+            [id]: trailDraftFor(resp.position),
+          }));
+          clearTrailDirty(id);
+          setTrailEditing((e) => (e?.rowId === id ? null : e));
+        }
+        if (opts?.showSuccessToast) {
+          toast.success("已更新", {
+            description: `高水位 ${parsed.hw}¢ · 止损 ${parsed.sl}%`,
+          });
+        }
+      } catch (err) {
+        toast.error("同步失败", {
+          description: err instanceof Error ? err.message : "止损参数未能写入服务端",
+        });
+      } finally {
+        syncTrailInFlightRef.current.delete(id);
+        setPatchingKey(null);
+      }
+    },
+    [],
+  );
+
+  const applyRiskControls = async (id: string) => {
+    const p = positions.find((x) => x.id === id);
+    const d = draftsRef.current[id];
+    if (!p || !d) return;
+    await commitTrailDraftToServer(id, p, d, { showSuccessToast: true });
   };
+
+  const blurTrailField = useCallback(
+    (p: RiskPositionRow, field: TrailingStopEditField, linkedDraft?: TrailingStopDraft) => {
+      setTrailEditing((e) => (e?.rowId === p.id && e.field === field ? null : e));
+      const d = linkedDraft ?? draftsRef.current[p.id];
+      if (!d) return;
+      void commitTrailDraftToServer(p.id, p, d);
+    },
+    [commitTrailDraftToServer],
+  );
 
   const handleHideFromMonitor = async (p: { id: string; tokenId: string; sideLabel: string }) => {
     if (!confirm("确定不再监控该仓位？（仍可在账户下通过 DELETE /api/risk/hidden-positions 恢复）"))
@@ -671,14 +746,11 @@ function MonitorPage() {
                                     step="0.1"
                                     min={0.1}
                                     max={100}
-                                    disabled={p.status !== "open"}
+                                    disabled={p.status !== "open" || !isTrailingStopActive(p)}
+                                    placeholder={!isTrailingStopActive(p) ? "—" : undefined}
                                     value={drafts[p.id]?.hw ?? ""}
                                     onFocus={() => setTrailEditing({ rowId: p.id, field: "hw" })}
-                                    onBlur={() =>
-                                      setTrailEditing((e) =>
-                                        e?.rowId === p.id && e.field === "hw" ? null : e,
-                                      )
-                                    }
+                                    onBlur={() => blurTrailField(p, "hw")}
                                     onChange={(e) => {
                                       markTrailDirty(p.id, "hw");
                                       setDrafts((prev) => ({
@@ -705,14 +777,11 @@ function MonitorPage() {
                                     step={1}
                                     min={1}
                                     max={99}
-                                    disabled={p.status !== "open"}
+                                    disabled={p.status !== "open" || !isTrailingStopActive(p)}
+                                    placeholder={!isTrailingStopActive(p) ? "—" : undefined}
                                     value={drafts[p.id]?.sl ?? ""}
                                     onFocus={() => setTrailEditing({ rowId: p.id, field: "sl" })}
-                                    onBlur={() =>
-                                      setTrailEditing((e) =>
-                                        e?.rowId === p.id && e.field === "sl" ? null : e,
-                                      )
-                                    }
+                                    onBlur={() => blurTrailField(p, "sl")}
                                     onChange={(e) => {
                                       markTrailDirty(p.id, "sl");
                                       setDrafts((prev) => ({
@@ -734,7 +803,8 @@ function MonitorPage() {
                                     step="0.1"
                                     min={0.1}
                                     max={100}
-                                    disabled={p.status !== "open"}
+                                    disabled={p.status !== "open" || !isTrailingStopActive(p)}
+                                    placeholder={!isTrailingStopActive(p) ? "—" : undefined}
                                     value={drafts[p.id]?.trigger ?? ""}
                                     onFocus={() =>
                                       setTrailEditing({ rowId: p.id, field: "trigger" })
@@ -758,9 +828,7 @@ function MonitorPage() {
                                           ...(linked.sl !== base.sl ? { sl: true } : {}),
                                         },
                                       }));
-                                      setTrailEditing((e) =>
-                                        e?.rowId === p.id && e.field === "trigger" ? null : e,
-                                      );
+                                      blurTrailField(p, "trigger", linked);
                                     }}
                                     onChange={(e) => {
                                       markTrailDirty(p.id, "trigger");

@@ -1,3 +1,5 @@
+import { centsFromPrice01 } from "@/lib/cents";
+import { normalizeTokenId } from "@/lib/clobTokenId";
 import type {
   ClobBookEvent,
   ClobPriceChangeEvent,
@@ -14,25 +16,28 @@ export function shouldSyncPositionsOnTrade(ev: ClobTradeEvent): boolean {
 export function clobBookToPolyFrame(ev: ClobBookEvent): PolyBookFrame {
   const bids = parseLevels(ev.bids);
   const asks = parseLevels(ev.asks);
+  const bestBid01 = bids[0]?.odds;
+  const bestAsk01 = asks[0]?.odds;
   return {
-    tokenId: ev.asset_id,
+    tokenId: normalizeTokenId(ev.asset_id),
     bids,
     asks,
-    bestBid: bids[0]?.odds,
-    bestAsk: asks[0]?.odds,
+    // Match server polyBookUpdate: bestBid/bestAsk are cents, not 0–1.
+    bestBid: bestBid01 != null ? centsFromPrice01(bestBid01) : undefined,
+    bestAsk: bestAsk01 != null ? centsFromPrice01(bestAsk01) : undefined,
   };
 }
 
 export function clobPriceChangeToPolyFrames(ev: ClobPriceChangeEvent): PolyBookFrame[] {
   const out: PolyBookFrame[] = [];
   for (const ch of ev.price_changes ?? []) {
-    const bestBid = parseOdds(ch.best_bid);
-    const bestAsk = parseOdds(ch.best_ask);
-    if (bestBid == null && bestAsk == null) continue;
+    const bestBid01 = parseOdds(ch.best_bid);
+    const bestAsk01 = parseOdds(ch.best_ask);
+    if (bestBid01 == null && bestAsk01 == null) continue;
     out.push({
-      tokenId: ch.asset_id,
-      bestBid: bestBid ?? undefined,
-      bestAsk: bestAsk ?? undefined,
+      tokenId: normalizeTokenId(ch.asset_id),
+      bestBid: bestBid01 != null ? centsFromPrice01(bestBid01) : undefined,
+      bestAsk: bestAsk01 != null ? centsFromPrice01(bestAsk01) : undefined,
     });
   }
   return out;

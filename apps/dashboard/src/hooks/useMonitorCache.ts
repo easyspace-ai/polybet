@@ -7,9 +7,10 @@ import {
   type RiskPositionsMeta,
   type RiskTaskRow,
 } from "@/lib/api";
+import { normalizeTokenId } from "@/lib/clobTokenId";
 import { monitorCoordinator } from "@/lib/monitor/coordinator";
-import { floorCents1, trailingStopCentsFromHW } from "@/lib/cents";
-import { bestBidCentsFromBookFrame, topOfBookMarkCents } from "@/lib/riskBook";
+import { floorCents1, isTrailingStopActive, trailingStopCentsFromHW } from "@/lib/cents";
+import { bestBidCentsFromBookFrame, mergePolyBookFrame, topOfBookMarkCents } from "@/lib/riskBook";
 import {
   riskWsBus,
   wsBus,
@@ -25,6 +26,11 @@ import {
   onWsBookFrame,
   startBookFallbackPoller,
 } from "@/lib/riskBookFallback";
+import {
+  reconcileAvgEntryFallback,
+  setAvgEntryFallbackHidden,
+  startAvgEntryFallbackPoller,
+} from "@/lib/avgEntryFallback";
 import type { RiskBookResponse } from "@/lib/api";
 
 interface RiskState {
@@ -177,33 +183,6 @@ function getTopOfBookMarkCents(frame: PolyBookFrame | undefined): number | null 
   return topOfBookMarkCents(frame);
 }
 
-/** Aligns with server `normalizeTokenID` (poly_ws / httpserver): decimal CLOB ids → 0x + 64 hex. */
-function normalizeTokenId(id: string | undefined | null): string {
-  if (!id) return "";
-  const raw = id.trim();
-  if (!raw) return "";
-  const lower = raw.toLowerCase();
-  if (lower.startsWith("0x")) {
-    let hex = lower.slice(2);
-    if (!/^[0-9a-f]+$/.test(hex)) {
-      return lower.length >= 66 ? lower.slice(0, 66) : "0x" + hex.padStart(64, "0");
-    }
-    hex = hex.padStart(64, "0");
-    if (hex.length > 64) hex = hex.slice(-64);
-    return "0x" + hex;
-  }
-  try {
-    const n = BigInt(raw);
-    let hex = n.toString(16);
-    hex = hex.padStart(64, "0");
-    if (hex.length > 64) hex = hex.slice(-64);
-    return "0x" + hex;
-  } catch {
-    const h = lower.replace(/^0x/, "");
-    return "0x" + h.padStart(64, "0");
-  }
-}
-
 const polyPlatform = "polymarket" as const;
 
 function mergeBookSide(
@@ -258,10 +237,15 @@ function updatePositionsFromBook() {
       pos.currentCents = bid;
       changed = true;
     }
-    const effHw = floorCents1(Math.max(floorCents1(pos.highWaterCents), mark ?? 0));
-    const trail = trailingStopCentsFromHW(effHw, pos.stopLossPct);
-    if (pos.trailingStopCents !== trail) {
-      pos.trailingStopCents = trail;
+    if (isTrailingStopActive(pos)) {
+      const effHw = floorCents1(Math.max(floorCents1(pos.highWaterCents), mark ?? 0));
+      const trail = trailingStopCentsFromHW(effHw, pos.stopLossPct);
+      if (pos.trailingStopCents !== trail) {
+        pos.trailingStopCents = trail;
+        changed = true;
+      }
+    } else if (pos.trailingStopCents != null && pos.trailingStopCents !== 0) {
+      pos.trailingStopCents = 0;
       changed = true;
     }
 
@@ -286,6 +270,14 @@ function mergePositionRows(rows: RiskPositionRow[]): RiskPositionRow[] {
   return Array.from(posMap.values());
 }
 
+const avgEntryFallbackDeps = {
+  getOpenPositions: () => cache.positions.filter((p) => p.status === "open"),
+  onPositionUpdated: (row: RiskPositionRow) => {
+    mergePatchedPosition(row);
+    monitorCoordinator.refreshPositionsNow();
+  },
+};
+
 function applyPositionSnapshot(rows: RiskPositionRow[], meta?: RiskPositionsMeta | null) {
   cache.positions = mergePositionRows(rows);
   if (meta !== undefined) {
@@ -296,6 +288,7 @@ function applyPositionSnapshot(rows: RiskPositionRow[], meta?: RiskPositionsMeta
   cache.error = null;
   updatePositionsFromBook();
   attachBookSubToPositions();
+  reconcileAvgEntryFallback(avgEntryFallbackDeps, cache.positions);
   notifySubscribers();
 }
 
@@ -432,18 +425,7 @@ function applyRestBookFrame(tokenId: string, frame: PolyBookFrame, _resp: RiskBo
 
 function handlePolyBook(frame: PolyBookFrame) {
   const tid = normalizeTokenId(frame.tokenId);
-  const existing = tokenBookMap.get(tid);
-
-  const bids = mergeBookSide(frame.bids, existing?.bids, true, frame.bestBid);
-  const asks = mergeBookSide(frame.asks, existing?.asks, false, frame.bestAsk);
-
-  const merged: PolyBookFrame = {
-    ...existing,
-    ...frame,
-    tokenId: tid,
-    bids,
-    asks,
-  };
+  const merged = mergePolyBookFrame({ ...frame, tokenId: tid }, tokenBookMap.get(tid));
   tokenBookMap.set(tid, merged);
   onWsBookFrame(tid, merged);
   const now = Date.now();
@@ -492,69 +474,58 @@ export function getOpenMonitorPositionCount(): number {
   return cache.positions.filter((p) => p.status === "open" && p.tokenId).length;
 }
 
+let monitorCacheBootstrapInstalled = false;
+
+/** App-lifetime monitor cache + CLOB book wiring (not tied to /monitor route). */
+export function installMonitorCacheBootstrap() {
+  if (monitorCacheBootstrapInstalled || typeof window === "undefined") return;
+  monitorCacheBootstrapInstalled = true;
+
+  ensureMonitorDataBootstrapped();
+  monitorCoordinator.subscribeBooks((_tid, frame) => handlePolyBook(frame));
+  monitorCoordinator.subscribePositions((rows) => {
+    cache.positions = mergePositionRows(rows);
+    syncBookSubMeta();
+    updatePositionsFromBook();
+    reconcileAvgEntryFallback(avgEntryFallbackDeps, cache.positions);
+    notifySubscribers();
+  });
+  riskWsBus.onPositionUpdate(handlePositionUpdateMessage);
+  wsBus.onPositionUpdate(handlePositionUpdateMessage);
+  riskWsBus.onRuntimeLog(handleRiskRuntimePositionHint);
+
+  const syncConn = () => syncConnectionFromCoordinator();
+  syncConn();
+  monitorCoordinator.subscribeConnection(syncConn);
+  setInterval(syncConn, 2000);
+
+  const onVisibility = () => {
+    positionsPollHidden = document.visibilityState === "hidden";
+    setAvgEntryFallbackHidden(positionsPollHidden);
+    if (!positionsPollHidden) void refreshPositions();
+  };
+  document.addEventListener("visibilitychange", onVisibility);
+  positionsPollHidden = document.visibilityState === "hidden";
+
+  startPositionsPoll();
+  startBookFallbackPoller({
+    getOpenTokenIds: () =>
+      cache.positions
+        .filter((p) => p.status === "open" && p.tokenId)
+        .map((p) => normalizeTokenId(p.tokenId)),
+    isObConnected: () => cache.polyOrderbookConnected,
+    applyRestBook: applyRestBookFrame,
+  });
+  startAvgEntryFallbackPoller(avgEntryFallbackDeps);
+}
+
 export function useMonitorCache() {
   const [, setTick] = useState(0);
 
   useEffect(() => {
-    ensureMonitorDataBootstrapped();
-    const unsubBooks = monitorCoordinator.subscribeBooks((tid, frame) => handlePolyBook(frame));
-    const unsubCoordPos = monitorCoordinator.subscribePositions((rows) => {
-      cache.positions = mergePositionRows(rows);
-      syncBookSubMeta();
-      updatePositionsFromBook();
-    });
-    // 当收到仓位更新通知时，必须重新拉取数据，而不仅仅是刷新 UI
-    const unsubPosRisk = riskWsBus.onPositionUpdate(handlePositionUpdateMessage);
-    const unsubPosDash = wsBus.onPositionUpdate(handlePositionUpdateMessage);
-    const unsubRuntime = riskWsBus.onRuntimeLog(handleRiskRuntimePositionHint);
-    const syncConn = () => {
-      syncConnectionFromCoordinator();
-      setTick((t) => t + 1);
-    };
-    syncConn();
-    const unsubConn = monitorCoordinator.subscribeConnection(syncConn);
-    const connIv = setInterval(syncConn, 2000);
-    // Monitor page uses browser-direct CLOB; ignore server poly_status for OB/USER flags.
-
-    const unsubDashStatus = riskWsBus.onStatusChange(() => {
-      setTick((t) => t + 1);
-    });
-
+    installMonitorCacheBootstrap();
     const sub = subscribe(() => setTick((t) => t + 1));
-
-    const onVisibility = () => {
-      positionsPollHidden = document.visibilityState === "hidden";
-      if (!positionsPollHidden) {
-        void refreshPositions();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    positionsPollHidden = document.visibilityState === "hidden";
-
-    startPositionsPoll();
-    const stopBookFallback = startBookFallbackPoller({
-      getOpenTokenIds: () =>
-        cache.positions
-          .filter((p) => p.status === "open" && p.tokenId)
-          .map((p) => normalizeTokenId(p.tokenId)),
-      isObConnected: () => cache.polyOrderbookConnected,
-      applyRestBook: applyRestBookFrame,
-    });
-
-    return () => {
-      unsubPosRisk();
-      unsubPosDash();
-      unsubRuntime();
-      unsubConn();
-      unsubDashStatus();
-      sub();
-      document.removeEventListener("visibilitychange", onVisibility);
-      stopPositionsPoll();
-      stopBookFallback();
-      unsubBooks();
-      unsubCoordPos();
-      clearInterval(connIv);
-    };
+    return () => sub();
   }, []);
 
   const refresh = useCallback((silent = false) => {

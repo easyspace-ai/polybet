@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { RefreshCw } from "lucide-react";
 import { TopBar } from "@/components/TopBar";
 import { PolymarketTitleLink } from "@/components/PolymarketTitleLink";
 import { cn } from "@/lib/utils";
@@ -31,28 +32,37 @@ export default function HistoryPage() {
   const [stopLossTasks, setStopLossTasks] = useState<StopLossHistoryTask[]>([]);
   const [officialTrades, setOfficialTrades] = useState<OfficialTrade[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = useCallback(async (fromOfficial = false) => {
+    if (fromOfficial) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     try {
       const [sl, tr] = await Promise.all([
-        getStopLossHistory(50),
-        getTradeHistory(50),
+        getStopLossHistory(50, fromOfficial),
+        getTradeHistory(50, fromOfficial),
       ]);
       setStopLossTasks(Array.isArray(sl.tasks) ? sl.tasks : []);
       setOfficialTrades(Array.isArray(tr.trades) ? tr.trades : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载历史失败');
     } finally {
-      setLoading(false);
+      if (fromOfficial) {
+        setRefreshing(false);
+      } else {
+        setLoading(false);
+      }
     }
-  };
+  }, []);
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    void fetchData(false);
+  }, [fetchData]);
 
   return (
     <>
@@ -67,11 +77,12 @@ export default function HistoryPage() {
         }
         actions={
           <button
-            onClick={fetchData}
-            disabled={loading}
+            onClick={() => void fetchData(true)}
+            disabled={loading || refreshing}
             className="h-8 px-3 text-[12px] rounded-md border border-border bg-surface hover:bg-accent transition flex items-center gap-1.5 disabled:opacity-50"
           >
-            {loading ? '加载中...' : '刷新'}
+            <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
+            {refreshing ? '同步中...' : '刷新'}
           </button>
         }
       />

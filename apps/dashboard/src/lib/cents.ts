@@ -14,6 +14,14 @@ export function trailingStopCentsFromHW(highWaterCents: number, stopLossPct: num
   return floorCents1(highWaterCents * (1 - stopLossPct / 100));
 }
 
+/** Trailing stop is armed only after avg entry and band stop % are known. */
+export function isTrailingStopActive(pos: {
+  avgEntryCents: number;
+  stopLossPct: number;
+}): boolean {
+  return pos.avgEntryCents > 0 && pos.stopLossPct > 0;
+}
+
 /**
  * Inverse of trailingStopCentsFromHW for UI back-solve when the user edits 触发.
  * Returns an integer percent in [1, 99] or null when inputs are invalid.

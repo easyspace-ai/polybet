@@ -4,6 +4,7 @@ import { TopBar } from "@/components/TopBar";
 import { useTheme } from "@/lib/theme";
 import { useConfig } from "@/hooks/useConfig";
 import { useSoundSettings } from "@/hooks/useSoundSettings";
+import { useAutoRefreshSettings } from "@/hooks/useAutoRefreshSettings";
 import { putConfig, testTelegram, getSports, type GammaSport } from "@/lib/api";
 import {
   DEFAULT_EVENT_CLASSIFICATION_TAGS,
@@ -303,6 +304,7 @@ function GeneralTab({
   return (
     <div className="space-y-5">
       <ThemeCard theme={theme} setTheme={setTheme} />
+      <AutoRefreshCard />
 
       <section className="surface rounded-xl border border-border p-5">
         <div className="flex items-start gap-3">
@@ -364,6 +366,88 @@ function GeneralTab({
         </div>
       </section>
     </div>
+  );
+}
+
+function AutoRefreshCard() {
+  const { settings, setEnabled, setIntervalMinutes } = useAutoRefreshSettings();
+  const [draftMinutes, setDraftMinutes] = useState(String(settings.intervalMinutes));
+
+  useEffect(() => {
+    setDraftMinutes(String(settings.intervalMinutes));
+  }, [settings.intervalMinutes]);
+
+  function commitInterval(raw: string) {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) {
+      setDraftMinutes(String(settings.intervalMinutes));
+      return;
+    }
+    setIntervalMinutes(parsed);
+  }
+
+  return (
+    <section className="surface rounded-xl border border-border p-5">
+      <div className="flex items-start gap-3 mb-4">
+        <div className="size-8 rounded-md bg-accent flex items-center justify-center">
+          <RefreshCw className="size-4 text-muted-foreground" />
+        </div>
+        <div>
+          <p className="text-[13px] font-semibold">页面自动刷新</p>
+          <p className="text-[11.5px] text-muted-foreground mt-1">
+            定时整页刷新 Dashboard，避免长时间运行后数据或连接状态陈旧
+          </p>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="flex items-center justify-between rounded-lg border border-border p-4">
+          <div>
+            <p className="text-[12px] font-medium">启用自动刷新</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">关闭后不再定时刷新页面</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setEnabled(!settings.enabled)}
+            className={cn(
+              "relative w-11 h-6 rounded-full transition-colors",
+              settings.enabled ? "bg-brand" : "bg-muted",
+            )}
+          >
+            <span
+              className={cn(
+                "absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform",
+                settings.enabled ? "left-[22px]" : "left-0.5",
+              )}
+            />
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between rounded-lg border border-border p-4">
+          <div>
+            <p className="text-[12px] font-medium">刷新间隔</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">两次整页刷新之间的分钟数（1–1440）</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={1}
+              max={1440}
+              step={1}
+              disabled={!settings.enabled}
+              value={draftMinutes}
+              onChange={(e) => setDraftMinutes(e.target.value)}
+              onBlur={() => commitInterval(draftMinutes)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitInterval(draftMinutes);
+              }}
+              className="h-8 w-20 px-2 num text-[12px] rounded-md border border-border bg-background focus:outline-none focus:border-brand focus:ring-2 focus:ring-brand/30 transition text-right disabled:opacity-50"
+            />
+            <span className="text-[12px] text-muted-foreground">分钟</span>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 

@@ -9,7 +9,7 @@ import { usePolyOrderBook } from "@/hooks/useOrderBook";
 import { useConfig } from "@/hooks/useConfig";
 import { groupMarkets, formatDateHeader, localDateKey, isAmericanSport, get1X2, getSpreadMLTotal, type MatchGroup, type OutcomeRow } from "@/lib/marketUtils";
 import { DEFAULT_EVENT_CLASSIFICATION_TAGS, parseEventClassificationTags } from "@/lib/eventClassification";
-import { getOrderBook, postTrade, type Market, type OrderBookLevel } from "@/lib/api";
+import { postTrade, type Market, type OrderBookLevel } from "@/lib/api";
 import { refreshMonitorData } from "@/hooks/useMonitorCache";
 import { polymarketEventUrl } from "@/lib/polymarketLinks";
 import { cn } from "@/lib/utils";
@@ -231,43 +231,23 @@ function TradeSidebar({
   const { balance, loading: balanceLoading, refresh: refreshBalance } = useBalanceCache();
   const activeBalance = getActiveBalance(balance);
   const [amount, setAmount] = useState('');
-  const [restBook, setRestBook] = useState<OrderBookLevel[] | null>(null);
-  const [polyTokenId, setPolyTokenId] = useState<string | null>(null);
-  const [bookError, setBookError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const liveBook = usePolyOrderBook(polyTokenId);
+  const polyTokenId = selectedOutcome?.polyTokenId ?? null;
+  const liveBook = usePolyOrderBook(selection ? polyTokenId : null);
 
   useEffect(() => {
     setAmount('');
-    setRestBook(null);
-    setPolyTokenId(null);
-    setBookError(null);
-    if (!selection) return;
-
-    let cancelled = false;
-    getOrderBook(selection.outcomeId)
-      .then((res) => {
-        if (cancelled) return;
-        setRestBook([...res.levels].filter((l) => l.platform === 'polymarket').sort((a, b) => a.odds - b.odds));
-        setPolyTokenId(res.polyTokenId ?? null);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setBookError(err instanceof Error ? err.message : '盘口暂不可用');
-        setRestBook([]);
-      });
-    return () => {
-      cancelled = true;
-    };
   }, [selection?.outcomeId]);
 
+  const bookError = selection && !polyTokenId ? '该选项缺少 CLOB token，无法加载盘口' : null;
+
   const book = useMemo<OrderBookLevel[] | null>(() => {
-    if (restBook === null) return null;
-    if (liveBook && liveBook.asks) {
-      return liveBook.asks.map((level) => ({ ...level, platform: 'polymarket' as const })).sort((a, b) => a.odds - b.odds);
-    }
-    return restBook;
-  }, [liveBook, restBook]);
+    if (!selection || bookError) return bookError ? [] : null;
+    if (!liveBook) return null;
+    return liveBook.asks
+      .map((level) => ({ ...level, platform: 'polymarket' as const }))
+      .sort((a, b) => a.odds - b.odds);
+  }, [bookError, liveBook, selection]);
 
   const amountNum = Number.parseFloat(amount);
   const validAmount = Number.isFinite(amountNum) && amountNum > 0;

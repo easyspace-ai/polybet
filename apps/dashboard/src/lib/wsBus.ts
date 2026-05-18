@@ -156,6 +156,8 @@ class WsBus {
   private reconnectAttempt = 0;
   private cfg: WSClientConfig = getWSConfig();
   private lifecycleBound = false;
+  /** Bumped on each new socket so stale onclose/onopen cannot schedule reconnects. */
+  private connectGen = 0;
 
   private oddsListeners: OddsListener[] = [];
   private bookListeners: BookListener[] = [];
@@ -221,16 +223,32 @@ class WsBus {
     }
   }
 
+  /** Detach handlers and close so superseded sockets never schedule reconnects. */
+  private dropSocket(ws: WebSocket | null) {
+    if (!ws) return;
+    ws.onopen = null;
+    ws.onclose = null;
+    ws.onerror = null;
+    ws.onmessage = null;
+    try {
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close();
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private dropActiveSocket() {
+    const ws = this.ws;
+    this.ws = null;
+    this.dropSocket(ws);
+  }
+
   reconnect(immediate = false) {
     this.clearReconnectTimer();
-    if (this.ws) {
-      try {
-        this.ws.close();
-      } catch {
-        /* ignore */
-      }
-      this.ws = null;
-    }
+    this.clearPingTimers();
+    this.dropActiveSocket();
     if (immediate) {
       this.reconnectAttempt = 0;
       this.connect(false);
@@ -256,22 +274,33 @@ class WsBus {
 
   private connect(isInitial: boolean) {
     if (!isBrowser()) return;
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+    this.clearReconnectTimer();
+    const existing = this.ws;
+    if (
+      existing &&
+      (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)
+    ) {
       return;
     }
-    this.clearReconnectTimer();
+    if (existing) {
+      this.dropActiveSocket();
+    }
     this.setState("CONNECTING");
-    this.ws = new WebSocket(this.url);
+    const gen = ++this.connectGen;
+    const ws = new WebSocket(this.url);
+    this.ws = ws;
 
-    this.ws.onopen = () => {
+    ws.onopen = () => {
+      if (this.ws !== ws || gen !== this.connectGen) return;
       this.reconnectAttempt = 0;
       this.setState("CONNECTED", "connected");
       this.resubscribeAll();
       this.startPingLoop();
     };
 
-    this.ws.onclose = () => {
-      this.ws = null;
+    ws.onclose = () => {
+      if (gen !== this.connectGen) return;
+      if (this.ws === ws) this.ws = null;
       this.clearPingTimers();
       this.setState("RECONNECTING", "closed");
       if (this.cfg.wsAutoReconnectOnDisconnect) {
@@ -279,11 +308,13 @@ class WsBus {
       }
     };
 
-    this.ws.onerror = () => {
+    ws.onerror = () => {
+      if (this.ws !== ws || gen !== this.connectGen) return;
       appendWSLog("relay", "warn", `${this.label}: error`);
     };
 
-    this.ws.onmessage = (ev) => {
+    ws.onmessage = (ev) => {
+      if (this.ws !== ws || gen !== this.connectGen) return;
       this.onPongReceived();
       try {
         const msg: IncomingMessage = JSON.parse(ev.data);
@@ -296,6 +327,18 @@ class WsBus {
 
     if (!isInitial) {
       appendWSLog("relay", "info", `${this.label}: connecting`);
+    }
+  }
+
+  /** App teardown / Vite HMR — close the active socket and cancel timers. */
+  dispose() {
+    this.clearReconnectTimer();
+    this.clearPingTimers();
+    this.dropActiveSocket();
+    this.connectGen += 1;
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
     }
   }
 
@@ -561,3 +604,10 @@ class WsBus {
 
 export const wsBus = new WsBus(WS_URL, "Dashboard WS");
 export const riskWsBus = new WsBus(RISK_WS_URL, "Risk WS");
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    wsBus.dispose();
+    riskWsBus.dispose();
+  });
+}

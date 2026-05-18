@@ -30,6 +30,8 @@ export interface OutcomeRow {
   line?: number | null;
   polymarket?: { impliedOdds: number; availableSize: number };
   outcomeId: string;
+  /** Polymarket CLOB token id (hex or decimal) for WS order book. */
+  polyTokenId?: string;
   mainLine: boolean;
   canonicalKey: string | null;
 }
@@ -115,6 +117,7 @@ export function groupMarkets(markets: Market[]): MatchGroup[] {
       if (m.platform === 'polymarket') {
         existing.polymarket = mergePlatformOdds(existing.polymarket, next);
         existing.outcomeId = o.id;
+        if (o.externalId) existing.polyTokenId = o.externalId;
       }
     }
   }

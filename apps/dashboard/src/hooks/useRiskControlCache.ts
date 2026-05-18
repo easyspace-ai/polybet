@@ -9,7 +9,7 @@ import {
   type RiskPositionsMeta,
   type RiskTaskRow,
 } from "@/lib/api";
-import { floorCents1, trailingStopCentsFromHW } from "@/lib/cents";
+import { floorCents1, isTrailingStopActive, trailingStopCentsFromHW } from "@/lib/cents";
 import { bestBidCentsFromBookFrame, topOfBookMarkCents } from "@/lib/riskBook";
 import {
   riskWsBus,
@@ -278,17 +278,22 @@ function updatePositionsFromBook() {
       pos.currentCents = bid;
       changed = true;
     }
-    const effHw = floorCents1(Math.max(floorCents1(pos.highWaterCents), mark ?? 0));
-    const trail = trailingStopCentsFromHW(effHw, pos.stopLossPct);
-    if (pos.trailingStopCents !== trail) {
-      pos.trailingStopCents = trail;
-      changed = true;
-    }
+    if (isTrailingStopActive(pos)) {
+      const effHw = floorCents1(Math.max(floorCents1(pos.highWaterCents), mark ?? 0));
+      const trail = trailingStopCentsFromHW(effHw, pos.stopLossPct);
+      if (pos.trailingStopCents !== trail) {
+        pos.trailingStopCents = trail;
+        changed = true;
+      }
 
-    const triggerPx = floorCents1(bid != null && bid > 0 ? bid : (mark ?? 0));
-    const trailFloored = floorCents1(trail);
-    if (triggerPx > 0 && triggerPx <= trailFloored && pos.status === "open") {
-      maybeTriggerStopLossClose(pos, triggerPx, trailFloored);
+      const triggerPx = floorCents1(bid != null && bid > 0 ? bid : (mark ?? 0));
+      const trailFloored = floorCents1(trail);
+      if (triggerPx > 0 && triggerPx <= trailFloored && pos.status === "open") {
+        maybeTriggerStopLossClose(pos, triggerPx, trailFloored);
+      }
+    } else if (pos.trailingStopCents != null && pos.trailingStopCents !== 0) {
+      pos.trailingStopCents = 0;
+      changed = true;
     }
   }
   if (changed) {

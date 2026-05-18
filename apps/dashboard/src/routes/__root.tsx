@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Outlet, Link, createRootRouteWithContext } from "@tanstack/react-router";
 import { AppSidebar } from "@/components/AppSidebar";
 import { Toaster } from "@/components/ui/sonner";
+import { useAutoRefresh } from "@/hooks/useAutoRefresh";
 import { useSoundNotifications } from "@/hooks/useSoundNotifications";
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
@@ -30,6 +31,7 @@ function NotFound() {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  useAutoRefresh();
   useSoundNotifications();
   return (
     <QueryClientProvider client={queryClient}>
