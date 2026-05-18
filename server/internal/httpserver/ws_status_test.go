@@ -26,7 +26,7 @@ func TestWSStatusSnap_getSetTTL(t *testing.T) {
 	}
 }
 
-func TestWSStatusSnap_missWhileConnecting(t *testing.T) {
+func TestWSStatusSnap_hitWhileConnecting(t *testing.T) {
 	snap := &wsStatusSnap{}
 	snap.set(map[string]any{
 		"polyUserConnected":       false,
@@ -34,8 +34,12 @@ func TestWSStatusSnap_missWhileConnecting(t *testing.T) {
 		"polyOrderbookConnected":  false,
 		"polyOrderbookConnecting": false,
 	})
-	if _, ok := snap.get(); ok {
-		t.Fatal("expected cache miss while user upstream is connecting")
+	got, ok := snap.get()
+	if !ok {
+		t.Fatal("expected cache hit while connecting (background refresher keeps snap warm)")
+	}
+	if got["polyUserConnecting"] != true {
+		t.Fatalf("expected connecting=true in cache, got=%v", got)
 	}
 }
 
@@ -91,7 +95,7 @@ func (cachedOpenPosApp) ScheduleRiskOfficialRefresh() bool                { retu
 func (cachedOpenPosApp) ScheduleMarketsFullRefresh() bool                 { return false }
 func (cachedOpenPosApp) ScheduleMarketsRefresh(force bool) bool           { return false }
 func (cachedOpenPosApp) RequestRestart()                                  {}
-func (cachedOpenPosApp) ForceWSReconnect(channel string)                  {}
+func (cachedOpenPosApp) ForceWSReconnect(channel string) bool               { return true }
 func (cachedOpenPosApp) EnsureOrderbookToken(tokenID string)              {}
 func (cachedOpenPosApp) PolyBookClientSubscribe(tokenID string)           {}
 func (cachedOpenPosApp) PolyBookClientUnsubscribe(tokenID string)         {}

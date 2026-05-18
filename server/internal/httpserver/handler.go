@@ -59,7 +59,7 @@ type Handler struct {
 		ScheduleMarketsFullRefresh() bool
 		ScheduleMarketsRefresh(force bool) bool
 		RequestRestart()
-		ForceWSReconnect(channel string)
+		ForceWSReconnect(channel string) bool
 		EnsureOrderbookToken(tokenID string)
 		PolyBookClientSubscribe(tokenID string)
 		PolyBookClientUnsubscribe(tokenID string)
@@ -69,7 +69,8 @@ type Handler struct {
 		OpenRiskPositionCount(ctx context.Context) int
 		CachedOpenRiskPositionCount(maxAge time.Duration) (int, bool)
 	}
-	wsStatusSnap *wsStatusSnap
+	wsStatusSnap   *wsStatusSnap
+	stopWSStatusRefresher func()
 }
 
 func riskMetaForAPI(m risksvc.Meta) memcache.RiskMeta {
@@ -150,7 +151,7 @@ func validateBotConfigUpdate(key, value string) error {
 }
 
 func NewHandler(d Deps) *Handler {
-	return &Handler{
+	h := &Handler{
 		cfg:          d.Cfg,
 		st:           d.Store,
 		cache:        d.Cache,
@@ -167,6 +168,8 @@ func NewHandler(d Deps) *Handler {
 		app:          d.App,
 		wsStatusSnap: &wsStatusSnap{},
 	}
+	h.stopWSStatusRefresher = startWSStatusRefresher(h, wsStatusRefreshInterval)
+	return h
 }
 
 type simpleCache struct {

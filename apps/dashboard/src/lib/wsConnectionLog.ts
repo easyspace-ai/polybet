@@ -193,6 +193,15 @@ export function markUpstreamReconnecting(id: "ob" | "user") {
   notifyIfChanged(before);
 }
 
+/** Clear authoritative upstream flags so stale REST data is not trusted after
+ *  the dashboard WebSocket (our realtime source) disconnects. */
+export function clearUpstreamConnectedState() {
+  const before = captureFingerprints();
+  upstreamObConnected = null;
+  upstreamUserConnected = null;
+  notifyIfChanged(before);
+}
+
 export function setOBRequired(required: boolean, connected: boolean, connecting?: boolean) {
   const ob = snapshots.ob;
   const before = captureFingerprints();

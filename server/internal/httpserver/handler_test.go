@@ -171,9 +171,10 @@ func (a *slowWSReconnectApp) OpenRiskPositionCount(ctx context.Context) int { re
 func (a *slowWSReconnectApp) CachedOpenRiskPositionCount(time.Duration) (int, bool) {
 	return 0, false
 }
-func (a *slowWSReconnectApp) ForceWSReconnect(channel string) {
+func (a *slowWSReconnectApp) ForceWSReconnect(channel string) bool {
 	close(a.started)
 	<-a.release
+	return true
 }
 
 func TestHandleWSReconnect_returnsAcceptedWithoutBlocking(t *testing.T) {

@@ -229,10 +229,11 @@ export interface WSStatusResponse {
 
 let wsStatusApiInflight: Promise<WSStatusResponse> | null = null;
 
-export const getWSStatus = () => {
+export const getWSStatus = (opts?: { signal?: AbortSignal }) => {
   if (wsStatusApiInflight) return wsStatusApiInflight;
   wsStatusApiInflight = apiFetch<WSStatusResponse>("/api/ws/status", {
     timeoutMs: WS_STATUS_FETCH_TIMEOUT_MS,
+    signal: opts?.signal,
   }).finally(() => {
     wsStatusApiInflight = null;
   });

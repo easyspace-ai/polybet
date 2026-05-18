@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	wsStatusCacheTTL         = 1500 * time.Millisecond
+	wsStatusCacheTTL         = 5 * time.Second
+	wsStatusRefreshInterval  = 5 * time.Second
 	wsStatusOpenCountTimeout = 200 * time.Millisecond
 	wsStatusBuildTimeout     = 500 * time.Millisecond
 	wsStatusOpenCountStale   = 30 * time.Second
@@ -37,12 +38,20 @@ func (s *wsStatusSnap) get() (map[string]any, bool) {
 	if s.data == nil || time.Since(s.at) > wsStatusCacheTTL {
 		return nil, false
 	}
-	// Never serve cached snapshots while upstream is mid-connect — REST clients
-	// would otherwise stick on "reconnecting" after the live WS already connected.
-	if connecting, ok := s.data["polyOrderbookConnecting"].(bool); ok && connecting {
+	out := make(map[string]any, len(s.data))
+	for k, v := range s.data {
+		out[k] = v
+	}
+	return out, true
+}
+
+func (s *wsStatusSnap) getStale() (map[string]any, bool) {
+	if s == nil {
 		return nil, false
 	}
-	if connecting, ok := s.data["polyUserConnecting"].(bool); ok && connecting {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.data == nil || time.Since(s.at) > wsStatusCacheTTL*4 {
 		return nil, false
 	}
 	out := make(map[string]any, len(s.data))
@@ -181,7 +190,7 @@ func (h *Handler) openRiskPositionCount(ctx context.Context) int {
 	if n, ok := h.app.CachedOpenRiskPositionCount(wsStatusOpenCountStale); ok {
 		return n
 	}
-	countCtx, cancel := context.WithTimeout(context.Background(), wsStatusOpenCountTimeout)
+	countCtx, cancel := context.WithTimeout(ctx, wsStatusOpenCountTimeout)
 	defer cancel()
 	n := h.app.OpenRiskPositionCount(countCtx)
 	if n > 0 {
@@ -195,31 +204,12 @@ func (h *Handler) openRiskPositionCount(ctx context.Context) int {
 
 func (h *Handler) buildWSStatus(ctx context.Context) map[string]any {
 	start := time.Now()
-	var hubSize, openN int
+	hubSize, openN := 0, 0
 
-	done := make(chan struct{})
-	go func() {
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			if h.hub != nil {
-				hubSize = h.hub.ClientCount()
-			}
-		}()
-		go func() {
-			defer wg.Done()
-			openN = h.openRiskPositionCount(ctx)
-		}()
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-	case <-time.After(wsStatusBuildTimeout):
+	if h.hub != nil {
+		hubSize = h.hub.ClientCount()
 	}
+	openN = h.openRiskPositionCount(ctx)
 
 	out := buildWSStatusJSON(h.risk, h.cache, hubSize, openN)
 	logrus.WithFields(logx.Pairs(
@@ -230,26 +220,55 @@ func (h *Handler) buildWSStatus(ctx context.Context) map[string]any {
 	return out
 }
 
-func (h *Handler) wsStatusResponse(ctx context.Context) map[string]any {
+// refreshWSStatusSnap builds a new snapshot and stores it.  It is safe to call
+// concurrently; singleflight deduplicates overlapping refreshes.
+func (h *Handler) refreshWSStatusSnap() {
 	if h.wsStatusSnap == nil {
-		h.wsStatusSnap = &wsStatusSnap{}
+		return
+	}
+	_, _, _ = h.wsStatusSnap.sf.Do("ws_status_refresh", func() (any, error) {
+		buildCtx, cancel := context.WithTimeout(context.Background(), wsStatusBuildTimeout)
+		defer cancel()
+		out := h.buildWSStatus(buildCtx)
+		h.wsStatusSnap.set(out)
+		return nil, nil
+	})
+}
+
+// wsStatusResponse always returns immediately from the cached snapshot.
+// The cache is kept warm by a background goroutine (startWSStatusRefresher).
+// If the cache is cold we fall back to stale data or a zero-value skeleton.
+func (h *Handler) wsStatusResponse(_ context.Context) map[string]any {
+	if h.wsStatusSnap == nil {
+		return buildWSStatusJSON(h.risk, h.cache, 0, 0)
 	}
 	if snap, ok := h.wsStatusSnap.get(); ok {
 		logrus.WithFields(logx.Pairs("cache", "hit")).Debug("ws status snapshot")
 		return snap
 	}
-	v, _, _ := h.wsStatusSnap.sf.Do("ws_status", func() (any, error) {
-		if snap, ok := h.wsStatusSnap.get(); ok {
-			return snap, nil
-		}
-		buildCtx, cancel := context.WithTimeout(context.Background(), wsStatusBuildTimeout)
-		defer cancel()
-		out := h.buildWSStatus(buildCtx)
-		h.wsStatusSnap.set(out)
-		return out, nil
-	})
-	if m, ok := v.(map[string]any); ok {
-		return m
+	if snap, ok := h.wsStatusSnap.getStale(); ok {
+		logrus.WithFields(logx.Pairs("cache", "stale-fallback")).Debug("ws status snapshot")
+		return snap
 	}
-	return h.buildWSStatus(ctx)
+	return buildWSStatusJSON(h.risk, h.cache, 0, 0)
+}
+
+// startWSStatusRefresher launches a background goroutine that rebuilds the
+// ws/status snapshot every interval.  This keeps the API handler path O(1).
+// Call the returned stop function on shutdown (optional).
+func startWSStatusRefresher(h *Handler, interval time.Duration) func() {
+	stopCh := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				h.refreshWSStatusSnap()
+			}
+		}
+	}()
+	return func() { close(stopCh) }
 }

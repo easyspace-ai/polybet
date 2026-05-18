@@ -4,6 +4,7 @@ import {
   type ChannelId,
   type ChannelSnapshot,
   applyUpstreamPolyStatus,
+  clearUpstreamConnectedState,
   getAllChannelSnapshots,
   getChannelSnapshot,
   getUpstreamConnectedState,
@@ -19,9 +20,11 @@ const DISCOVERY_MAX_MS = 10_000;
 const RECONNECT_MIN_INTERVAL_MS = 5_000;
 const RECONNECT_BURST_COUNT = 5;
 const RECONNECT_BURST_INTERVAL_MS = 750;
+const RECONNECT_COOLDOWN_MS = 3_000;
 const CHANNEL_IDS: ChannelId[] = ["relay", "ob", "user"];
 
 let wsStatusInflight: Promise<void> | null = null;
+let wsStatusAbortController: AbortController | null = null;
 let discoveryTimer: ReturnType<typeof setTimeout> | null = null;
 let burstTimer: ReturnType<typeof setTimeout> | null = null;
 let burstRemaining = 0;
@@ -29,6 +32,7 @@ let discoveryAttempt = 0;
 let discoveryActive = false;
 const reconnectInflight = new Set<"orderbook" | "user">();
 const reconnectLastAt: Partial<Record<"orderbook" | "user", number>> = {};
+const reconnectCooldownUntil: Partial<Record<"orderbook" | "user", number>> = {};
 
 function channelNeedsDiscovery(ch: ChannelSnapshot): boolean {
   if (ch.id === "relay") {
@@ -68,6 +72,14 @@ function clearBurstPoll() {
     burstTimer = null;
   }
   burstRemaining = 0;
+}
+
+function cancelInflightStatusPoll() {
+  if (wsStatusAbortController) {
+    wsStatusAbortController.abort();
+    wsStatusAbortController = null;
+  }
+  wsStatusInflight = null;
 }
 
 function scheduleBurstPollTick() {
@@ -129,7 +141,7 @@ async function runDiscoveryPoll() {
 function syncDiscoveryLoop() {
   if (!discoveryActive) return;
   if (anyChannelNeedsDiscovery()) {
-    if (!discoveryTimer) scheduleDiscoveryPoll(true);
+    if (!discoveryTimer) scheduleDiscoveryPoll(discoveryAttempt < 3);
   } else {
     clearDiscoveryTimer();
     resetDiscoveryBackoff();
@@ -151,35 +163,29 @@ async function requestUpstreamReconnect(
     if (opts?.nextRetryAt && opts.nextRetryAt > now) return;
     const last = reconnectLastAt[channel] ?? 0;
     if (now - last < RECONNECT_MIN_INTERVAL_MS) return;
+    const cooldownEnd = reconnectCooldownUntil[channel] ?? 0;
+    if (now < cooldownEnd) return;
   }
   if (reconnectInflight.has(channel)) return;
 
   reconnectInflight.add(channel);
   reconnectLastAt[channel] = now;
   try {
-    // Poll with a short timeout so a stuck status API never blocks the
-    // manual-reconnect path.  If it times out we still proceed.
-    try {
-      const pollPromise = pollWSStatusOnce();
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("poll timeout")), 2_000),
-      );
-      await Promise.race([pollPromise, timeoutPromise]);
-      const alreadyConnected =
-        channel === "orderbook"
-          ? getUpstreamConnectedState("ob") === true
-          : getUpstreamConnectedState("user") === true;
-      if (alreadyConnected) {
-        syncDiscoveryLoop();
-        return;
-      }
-    } catch {
-      /* continue with reconnect attempt */
+    cancelInflightStatusPoll();
+
+    const alreadyConnected =
+      channel === "orderbook"
+        ? getUpstreamConnectedState("ob") === true
+        : getUpstreamConnectedState("user") === true;
+    if (alreadyConnected) {
+      syncDiscoveryLoop();
+      return;
     }
 
     markUpstreamReconnecting(channel === "orderbook" ? "ob" : "user");
     const res = await postWSReconnect(channel);
     if (res.ok || res.accepted) {
+      reconnectCooldownUntil[channel] = Date.now() + RECONNECT_COOLDOWN_MS;
       void pollWSStatusOnce().then(() => startReconnectBurstPoll());
     } else {
       refreshWSStatus({ resetBackoff: true });
@@ -194,12 +200,12 @@ async function requestUpstreamReconnect(
 async function pollWSStatusOnce() {
   if (wsStatusInflight) return wsStatusInflight;
   const cfg = getWSConfig();
+  wsStatusAbortController = new AbortController();
   wsStatusInflight = (async () => {
     try {
-      const st = await getWSStatus();
+      const st = await getWSStatus({ signal: wsStatusAbortController!.signal });
       applyUpstreamPolyStatus(
         {
-          type: "poly_status",
           polyOrderbookConnected: st.polyOrderbookConnected,
           polyUserConnected: st.polyUserConnected,
           polyOrderbookConnecting: st.polyOrderbookConnecting,
@@ -225,14 +231,25 @@ async function pollWSStatusOnce() {
       if (st.polyUserConnected === false) {
         void requestUpstreamReconnect("user", { nextRetryAt: st.userNextRetryAt });
       }
-    } catch {
-      /* poll failed (timeout or network error) — keep backoff low and retry soon */
-      resetDiscoveryBackoff();
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        return;
+      }
+      // REST poll failed (network down, 500, timeout).  Downgrade upstream
+      // state so the UI does not falsely claim upstream is healthy.
+      applyUpstreamPolyStatus(
+        { polyOrderbookConnected: false, polyUserConnected: false },
+        { fromRest: true },
+      );
+      // Back off instead of resetting — prevents retry storms when the
+      // backend is down or overloaded.
+      discoveryAttempt += 1;
     } finally {
       syncDiscoveryLoop();
     }
   })().finally(() => {
     wsStatusInflight = null;
+    wsStatusAbortController = null;
   });
   return wsStatusInflight;
 }
@@ -254,9 +271,19 @@ function installWSStatusBootstrap() {
 
   riskWsBus.onPolyStatus(onPolyStatus);
   wsBus.onPolyStatus(onPolyStatus);
-  riskWsBus.onStatusChange((connected) => {
-    if (connected) refreshWSStatus({ resetBackoff: true });
-  });
+
+  const onDashWSStatusChange = (connected: boolean) => {
+    if (connected) {
+      refreshWSStatus({ resetBackoff: true });
+    } else {
+      // Dashboard WS is our realtime source — when it drops, upstream state
+      // becomes unknown.  Downgrade so the UI does not falsely show "connected".
+      clearUpstreamConnectedState();
+      syncDiscoveryLoop();
+    }
+  };
+  wsBus.onStatusChange(onDashWSStatusChange);
+  riskWsBus.onStatusChange(onDashWSStatusChange);
 
   subscribeWSConnectionLog(syncDiscoveryLoop);
 

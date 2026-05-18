@@ -254,10 +254,12 @@ func (s *UserStream) Errors() <-chan error { return s.errChan }
 
 func (s *UserStream) connect() error {
 	s.connMu.Lock()
-	defer s.connMu.Unlock()
+	oldConn := s.conn
+	s.conn = nil
+	s.connMu.Unlock()
 
-	if s.conn != nil {
-		s.conn.Close()
+	if oldConn != nil {
+		_ = oldConn.Close()
 	}
 
 	dialer := websocket.Dialer{
@@ -301,7 +303,9 @@ func (s *UserStream) connect() error {
 		return nil
 	})
 
+	s.connMu.Lock()
 	s.conn = conn
+	s.connMu.Unlock()
 	s.reconnectMu.Lock()
 	s.reconnectAttempts = 0
 	s.reconnectMu.Unlock()

@@ -38,7 +38,7 @@ type Deps struct {
 		ScheduleMarketsFullRefresh() bool
 		ScheduleMarketsRefresh(force bool) bool
 		RequestRestart()
-		ForceWSReconnect(channel string)
+		ForceWSReconnect(channel string) bool
 		EnsureOrderbookToken(tokenID string)
 		PolyBookClientSubscribe(tokenID string)
 		PolyBookClientUnsubscribe(tokenID string)
