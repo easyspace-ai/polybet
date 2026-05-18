@@ -1,0 +1,20 @@
+# Source files
+src/
+tests/
+scripts/
+
+# Config files
+tsconfig*.json
+.github/
+.claude/
+
+# IDE
+.idea/
+.vscode/
+
+# Development files
+*.log
+.DS_Store
+CLAUDE.md
+CONTRIBUTING.md
+SECURITY.md

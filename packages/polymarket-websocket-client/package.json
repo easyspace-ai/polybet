@@ -1,0 +1,68 @@
+{
+  "name": "polymarket-websocket-client",
+  "version": "0.1.1",
+  "description": "Zero-dependency TypeScript WebSocket client for Polymarket CLOB and RTDS APIs with automatic reconnection and full type safety",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "main": "./dist/cjs/index.cjs",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build:esm": "tsc -p tsconfig.esm.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "build": "pnpm run clean && pnpm run build:esm && pnpm run build:cjs && node scripts/rename-cjs.mjs",
+    "prepublishOnly": "pnpm run build",
+    "test": "node --import tsx --experimental-test-coverage --test 'tests/**/*.test.ts'",
+    "test:watch": "node --import tsx --test --watch 'tests/**/*.test.ts'",
+    "lint": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/discountry/polymarket-websocket-client.git"
+  },
+  "bugs": {
+    "url": "https://github.com/discountry/polymarket-websocket-client/issues"
+  },
+  "homepage": "https://github.com/discountry/polymarket-websocket-client#readme",
+  "keywords": [
+    "polymarket",
+    "websocket",
+    "clob",
+    "rtds",
+    "trading",
+    "prediction-markets",
+    "orderbook",
+    "typescript",
+    "zero-dependencies",
+    "real-time"
+  ],
+  "author": "discountry",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.7.0",
+    "typescript": "^5.0.0"
+  },
+  "packageManager": "pnpm@10.33.2+sha512.a90faf6feeab71ad6c6e57f94e0fe1a12f5dcc22cd754db40ae9593eb6a3e0b6b12e3540218bb37ae083404b1f2ce6db2a4121e979829b4aff94b99f49da1cf8",
+  "dependencies": {
+    "https-proxy-agent": "^9.0.0",
+    "ws": "^8.20.0"
+  }
+}
