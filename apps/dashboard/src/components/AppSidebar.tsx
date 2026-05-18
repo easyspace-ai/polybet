@@ -1,11 +1,11 @@
 import React from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Activity, LineChart, Shield, History, Wallet, Settings, Loader2 } from "lucide-react";
+import { Activity, LineChart, Radio, History, Wallet, Settings, Loader2 } from "lucide-react";
 import { useBalanceCache } from "@/hooks/useBalanceCache";
 import { useAccounts } from "@/hooks/useAccounts";
 
 const items = [
-  { title: "风控", url: "/risk", icon: Shield },
+  { title: "监控", url: "/monitor", icon: Radio },
   { title: "市场", url: "/market", icon: LineChart },
   { title: "历史", url: "/history", icon: History },
   { title: "账号", url: "/accounts", icon: Wallet },

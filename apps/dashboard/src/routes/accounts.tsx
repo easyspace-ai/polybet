@@ -4,7 +4,7 @@ import { TopBar } from "@/components/TopBar";
 import { Trash2, Plus, Loader2 } from "lucide-react";
 import { useAccounts } from "@/hooks/useAccounts";
 import { useBalanceCache } from "@/hooks/useBalanceCache";
-import { refreshRiskData } from "@/hooks/useRiskControlCache";
+import { refreshMonitorData } from "@/hooks/useMonitorCache";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/accounts")({ component: AccountsPage });
@@ -52,7 +52,7 @@ async function handleActivate(id: string) {
       await activate(id);
       toast.success('已设为默认账号', { description: '后续下单将使用该账号' });
       await refreshBalance();
-      refreshRiskData();
+      refreshMonitorData();
     } catch (err) {
       toast.error('切换失败', { description: err instanceof Error ? err.message : '请求错误' });
     } finally {

@@ -273,7 +273,13 @@ func (h *Handler) handleWSRisk(c *gin.Context) {
 		}
 	}()
 
-	// 发送初始连接状态（含 connecting 标志，避免 dashboard 在首次 REST 之前误判为重连中）
+	if h.conn != nil {
+		h.conn.SetRelayClients(h.hub.ClientCount() + h.riskHub.ClientCount())
+		if snap := h.conn.Snapshot(); snap.ConnectivitySnapshotJSON() != nil {
+			_ = h.riskHub.WriteJSON(conn, snap.ConnectivitySnapshotJSON())
+		}
+	}
+	// Legacy poly_status for older clients
 	_ = h.riskHub.WriteJSON(conn, map[string]any{
 		"type":                    "poly_status",
 		"polyOrderbookConnected":  h.risk.OrderbookWSConnected(),

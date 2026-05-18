@@ -1,0 +1,1 @@
+import{_ as a}from"./index-DxrR-JOi.js";async function s(n,t){const{HttpsProxyAgent:o}=await a(async()=>{const{HttpsProxyAgent:r}=await import("./https-proxy-agent-1leyOunu.js");return{HttpsProxyAgent:r}},[]),e=t?{headers:t}:void 0;return new o(n,e)}export{s as createProxyAgent};

@@ -127,6 +127,9 @@ func (a *App) ScheduleRiskOfficialRefresh() bool {
 		} else {
 			a.Log.Info("风控刷新：后台官方同步完成")
 		}
+		if _, err := a.Risk.SyncOfficialTradesFromAPI(runCtx, 50); err != nil {
+			a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("风控刷新：官方成交同步失败")
+		}
 		a.rebuildCachesSync(runCtx)
 		return nil
 	})

@@ -46,6 +46,8 @@ type Engine struct {
 	onAfterRiskEval func()
 	// Called when poly_status should be rebroadcast (reconnect schedule, OB state).
 	broadcastPolyStatus func()
+	// When true, browser MonitorCoordinator owns market WS; engine idles.
+	clientOwnsClobWS func() bool
 
 	mu            sync.Mutex
 	market        *marketstream.MarketStream
@@ -97,6 +99,20 @@ func (e *Engine) ForceMarketReconnect() {
 	if ms != nil {
 		ms.ForceReconnect()
 	}
+}
+
+// SetClientOwnsClobWS registers a callback: when it returns true, Run idles (dashboard owns OB).
+func (e *Engine) SetClientOwnsClobWS(fn func() bool) {
+	e.mu.Lock()
+	e.clientOwnsClobWS = fn
+	e.mu.Unlock()
+}
+
+func (e *Engine) clientOwnsWS() bool {
+	e.mu.Lock()
+	fn := e.clientOwnsClobWS
+	e.mu.Unlock()
+	return fn != nil && fn()
 }
 
 // NotifyPositionsChanged wakes the reconcile loop (account switch, new trade, refresh).
@@ -276,6 +292,14 @@ func (e *Engine) Run(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			return
+		}
+		if e.clientOwnsWS() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(10 * time.Second):
+				continue
+			}
 		}
 		stopped := e.runStreamOnce(ctx)
 		if ctx.Err() != nil {

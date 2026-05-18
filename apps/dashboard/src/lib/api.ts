@@ -608,3 +608,124 @@ export interface RiskRuntimeLogEnvelope {
 
 export const getRiskRuntimeLogs = (limit = 100) =>
   apiFetch<{ logs: RiskRuntimeLogEnvelope[] }>(`/api/risk/runtime-logs?limit=${limit}`);
+
+// --- Monitor / connectivity (next-gen risk UI) ---
+
+export interface ConnectivitySnapshotResponse extends WSStatusResponse {
+  connectivityOwner?: string;
+  userDisplay?: string;
+  orderbookDisplay?: string;
+  subscribedTokenCount?: number;
+  lastClientHeartbeat?: string;
+}
+
+export const getConnectivitySnapshot = (opts?: { signal?: AbortSignal }) =>
+  apiFetch<ConnectivitySnapshotResponse>("/api/connectivity/snapshot", {
+    timeoutMs: WS_STATUS_FETCH_TIMEOUT_MS,
+    signal: opts?.signal,
+  });
+
+export interface MonitorClobSession {
+  apiKey: string;
+  apiSecret: string;
+  apiPassphrase: string;
+  marketWsUrl: string;
+  userWsUrl: string;
+  accountId?: string;
+  proxyUrl?: string;
+}
+
+export const getMonitorClobSession = () =>
+  apiFetch<MonitorClobSession>("/api/monitor/clob-session", { timeoutMs: 10_000 });
+
+export const postMonitorHeartbeat = (body: {
+  userConnected: boolean;
+  orderbookConnected: boolean;
+  subscribedTokens: string[];
+}) =>
+  apiFetch<{ ok: boolean }>("/api/monitor/heartbeat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+export const postMonitorStopLossTrigger = (body: {
+  positionId: string;
+  tokenId?: string;
+  triggerCents: number;
+  trailCents: number;
+}) =>
+  apiFetch<{ ok: boolean; positionId: string; taskId?: string }>(
+    "/api/monitor/stop-loss/trigger",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+
+export const postMonitorPositionsSync = () =>
+  apiFetch<{ ok: boolean }>("/api/monitor/positions/sync", { method: "POST" });
+
+const monitorPath = (p: string) => `/api/monitor${p}`;
+
+export const getMonitorPositions = () => {
+  if (riskPositionsApiInflight) return riskPositionsApiInflight;
+  riskPositionsApiInflight = apiFetch<RiskPositionsResponse>(monitorPath("/positions")).finally(
+    () => {
+      riskPositionsApiInflight = null;
+    },
+  );
+  return riskPositionsApiInflight;
+};
+
+export const getMonitorBook = (tokenId: string, opts?: { refresh?: boolean; reason?: string }) => {
+  const q = new URLSearchParams({ tokenId });
+  if (opts?.refresh) q.set("refresh", "1");
+  if (opts?.reason) q.set("reason", opts.reason);
+  return apiFetch<RiskBookResponse>(`${monitorPath("/book")}?${q.toString()}`, { timeoutMs: 8_000 });
+};
+
+export const getMonitorTasks = (limit = 40) =>
+  apiFetch<{ tasks: RiskTaskRow[] }>(`${monitorPath("/tasks")}?limit=${limit}`);
+
+export const postMonitorTasksClear = () =>
+  apiFetch<{ ok: boolean; deleted: number }>(monitorPath("/tasks/clear"), { method: "POST" });
+
+export const postMonitorOfficialRefresh = () =>
+  apiFetch<{ ok: boolean; accepted?: boolean; alreadyRunning?: boolean; message?: string }>(
+    monitorPath("/refresh"),
+    { method: "POST" },
+  );
+
+export const patchMonitorPosition = (
+  id: string,
+  body: { stopLossPct?: number; highWaterCents?: number },
+) =>
+  apiFetch<{ ok: boolean; position: RiskPositionRow }>(
+    monitorPath(`/positions/${encodeURIComponent(id)}`),
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+
+export const postMonitorClosePosition = (id: string) =>
+  apiFetch<{ ok: boolean; positionId: string }>(
+    monitorPath(`/positions/${encodeURIComponent(id)}/close`),
+    { method: "POST" },
+  );
+
+export const postMonitorCloseAll = () =>
+  apiFetch<{ ok: boolean }>(monitorPath("/close-all"), { method: "POST" });
+
+export const postMonitorHidePosition = (body: { tokenId: string; sideLabel: string }) =>
+  apiFetch<{ ok: boolean }>(monitorPath("/hidden-positions"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+export const getMonitorRuntimeLogs = (limit = 100) =>
+  apiFetch<{ logs: RiskRuntimeLogEnvelope[] }>(`${monitorPath("/runtime-logs")}?limit=${limit}`);

@@ -11,9 +11,10 @@ import {
   markUpstreamReconnecting,
   subscribeWSConnectionLog,
 } from "@/lib/wsConnectionLog";
-import { getOpenRiskPositionCount } from "@/hooks/useRiskControlCache";
+import { getOpenMonitorPositionCount } from "@/hooks/useMonitorCache";
 import { getWSConfig } from "@/hooks/useWSConfig";
-import { getWSStatus, postWSReconnect } from "@/lib/api";
+import { requestMonitorReconnect } from "@/lib/monitor/coordinator";
+import { getConnectivitySnapshot, postWSReconnect } from "@/lib/api";
 
 const DISCOVERY_BASE_MS = 1000;
 const DISCOVERY_MAX_MS = 10_000;
@@ -203,7 +204,7 @@ async function pollWSStatusOnce() {
   wsStatusAbortController = new AbortController();
   wsStatusInflight = (async () => {
     try {
-      const st = await getWSStatus({ signal: wsStatusAbortController!.signal });
+      const st = await getConnectivitySnapshot({ signal: wsStatusAbortController!.signal });
       applyUpstreamPolyStatus(
         {
           polyOrderbookConnected: st.polyOrderbookConnected,
@@ -219,17 +220,32 @@ async function pollWSStatusOnce() {
         },
         {
           fromRest: true,
-          openPositionsCount: st.openPositionsCount ?? getOpenRiskPositionCount(),
+          openPositionsCount: st.openPositionsCount ?? getOpenMonitorPositionCount(),
         },
       );
       if (!cfg.wsAutoRequestUpstreamReconnect) return;
-      const openN = st.openPositionsCount ?? getOpenRiskPositionCount();
+      const openN = st.openPositionsCount ?? getOpenMonitorPositionCount();
       const obRequired = openN > 0;
-      if (obRequired && st.polyOrderbookConnected === false) {
-        void requestUpstreamReconnect("orderbook", { nextRetryAt: st.orderbookNextRetryAt });
+      const clientOwned = st.connectivityOwner === "client";
+      // Browser-direct CLOB: coordinator + polymarket-websocket-client already auto-reconnect.
+      // Do not tear down in-flight connections while status is "connecting/reconnecting".
+      if (
+        obRequired &&
+        st.polyOrderbookConnected === false &&
+        st.polyOrderbookConnecting !== true
+      ) {
+        if (clientOwned) {
+          requestMonitorReconnect("orderbook");
+        } else {
+          void requestUpstreamReconnect("orderbook", { nextRetryAt: st.orderbookNextRetryAt });
+        }
       }
-      if (st.polyUserConnected === false) {
-        void requestUpstreamReconnect("user", { nextRetryAt: st.userNextRetryAt });
+      if (st.polyUserConnected === false && st.polyUserConnecting !== true) {
+        if (clientOwned) {
+          requestMonitorReconnect("user");
+        } else {
+          void requestUpstreamReconnect("user", { nextRetryAt: st.userNextRetryAt });
+        }
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -297,30 +313,14 @@ function installWSStatusBootstrap() {
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("focus", onFocus);
 
-  const cfg = getWSConfig();
-  const steadyPollMs = cfg.wsRiskPollIntervalSec * 1000;
-
-  // Steady state polling
+  // Fallback REST poll only (push via connectivity_snapshot is primary).
+  const FALLBACK_POLL_MS = 60_000;
   setInterval(() => {
     if (pollHidden) return;
     void pollWSStatusOnce();
-  }, steadyPollMs);
+  }, FALLBACK_POLL_MS);
 
-  // Startup burst: poll more aggressively for the first 90s so we catch
-  // sidecar initialization / upstream reconnect quickly without waiting
-  // for the discovery backoff to grow.
-  const BOOTSTRAP_BURST_MS = 3_000;
-  const BOOTSTRAP_BURST_DURATION_MS = 90_000;
-  let bootstrapTick = 0;
-  const bootstrapBurst = setInterval(() => {
-    if (pollHidden) return;
-    void pollWSStatusOnce();
-    bootstrapTick += BOOTSTRAP_BURST_MS;
-    if (bootstrapTick >= BOOTSTRAP_BURST_DURATION_MS) {
-      clearInterval(bootstrapBurst);
-    }
-  }, BOOTSTRAP_BURST_MS);
-
+  void pollWSStatusOnce();
   startWSDiscovery();
 }
 
@@ -336,7 +336,9 @@ export function useGlobalWSStatus() {
   return {
     channels: snapshots,
     reconnectRelay: () => riskWsBus.reconnect(true),
-    reconnectUpstream: (channel: "orderbook" | "user") =>
-      requestUpstreamReconnect(channel, { force: true }),
+    reconnectUpstream: (channel: "orderbook" | "user") => {
+      requestMonitorReconnect(channel);
+      void requestUpstreamReconnect(channel, { force: true });
+    },
   };
 }

@@ -1,14 +1,13 @@
 import { useEffect, useState, useCallback } from "react";
 import {
-  getRiskBookSubscriptions,
-  getRiskPositions,
-  getRiskTasks,
-  postRiskClosePosition,
+  getMonitorPositions,
+  getMonitorTasks,
   type RiskBookSubscriptionStatus,
   type RiskPositionRow,
   type RiskPositionsMeta,
   type RiskTaskRow,
 } from "@/lib/api";
+import { monitorCoordinator } from "@/lib/monitor/coordinator";
 import { floorCents1, trailingStopCentsFromHW } from "@/lib/cents";
 import { bestBidCentsFromBookFrame, topOfBookMarkCents } from "@/lib/riskBook";
 import {
@@ -62,120 +61,101 @@ const BOOK_SUB_STALE_MS = 15_000;
 const BOOK_SUB_RECONNECT_DEBOUNCE_MS = 10_000;
 const BOOK_SUB_POLL_MS = 8_000;
 
-const STOP_LOSS_CLOSE_COOLDOWN_MS = 30_000;
-
-type StopLossCloseGuard = {
-  inflight: Promise<unknown> | null;
-  lastAttemptMs: number;
-  lastTriggerKey: string;
-};
-
-const stopLossCloseGuard = new Map<string, StopLossCloseGuard>();
-
-function stopLossTriggerKey(pos: RiskPositionRow, triggerPx: number, trail: number): string {
-  return `${pos.status}|${triggerPx}|${trail}|${floorCents1(pos.highWaterCents)}`;
-}
-
-function hasPendingCloseTask(positionId: string): boolean {
-  return cache.tasks.some(
-    (t) =>
-      t.positionId === positionId &&
-      t.type === "close_position" &&
-      (t.status === "pending" || t.status === "running"),
-  );
-}
-
-function pruneStopLossCloseGuards(positions: RiskPositionRow[]) {
-  const openIds = new Set(positions.filter((p) => p.status === "open").map((p) => p.id));
-  for (const id of stopLossCloseGuard.keys()) {
-    if (!openIds.has(id)) stopLossCloseGuard.delete(id);
-  }
-}
-
-function maybeTriggerStopLossClose(pos: RiskPositionRow, triggerPx: number, trail: number): void {
-  const triggerFloored = floorCents1(triggerPx);
-  const trailFloored = floorCents1(trail);
-  if (pos.status !== "open" || triggerFloored <= 0 || triggerFloored > trailFloored) return;
-  if (hasPendingCloseTask(pos.id)) return;
-
-  const key = stopLossTriggerKey(pos, triggerFloored, trailFloored);
-  let guard = stopLossCloseGuard.get(pos.id);
-  if (!guard) {
-    guard = { inflight: null, lastAttemptMs: 0, lastTriggerKey: "" };
-    stopLossCloseGuard.set(pos.id, guard);
-  }
-  if (guard.inflight) return;
-
+function bookSubRowForToken(tid: string, lastFrameMs?: number): RiskBookSubscriptionStatus {
   const now = Date.now();
-  if (now - guard.lastAttemptMs < STOP_LOSS_CLOSE_COOLDOWN_MS && guard.lastTriggerKey === key) {
-    return;
-  }
+  const lastMs = lastFrameMs ?? bookSubByToken.get(tid)?.lastFrameMs ?? 0;
+  const obLive = monitorCoordinator.isOrderbookConnected();
+  const stale = !obLive || lastMs <= 0 || now - lastMs > BOOK_SUB_STALE_MS;
+  return {
+    tokenId: tid,
+    clientSubscribed: true,
+    upstreamSubscribed: obLive,
+    clientRefs: 1,
+    stale,
+    lastFrameMs: lastMs > 0 ? lastMs : undefined,
+  };
+}
 
-  guard.lastAttemptMs = now;
-  guard.lastTriggerKey = key;
-  console.warn(
-    `[Risk Insurance] Frontend detected stop-loss trigger for ${pos.title}: ref ${triggerFloored} <= trail ${trailFloored}. Triggering close...`,
+function syncConnectionFromCoordinator() {
+  const ob = monitorCoordinator.isOrderbookConnected();
+  const obWas = cache.polyOrderbookConnected;
+  cache.polyOrderbookConnected = ob;
+  cache.polyUserConnected = monitorCoordinator.isUserConnected();
+  if (ob !== obWas) {
+    if (ob) syncBookSubMeta();
+    else {
+      bookSubByToken.clear();
+      attachBookSubToPositions();
+      cache.bookSubByToken = {};
+      notifySubscribers();
+    }
+  } else if (ob) {
+    refreshBookSubUpstreamFlags();
+  }
+}
+
+/** Keep row-level bookSub in sync when OB is live (avoids stale upstreamSubscribed). */
+function refreshBookSubUpstreamFlags() {
+  const obLive = monitorCoordinator.isOrderbookConnected();
+  if (!obLive) return;
+  let changed = false;
+  for (const [tid, row] of bookSubByToken) {
+    if (!row.upstreamSubscribed || row.stale) {
+      const lastMs = row.lastFrameMs ?? Date.now();
+      bookSubByToken.set(tid, bookSubRowForToken(tid, lastMs));
+      changed = true;
+    }
+  }
+  if (changed) {
+    attachBookSubToPositions();
+    cache.bookSubByToken = Object.fromEntries(bookSubByToken.entries());
+    notifySubscribers();
+  }
+}
+
+function attachBookSubToPositions() {
+  for (const pos of cache.positions) {
+    if (!pos.tokenId) continue;
+    const tid = normalizeTokenId(pos.tokenId);
+    const row = bookSubByToken.get(tid);
+    if (row) {
+      pos.bookSub = row;
+    } else {
+      delete pos.bookSub;
+    }
+  }
+}
+
+function syncBookSubMeta() {
+  const now = Date.now();
+  const subscribed = new Set(
+    monitorCoordinator.getSubscribedTokens().map((t) => normalizeTokenId(t)),
   );
-  guard.inflight = postRiskClosePosition(pos.id)
-    .catch((err) => {
-      console.error(`[Risk Insurance] Frontend stop-loss trigger failed for ${pos.id}:`, err);
-    })
-    .finally(() => {
-      guard!.inflight = null;
-    });
-}
+  const seen = new Set<string>();
 
-function resubscribeTokenBook(tid: string) {
-  const subs = tokenSubs.get(tid);
-  subs?.unsubDash();
-  tokenSubs.delete(tid);
-  const unsubDash = riskWsBus.subscribePolyBook(tid, handlePolyBook);
-  tokenSubs.set(tid, { unsubDash });
-  markTokenSubscribed(tid);
-  console.warn(`[Risk Guardian] Re-subscribed book WS for ${tid}`);
-}
-
-function reconcileTokenBookSub(tid: string) {
-  if (!cache.polyOrderbookConnected) return;
-  const sub = bookSubByToken.get(tid);
-  const local = riskWsBus.getPolyBookLocalState(tid);
-  const lastMs = Math.max(sub?.lastFrameMs ?? 0, local.lastFrameMs ?? 0);
-  const needsReconnect =
-    !local.subscribed ||
-    sub?.stale === true ||
-    lastMs === 0 ||
-    Date.now() - lastMs > BOOK_SUB_STALE_MS;
-  if (!needsReconnect) return;
-
-  const lastReconnect = bookReconnectLastAt.get(tid) ?? 0;
-  if (Date.now() - lastReconnect < BOOK_SUB_RECONNECT_DEBOUNCE_MS) return;
-  bookReconnectLastAt.set(tid, Date.now());
-
-  if (local.subscribed) {
-    riskWsBus.resendPolyBookSubscribe(tid);
-    console.warn(`[Risk Guardian] Re-sent subscribePolyBook for stale ${tid}`);
-    return;
+  for (const tid of subscribed) {
+    seen.add(tid);
+    const lastMs = Math.max(bookSubByToken.get(tid)?.lastFrameMs ?? 0, now);
+    bookSubByToken.set(tid, bookSubRowForToken(tid, lastMs));
   }
-  resubscribeTokenBook(tid);
-}
 
-function reconcileOpenBookSubs() {
-  if (!cache.polyOrderbookConnected) return;
-  const openTokens = Array.from(
-    new Set(
-      cache.positions
-        .filter((p) => p.status === "open" && p.tokenId)
-        .map((p) => normalizeTokenId(p.tokenId)),
-    ),
-  );
-  for (const tid of openTokens) {
-    reconcileTokenBookSub(tid);
+  for (const pos of cache.positions) {
+    if (pos.status !== "open" || !pos.tokenId) continue;
+    const tid = normalizeTokenId(pos.tokenId);
+    if (!tokenBookMap.has(tid)) continue;
+    seen.add(tid);
+    const lastMs = Math.max(bookSubByToken.get(tid)?.lastFrameMs ?? 0, now);
+    bookSubByToken.set(tid, bookSubRowForToken(tid, lastMs));
   }
-}
 
-let bookSubPollInterval: ReturnType<typeof setInterval> | null = null;
-let bookSubPollRefCount = 0;
-let refreshBookSubsInflight: Promise<void> | null = null;
+  for (const tid of bookSubByToken.keys()) {
+    if (!seen.has(tid)) bookSubByToken.delete(tid);
+  }
+
+  attachBookSubToPositions();
+  cache.bookSubByToken = Object.fromEntries(bookSubByToken.entries());
+  notifySubscribers();
+}
 
 function notifySubscribers() {
   cache.bookSubByToken = Object.fromEntries(bookSubByToken.entries());
@@ -285,11 +265,6 @@ function updatePositionsFromBook() {
       changed = true;
     }
 
-    const triggerPx = floorCents1(bid != null && bid > 0 ? bid : (mark ?? 0));
-    const trailFloored = floorCents1(trail);
-    if (triggerPx > 0 && triggerPx <= trailFloored && pos.status === "open") {
-      maybeTriggerStopLossClose(pos, triggerPx, trailFloored);
-    }
   }
   if (changed) {
     cache.lastRefresh = new Date();
@@ -313,7 +288,6 @@ function mergePositionRows(rows: RiskPositionRow[]): RiskPositionRow[] {
 
 function applyPositionSnapshot(rows: RiskPositionRow[], meta?: RiskPositionsMeta | null) {
   cache.positions = mergePositionRows(rows);
-  pruneStopLossCloseGuards(cache.positions);
   if (meta !== undefined) {
     cache.meta = meta;
   }
@@ -321,6 +295,7 @@ function applyPositionSnapshot(rows: RiskPositionRow[], meta?: RiskPositionsMeta
   cache.loading = false;
   cache.error = null;
   updatePositionsFromBook();
+  attachBookSubToPositions();
   notifySubscribers();
 }
 
@@ -360,7 +335,7 @@ async function refreshPositions() {
   }
   refreshPositionsInflight = (async () => {
     try {
-      const p = await getRiskPositions();
+      const p = await getMonitorPositions();
       const rows = p.positions ?? [];
       if (p.stale && rows.length === 0 && cache.positions.length > 0) {
         return;
@@ -373,6 +348,7 @@ async function refreshPositions() {
         return;
       }
       applyPositionSnapshot(rows, p.meta ?? null);
+      syncBookSubMeta();
     } catch (err) {
       console.error("Failed to refresh positions:", err);
     }
@@ -412,13 +388,13 @@ function fetchRiskData(silent = false) {
   }
 
   fetchRiskDataInflight = refreshPositions()
-    .then(() => getRiskTasks(50))
+    .then(() => getMonitorTasks(50))
     .then((t) => {
       cache.tasks = Array.isArray(t.tasks) ? t.tasks : [];
     })
     .catch((err) => {
       cache.loading = false;
-      cache.error = err instanceof Error ? err.message : "加载风控数据失败";
+      cache.error = err instanceof Error ? err.message : "加载监控数据失败";
     })
     .finally(() => {
       fetchRiskDataInflight = null;
@@ -454,86 +430,6 @@ function applyRestBookFrame(tokenId: string, frame: PolyBookFrame, _resp: RiskBo
   updatePositionsFromBook();
 }
 
-async function refreshBookSubscriptions() {
-  if (refreshBookSubsInflight) return refreshBookSubsInflight;
-  refreshBookSubsInflight = (async () => {
-    const openTokens = Array.from(
-      new Set(
-        cache.positions
-          .filter((p) => p.status === "open" && p.tokenId)
-          .map((p) => normalizeTokenId(p.tokenId)),
-      ),
-    );
-    if (openTokens.length === 0) {
-      if (bookSubByToken.size > 0) {
-        bookSubByToken.clear();
-        cache.bookSubByToken = {};
-        notifySubscribers();
-      }
-      return;
-    }
-    try {
-      const resp = await getRiskBookSubscriptions(openTokens);
-      const seen = new Set<string>();
-      for (const sub of resp.subscriptions ?? []) {
-        const tid = sub.tokenId ? normalizeTokenId(sub.tokenId) : "";
-        if (!tid) continue;
-        seen.add(tid);
-        const local = riskWsBus.getPolyBookLocalState(tid);
-        const lastFrameMs = Math.max(sub.lastFrameMs ?? 0, local.lastFrameMs ?? 0) || undefined;
-        const stale =
-          !local.subscribed ||
-          !sub.upstreamSubscribed ||
-          sub.stale ||
-          lastFrameMs == null ||
-          Date.now() - lastFrameMs > BOOK_SUB_STALE_MS;
-        bookSubByToken.set(tid, {
-          ...sub,
-          tokenId: tid,
-          clientSubscribed: local.subscribed || sub.clientSubscribed,
-          clientRefs: Math.max(sub.clientRefs, local.subscribed ? 1 : 0),
-          lastFrameMs,
-          stale,
-        });
-      }
-      for (const tid of bookSubByToken.keys()) {
-        if (!seen.has(tid)) bookSubByToken.delete(tid);
-      }
-      for (const pos of cache.positions) {
-        if (!pos.tokenId) continue;
-        const tid = normalizeTokenId(pos.tokenId);
-        const row = bookSubByToken.get(tid);
-        if (row) pos.bookSub = row;
-      }
-      cache.bookSubByToken = Object.fromEntries(bookSubByToken.entries());
-      reconcileOpenBookSubs();
-      notifySubscribers();
-    } catch (err) {
-      console.warn("[Risk Guardian] book-subscriptions poll failed:", err);
-    }
-  })().finally(() => {
-    refreshBookSubsInflight = null;
-  });
-  return refreshBookSubsInflight;
-}
-
-function startBookSubPoll() {
-  bookSubPollRefCount += 1;
-  if (bookSubPollInterval) return;
-  void refreshBookSubscriptions();
-  bookSubPollInterval = setInterval(() => {
-    if (positionsPollHidden) return;
-    void refreshBookSubscriptions();
-  }, BOOK_SUB_POLL_MS);
-}
-
-function stopBookSubPoll() {
-  bookSubPollRefCount = Math.max(0, bookSubPollRefCount - 1);
-  if (bookSubPollRefCount > 0 || !bookSubPollInterval) return;
-  clearInterval(bookSubPollInterval);
-  bookSubPollInterval = null;
-}
-
 function handlePolyBook(frame: PolyBookFrame) {
   const tid = normalizeTokenId(frame.tokenId);
   const existing = tokenBookMap.get(tid);
@@ -550,10 +446,15 @@ function handlePolyBook(frame: PolyBookFrame) {
   };
   tokenBookMap.set(tid, merged);
   onWsBookFrame(tid, merged);
+  const now = Date.now();
+  bookSubByToken.set(tid, bookSubRowForToken(tid, now));
+  attachBookSubToPositions();
+  cache.bookSubByToken = Object.fromEntries(bookSubByToken.entries());
   updatePositionsFromBook();
+  notifySubscribers();
 }
 
-function ensureRiskDataBootstrapped() {
+function ensureMonitorDataBootstrapped() {
   if (riskDataBootstrapped) return;
   riskDataBootstrapped = true;
   void fetchRiskData(true);
@@ -578,38 +479,42 @@ function stopPositionsPoll() {
 }
 
 /** Module-level refresh for external triggers (e.g. account switch). */
-export function refreshRiskData(silent = false) {
+export function refreshMonitorData(silent = false) {
   void fetchRiskData(silent);
 }
 
 /** Apply PATCH response without full-page loading spinner. */
-export function applyRiskPositionPatch(row: RiskPositionRow) {
+export function applyMonitorPositionPatch(row: RiskPositionRow) {
   mergePatchedPosition(row);
 }
 
-export function getOpenRiskPositionCount(): number {
+export function getOpenMonitorPositionCount(): number {
   return cache.positions.filter((p) => p.status === "open" && p.tokenId).length;
 }
 
-/** @deprecated Use useMonitorCache — risk page redirects to /monitor */
-export function useRiskControlCache() {
+export function useMonitorCache() {
   const [, setTick] = useState(0);
 
   useEffect(() => {
-    ensureRiskDataBootstrapped();
+    ensureMonitorDataBootstrapped();
+    const unsubBooks = monitorCoordinator.subscribeBooks((tid, frame) => handlePolyBook(frame));
+    const unsubCoordPos = monitorCoordinator.subscribePositions((rows) => {
+      cache.positions = mergePositionRows(rows);
+      syncBookSubMeta();
+      updatePositionsFromBook();
+    });
     // 当收到仓位更新通知时，必须重新拉取数据，而不仅仅是刷新 UI
     const unsubPosRisk = riskWsBus.onPositionUpdate(handlePositionUpdateMessage);
     const unsubPosDash = wsBus.onPositionUpdate(handlePositionUpdateMessage);
     const unsubRuntime = riskWsBus.onRuntimeLog(handleRiskRuntimePositionHint);
-    const unsubStatus = riskWsBus.onPolyStatus((msg) => {
-      if (msg.polyOrderbookConnected !== undefined) {
-        cache.polyOrderbookConnected = msg.polyOrderbookConnected;
-      }
-      if (msg.polyUserConnected !== undefined) {
-        cache.polyUserConnected = msg.polyUserConnected;
-      }
+    const syncConn = () => {
+      syncConnectionFromCoordinator();
       setTick((t) => t + 1);
-    });
+    };
+    syncConn();
+    const unsubConn = monitorCoordinator.subscribeConnection(syncConn);
+    const connIv = setInterval(syncConn, 2000);
+    // Monitor page uses browser-direct CLOB; ignore server poly_status for OB/USER flags.
 
     const unsubDashStatus = riskWsBus.onStatusChange(() => {
       setTick((t) => t + 1);
@@ -627,7 +532,6 @@ export function useRiskControlCache() {
     positionsPollHidden = document.visibilityState === "hidden";
 
     startPositionsPoll();
-    startBookSubPoll();
     const stopBookFallback = startBookFallbackPoller({
       getOpenTokenIds: () =>
         cache.positions
@@ -641,49 +545,17 @@ export function useRiskControlCache() {
       unsubPosRisk();
       unsubPosDash();
       unsubRuntime();
-      unsubStatus();
+      unsubConn();
       unsubDashStatus();
       sub();
       document.removeEventListener("visibilitychange", onVisibility);
       stopPositionsPoll();
-      stopBookSubPoll();
       stopBookFallback();
+      unsubBooks();
+      unsubCoordPos();
+      clearInterval(connIv);
     };
   }, []);
-
-  useEffect(() => {
-    // 订阅逻辑应基于当前有效的仓位列表
-    const openTokens = Array.from(
-      new Set(
-        cache.positions
-          .filter((p) => p.status === "open" && p.tokenId)
-          .map((p) => normalizeTokenId(p.tokenId)),
-      ),
-    );
-
-    for (const tid of openTokens) {
-      if (!tokenSubs.has(tid)) {
-        const unsubDash = riskWsBus.subscribePolyBook(tid, handlePolyBook);
-        tokenSubs.set(tid, { unsubDash });
-        markTokenSubscribed(tid);
-        console.log(`[Risk Guardian] Subscribed to ${tid} via server WS`);
-      }
-    }
-
-    for (const tid of tokenSubs.keys()) {
-      if (!openTokens.includes(tid)) {
-        const subs = tokenSubs.get(tid);
-        subs?.unsubDash();
-        tokenSubs.delete(tid);
-        tokenBookMap.delete(tid);
-        clearTokenBookMeta(tid);
-        bookSubByToken.delete(tid);
-        notifySubscribers();
-        console.log(`[Risk Guardian] Unsubscribed from ${tid}`);
-      }
-    }
-    void refreshBookSubscriptions();
-  }, [cache.positions]);
 
   const refresh = useCallback((silent = false) => {
     void fetchRiskData(silent);

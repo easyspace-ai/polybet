@@ -22,6 +22,10 @@ func (a *App) polyUserWSLoop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		if a.clientOwnsClobWS() {
+			sleepCtx(ctx, 10*time.Second)
+			continue
+		}
 		cl, err := polysession.ResolveAuthedCLOB(ctx, a.Cfg, a.Store)
 		if err != nil {
 			a.Log.WithFields(logx.Pairs("err", err.Error())).Warn("用户 CLOB WS：会话解析失败")

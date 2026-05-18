@@ -25,7 +25,15 @@ const defaultStopPct = store.DefaultStopLossPct
 // See TrailingStopCentsFromHWWithAbs for semantics.
 const botKeyStopLossAbsCents = "priceStopLossAbsCents"
 
+// TrailingStopActive reports whether trailing stop-loss should ratchet or fire.
+func TrailingStopActive(avgEntryCents, stopLossPct float64) bool {
+	return avgEntryCents > 0 && stopLossPct > 0
+}
+
 func resolveStopLossPct(ctx context.Context, st *storage.Backend, entryCents float64) float64 {
+	if entryCents <= 0 {
+		return 0
+	}
 	raw, ok, err := st.GetBotConfig(ctx, "priceStopLossRanges")
 	if err != nil || !ok || raw == "" {
 		return defaultStopPct
@@ -40,6 +48,30 @@ func resolveStopLossPct(ctx context.Context, st *storage.Backend, entryCents flo
 		}
 	}
 	return defaultStopPct
+}
+
+// shouldActivateTrailingStop applies band stop % when avg entry becomes known.
+func shouldActivateTrailingStop(posAvgEntryCents, posStopLossPct, entryCents float64) bool {
+	if entryCents <= 0 {
+		return false
+	}
+	if posAvgEntryCents <= 0 {
+		return true
+	}
+	return posStopLossPct <= 0
+}
+
+// activateTrailingStopFromEntry sets stop % from price bands and seeds high-water.
+func activateTrailingStopFromEntry(ctx context.Context, st *storage.Backend, positionID string, entryCents, existingHW float64) error {
+	stop := resolveStopLossPct(ctx, st, entryCents)
+	if stop <= 0 {
+		return nil
+	}
+	hw := FloorCents1(entryCents)
+	if existingHW > hw {
+		hw = FloorCents1(existingHW)
+	}
+	return st.UpdateRiskPositionStop(ctx, positionID, &stop, &hw)
 }
 
 // stopLossAbsCents reads the configured absolute cent-trail floor (0 disables).

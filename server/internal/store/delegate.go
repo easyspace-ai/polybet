@@ -20,6 +20,7 @@ type (
 	TradeQualityAggregate = badgerdb.TradeQualityAggregate
 	EventRealizedPnL      = badgerdb.EventRealizedPnL
 	LastTradeSummary      = badgerdb.LastTradeSummary
+	OfficialTradeDoc      = badgerdb.OfficialTradeDoc
 )
 
 // DefaultStopLossPct matches badgerdb.DefaultStopLossPct.
@@ -302,6 +303,14 @@ func (s *Store) RealizedPnLByEvent(ctx context.Context, accountID string, since 
 
 func (s *Store) ListRecentTradeQuality(ctx context.Context, accountID string, limit int) ([]TradeQuality, error) {
 	return s.kv().ListRecentTradeQuality(ctx, accountID, limit)
+}
+
+func (s *Store) UpsertOfficialTrades(ctx context.Context, accountID string, rows []OfficialTradeDoc) error {
+	return s.kv().UpsertOfficialTrades(ctx, accountID, rows)
+}
+
+func (s *Store) ListOfficialTrades(ctx context.Context, accountID string, limit int) ([]OfficialTradeDoc, error) {
+	return s.kv().ListOfficialTrades(ctx, accountID, limit)
 }
 
 func (s *Store) GetActivePolymarketAccount(ctx context.Context) (*PolymarketAccount, error) {

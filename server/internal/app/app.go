@@ -13,6 +13,9 @@ import (
 	"github.com/easyspace-ai/polysdk/pkg/transport"
 	"github.com/sirupsen/logrus"
 
+	appconn "github.com/easyspace-ai/polybet/internal/application/connectivity"
+	appmonitor "github.com/easyspace-ai/polybet/internal/application/monitor"
+	domainconn "github.com/easyspace-ai/polybet/internal/domain/connectivity"
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/debounce"
@@ -64,6 +67,9 @@ type App struct {
 	InitService  *initsvc.Service
 	LogService   *logsvc.Service
 	StopLoss     *stoplossengine.Engine
+	ConnRegistry *domainconn.Registry
+	Conn         *appconn.Service
+	Monitor      *appmonitor.Service
 	userStreamMu sync.Mutex
 	activeUserWS *marketstream.UserStream
 	jobs         *workqueue.Runner
@@ -122,11 +128,16 @@ func New(cfg *config.Config, be *storage.Backend, log *logrus.Logger) *App {
 	initSvc := initsvc.New(cfg, be, hub, risk, log)
 	logSvc := logsvc.New()
 
+	connReg := domainconn.NewRegistry()
+	connSvc := appconn.NewService(connReg, hub, riskHub)
+	monitorSvc := appmonitor.NewService(cfg, be, risk, connSvc, hub, riskHub)
+
 	a := &App{
 		Cfg: cfg, Store: be, Cache: cache, Hub: hub, RiskHub: riskHub, RiskRuntime: riskRuntime, Risk: risk,
 		SyncEngine: syncEng, SportsCache: sportsCache, Debounce: debounce.New(120 * time.Millisecond), Log: log,
 		BalanceCache: balanceCache, RiskCache: riskCache, InitService: initSvc,
 		LogService: logSvc,
+		ConnRegistry: connReg, Conn: connSvc, Monitor: monitorSvc,
 		restartCh:  make(chan struct{}, 1),
 		jobs:       workqueue.New(),
 		polyBookRefs: newPolyBookRefs(),
@@ -135,6 +146,7 @@ func New(cfg *config.Config, be *storage.Backend, log *logrus.Logger) *App {
 		func() { a.rebuildAndBroadcastCache() },
 		func() { a.broadcastPolyStatus() },
 	)
+	a.StopLoss.SetClientOwnsClobWS(a.clientOwnsClobWS)
 	return a
 }
 
@@ -158,6 +170,7 @@ func (a *App) Run(ctx context.Context) error {
 		Cfg: a.Cfg, Store: a.Store, Cache: a.Cache, Hub: a.Hub, RiskHub: a.RiskHub, Risk: a.Risk, Debounce: a.Debounce,
 		BalanceCache: a.BalanceCache, RiskCache: a.RiskCache, InitService: a.InitService, LogService: a.LogService,
 		SportsCache: a.SportsCache, RiskRuntime: a.RiskRuntime,
+		Conn: a.Conn, Monitor: a.Monitor,
 		App: a,
 	}
 	engine := httpserver.NewRouter(deps)
@@ -257,6 +270,10 @@ func (a *App) Run(ctx context.Context) error {
 	}()
 	a.wg.Add(1)
 	go a.polyUserWSLoop(ctx)
+	a.wg.Add(1)
+	go a.Monitor.TaskWatcher().Run(ctx)
+	a.wg.Add(1)
+	go a.connectivitySyncLoop(ctx)
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()

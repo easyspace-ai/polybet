@@ -5,11 +5,19 @@
 //
 // If you see ECONNREFUSED 127.0.0.1:7633 or "ws proxy socket" EPIPE: the Go server was not
 // listening on that port (not started yet, wrong PORT, or process restarted). Start backend first.
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import tsConfigPaths from "vite-tsconfig-paths";
+
+const dashboardDir = path.dirname(fileURLToPath(import.meta.url));
+const polymarketWsClientSrc = path.resolve(
+  dashboardDir,
+  "../../packages/polymarket-websocket-client/src/index.ts",
+);
 
 const apiOrigin = process.env.VITE_DEV_API_ORIGIN || "http://127.0.0.1:7633";
 const wsOrigin = apiOrigin.replace(/^http/, "ws");
@@ -70,6 +78,13 @@ function attachQuietProxyHandlers(proxy: {
 
 export default defineConfig({
   plugins: [tanstackRouter(), react(), tailwindcss(), tsConfigPaths()],
+  resolve: {
+    alias: {
+      "polymarket-websocket-client": polymarketWsClientSrc,
+      "https-proxy-agent": path.resolve(dashboardDir, "src/shims/https-proxy-agent.ts"),
+      ws: path.resolve(dashboardDir, "src/shims/ws.ts"),
+    },
+  },
   server: {
     host: "127.0.0.1",
     port: 6688,

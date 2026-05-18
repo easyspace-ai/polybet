@@ -335,6 +335,17 @@ func stopTriggerReferenceCents(bidCents, askCents float64) float64 {
 // bid, or mark if bid empty) to the trail.
 func (s *Service) UpdateHighWaterAndMaybeQueueStop(ctx context.Context, p store.RiskPosition, bidCents, askCents float64) (hw float64, trail float64, cur *float64, err error) {
 	hw = FloorCents1(p.HighWaterCents)
+	if !TrailingStopActive(p.AvgEntryCents, p.StopLossPct) {
+		curVal := bidCents
+		if curVal <= 0 && askCents > 0 {
+			curVal = askCents
+		}
+		if curVal > 0 {
+			cur := curVal
+			return hw, 0, &cur, nil
+		}
+		return hw, 0, nil, nil
+	}
 	rawMark, allowed := s.ratchetMarkCents(ctx, p.TokenID, bidCents, askCents)
 	mark := FloorCents1(rawMark)
 	if allowed && mark > hw {
@@ -371,6 +382,18 @@ func (s *Service) UpdateHighWaterAndMaybeQueueStop(ctx context.Context, p store.
 // EnqueueClosePosition queues a manual close (same as Node enqueueClosePosition).
 func (s *Service) EnqueueClosePosition(ctx context.Context, positionID string) error {
 	return s.ensureCloseTask(ctx, positionID, "manual")
+}
+
+// EnqueueStopLossClose queues an automatic trailing stop-loss close.
+func (s *Service) EnqueueStopLossClose(ctx context.Context, positionID string) error {
+	pos, err := s.st.GetRiskPosition(ctx, positionID)
+	if err != nil || pos == nil {
+		return err
+	}
+	if !TrailingStopActive(pos.AvgEntryCents, pos.StopLossPct) {
+		return nil
+	}
+	return s.ensureCloseTask(ctx, positionID, "stop_loss")
 }
 
 // queueReason: "manual" | "stop_loss" | "" (silent, e.g. batch from close_all).

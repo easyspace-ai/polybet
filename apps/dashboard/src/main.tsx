@@ -5,6 +5,9 @@ import { getRouter } from "./router";
 
 import "./styles.css";
 import "@/hooks/useGlobalWSStatus";
+import { installMonitorCoordinator } from "@/lib/monitor/coordinator";
+
+installMonitorCoordinator();
 
 const root = document.getElementById("root");
 

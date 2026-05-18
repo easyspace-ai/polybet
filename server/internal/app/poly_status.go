@@ -35,6 +35,12 @@ func (a *App) broadcastPolyStatus() {
 	if a.RiskHub != nil {
 		a.RiskHub.BroadcastJSON(st)
 	}
+	if a.Monitor != nil {
+		a.Monitor.SyncRegistryFromRisk()
+	}
+	if a.Conn != nil {
+		a.Conn.BroadcastNow()
+	}
 }
 
 // broadcastPolyStatusAsync is for hot paths (manual reconnect) where blocking on
@@ -72,5 +78,11 @@ func (a *App) broadcastPolyStatusAsync() {
 	}
 	if a.RiskHub != nil {
 		a.RiskHub.BroadcastJSONAsync(st)
+	}
+	if a.Monitor != nil {
+		a.Monitor.SyncRegistryFromRisk()
+	}
+	if a.Conn != nil {
+		a.Conn.BroadcastNow()
 	}
 }

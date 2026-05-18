@@ -48,10 +48,10 @@ func docToRisk(p *RiskPosDoc) RiskPosition {
 	if strings.TrimSpace(p.OutcomeID) != "" {
 		out.OutcomeID = sql.NullString{String: p.OutcomeID, Valid: true}
 	}
-	if p.StopLossPct == 0 {
+	if p.StopLossPct == 0 && p.AvgEntryCents > 0 {
 		out.StopLossPct = DefaultStopLossPct
 	}
-	if p.HighWaterCents == 0 && p.AvgEntryCents != 0 {
+	if p.HighWaterCents == 0 && p.AvgEntryCents > 0 {
 		out.HighWaterCents = p.AvgEntryCents
 	}
 	return out
@@ -63,11 +63,11 @@ func riskToDoc(p *RiskPosition) *RiskPosDoc {
 		oc = p.OutcomeID.String
 	}
 	slp := p.StopLossPct
-	if slp <= 0 {
+	if slp <= 0 && p.AvgEntryCents > 0 {
 		slp = DefaultStopLossPct
 	}
 	hw := p.HighWaterCents
-	if hw == 0 {
+	if hw == 0 && p.AvgEntryCents > 0 {
 		hw = p.AvgEntryCents
 	}
 	return &RiskPosDoc{
@@ -326,10 +326,10 @@ func (d *DB) CreateRiskPosition(ctx context.Context, p *RiskPosition) error {
 			return err
 		}
 		doc.PositionSeq = seq
-		if doc.StopLossPct == 0 {
+		if doc.StopLossPct == 0 && doc.AvgEntryCents > 0 {
 			doc.StopLossPct = DefaultStopLossPct
 		}
-		if doc.HighWaterCents == 0 {
+		if doc.HighWaterCents == 0 && doc.AvgEntryCents > 0 {
 			doc.HighWaterCents = doc.AvgEntryCents
 		}
 		if err := d.writeRiskPos(txn, doc); err != nil {

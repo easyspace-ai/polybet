@@ -2,7 +2,7 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/logs")({
   beforeLoad: () => {
-    throw redirect({ to: "/risk", replace: true });
+    throw redirect({ to: "/monitor", replace: true });
   },
   component: () => null,
 });

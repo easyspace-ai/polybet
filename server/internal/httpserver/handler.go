@@ -17,6 +17,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 
+	appconn "github.com/easyspace-ai/polybet/internal/application/connectivity"
+	appmonitor "github.com/easyspace-ai/polybet/internal/application/monitor"
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/debounce"
@@ -53,6 +55,8 @@ type Handler struct {
 	logService   *logsvc.Service
 	sportsCache  *mktSync.SportsCache
 	riskRuntime  *riskruntime.Bus
+	conn         *appconn.Service
+	monitor      *appmonitor.Service
 	app          interface {
 		ScheduleInvalidateAndRebuildCache()
 		ScheduleRiskOfficialRefresh() bool
@@ -69,8 +73,6 @@ type Handler struct {
 		OpenRiskPositionCount(ctx context.Context) int
 		CachedOpenRiskPositionCount(maxAge time.Duration) (int, bool)
 	}
-	wsStatusSnap   *wsStatusSnap
-	stopWSStatusRefresher func()
 }
 
 func riskMetaForAPI(m risksvc.Meta) memcache.RiskMeta {
@@ -164,11 +166,11 @@ func NewHandler(d Deps) *Handler {
 		initService:  d.InitService,
 		logService:   d.LogService,
 		sportsCache:  d.SportsCache,
-		riskRuntime:  d.RiskRuntime,
-		app:          d.App,
-		wsStatusSnap: &wsStatusSnap{},
+		riskRuntime: d.RiskRuntime,
+		conn:        d.Conn,
+		monitor:     d.Monitor,
+		app:         d.App,
 	}
-	h.stopWSStatusRefresher = startWSStatusRefresher(h, wsStatusRefreshInterval)
 	return h
 }
 
@@ -382,10 +384,6 @@ func (h *Handler) handleStatus(c *gin.Context) {
 		"wsClients":  hubSize,
 		"serverTime": time.Now().Format("2006-01-02 15:04:05"),
 	})
-}
-
-func (h *Handler) handleWSStatus(c *gin.Context) {
-	c.JSON(200, h.wsStatusResponse(c.Request.Context()))
 }
 
 func (h *Handler) handleWSReconnect(c *gin.Context) {
@@ -821,6 +819,9 @@ func (h *Handler) handleActivateAccount(c *gin.Context) {
 	accountsCache.Delete("list")
 	polysession.InvalidateEnvCache()
 	h.app.ScheduleInvalidateAndRebuildCache()
+	if h.monitor != nil {
+		h.monitor.BroadcastAccountChanged(id)
+	}
 	c.JSON(200, gin.H{"ok": true, "id": id})
 }
 
@@ -992,10 +993,18 @@ func (h *Handler) handleRiskRuntimeLogs(c *gin.Context) {
 	c.JSON(200, gin.H{"logs": logs})
 }
 
+func queryRefreshOfficial(c *gin.Context) bool {
+	q := strings.TrimSpace(strings.ToLower(c.Query("refresh")))
+	return q == "1" || q == "true" || q == "yes"
+}
+
 func (h *Handler) handleStopLossHistory(c *gin.Context) {
 	limit := 50
 	if l, err := strconv.Atoi(c.DefaultQuery("limit", "50")); err == nil && l > 0 {
 		limit = l
+	}
+	if queryRefreshOfficial(c) && h.risk != nil {
+		_ = h.risk.SyncPositionsFromDataAPI(c.Request.Context(), "")
 	}
 	tasks, err := h.st.ListRiskTasksByReason(c, "close_position", "stop_loss", limit)
 	if err != nil {
@@ -1025,7 +1034,15 @@ func (h *Handler) handleTradeHistory(c *gin.Context) {
 	if l, err := strconv.Atoi(c.DefaultQuery("limit", "50")); err == nil && l > 0 {
 		limit = l
 	}
-	trades, err := h.risk.ListOfficialTrades(c, limit)
+	var (
+		trades []map[string]any
+		err    error
+	)
+	if queryRefreshOfficial(c) {
+		trades, err = h.risk.SyncOfficialTradesFromAPI(c.Request.Context(), limit)
+	} else {
+		trades, err = h.risk.ListOfficialTradesCached(c.Request.Context(), limit)
+	}
 	if err != nil {
 		c.JSON(500, gin.H{"error": "list_failed", "message": err.Error()})
 		return
@@ -1336,6 +1353,9 @@ func (h *Handler) handleClosePosition(c *gin.Context) {
 		logrus.WithFields(logx.Pairs("request_id", rid, "position_id", pid, "err", err.Error())).Error("风控平仓：入队失败")
 		c.JSON(500, gin.H{"error": "enqueue_failed"})
 		return
+	}
+	if h.monitor != nil {
+		h.monitor.TaskWatcher().Register(pid)
 	}
 	c.JSON(200, gin.H{"ok": true, "positionId": pid})
 }

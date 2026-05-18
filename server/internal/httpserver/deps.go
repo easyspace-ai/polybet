@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	appconn "github.com/easyspace-ai/polybet/internal/application/connectivity"
+	appmonitor "github.com/easyspace-ai/polybet/internal/application/monitor"
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/debounce"
@@ -32,6 +34,8 @@ type Deps struct {
 	LogService   *logsvc.Service
 	SportsCache  *mktSync.SportsCache
 	RiskRuntime  *riskruntime.Bus
+	Conn         *appconn.Service
+	Monitor      *appmonitor.Service
 	App          interface {
 		ScheduleInvalidateAndRebuildCache()
 		ScheduleRiskOfficialRefresh() bool

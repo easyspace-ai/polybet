@@ -59,6 +59,16 @@ export interface PolyStatusMessage {
   wsEvents?: { channel?: string; at?: string; level?: string; message?: string }[];
 }
 
+export type ConnectivitySnapshotMessage = {
+  type: "connectivity_snapshot";
+  data: Record<string, unknown>;
+};
+
+export type MonitorAccountChangedMessage = {
+  type: "monitor_account_changed";
+  accountId?: string;
+};
+
 export interface PolyOddsEntry {
   tokenId: string;
   takerOdds: number;
@@ -85,6 +95,8 @@ type IncomingMessage =
   | { type: "pong" }
   | { type: "risk_runtime_log"; data: RiskRuntimeLogEnvelope }
   | { type: "risk_runtime_log_snapshot"; data: RiskRuntimeLogEnvelope[] }
+  | ConnectivitySnapshotMessage
+  | MonitorAccountChangedMessage
   | MarketLifecycleMessage;
 
 export type RiskRuntimeLogMessage =
@@ -104,6 +116,7 @@ type PolyStatusListener = (msg: PolyStatusMessage) => void;
 type BalanceUpdateListener = (msg: BalanceUpdateMessage) => void;
 type PositionUpdateListener = (msg: PositionUpdateMessage) => void;
 type RuntimeLogListener = (msg: RiskRuntimeLogMessage) => void;
+type MonitorAccountListener = (msg: MonitorAccountChangedMessage) => void;
 
 const WS_URL = (() => {
   if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL as string;
@@ -155,6 +168,7 @@ class WsBus {
   private balanceUpdateListeners: BalanceUpdateListener[] = [];
   private positionUpdateListeners: PositionUpdateListener[] = [];
   private runtimeLogListeners: RuntimeLogListener[] = [];
+  private monitorAccountListeners: MonitorAccountListener[] = [];
 
   private oddsSubRefs = new Set<string>();
   private bookSubRefs = new Set<string>();
@@ -380,6 +394,24 @@ class WsBus {
     } else if (msg.type === "poly_status") {
       applyUpstreamPolyStatus(msg);
       for (const l of this.polyStatusListeners) l(msg);
+    } else if (msg.type === "connectivity_snapshot") {
+      const d = msg.data ?? {};
+      applyUpstreamPolyStatus(
+        {
+          polyOrderbookConnected: d.polyOrderbookConnected === true,
+          polyUserConnected: d.polyUserConnected === true,
+          polyOrderbookConnecting: d.polyOrderbookConnecting === true,
+          polyUserConnecting: d.polyUserConnecting === true,
+          orderbookNextRetryAt: d.orderbookNextRetryAt as number | undefined,
+          userNextRetryAt: d.userNextRetryAt as number | undefined,
+          orderbookReconnectAttempt: d.orderbookReconnectAttempt as number | undefined,
+          userReconnectAttempt: d.userReconnectAttempt as number | undefined,
+          userWsLastIssue: d.userWsLastIssue as string | undefined,
+        },
+        { fromRest: false, openPositionsCount: d.openPositionsCount as number | undefined },
+      );
+    } else if (msg.type === "monitor_account_changed") {
+      for (const l of this.monitorAccountListeners) l(msg);
     } else if (msg.type === "balance_update") {
       for (const l of this.balanceUpdateListeners) l(msg);
     } else if (msg.type === "position_update") {
@@ -436,6 +468,13 @@ class WsBus {
     this.runtimeLogListeners.push(l);
     return () => {
       this.runtimeLogListeners = this.runtimeLogListeners.filter((x) => x !== l);
+    };
+  }
+
+  onMonitorAccountChanged(l: MonitorAccountListener) {
+    this.monitorAccountListeners.push(l);
+    return () => {
+      this.monitorAccountListeners = this.monitorAccountListeners.filter((x) => x !== l);
     };
   }
 

@@ -210,7 +210,9 @@ func (s *Service) listRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 		var curPtr *float64
 		if readOnly || !ok {
 			hw = FloorCents1(p.HighWaterCents)
-			trail = s.trailingStopCents(ctx, hw, p.StopLossPct)
+			if TrailingStopActive(p.AvgEntryCents, p.StopLossPct) {
+				trail = s.trailingStopCents(ctx, hw, p.StopLossPct)
+			}
 			if ok {
 				curVal := bid
 				if curVal <= 0 && ask > 0 {
@@ -336,8 +338,12 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 			continue
 		}
 		if existing == nil {
-			// New position: high_water = avg_entry
-			stop := resolveStopLossPct(ctx, s.st, entryCents)
+			// New position: defer trailing stop until avg entry is known.
+			var stop, hw float64
+			if entryCents > 0 {
+				stop = resolveStopLossPct(ctx, s.st, entryCents)
+				hw = FloorCents1(entryCents)
+			}
 			err = s.st.CreateRiskPosition(ctx, &store.RiskPosition{
 				ID:             uuid.NewString(),
 				Platform:       "polymarket",
@@ -350,7 +356,7 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 				AvgEntryCents:  entryCents,
 				SizeShares:     size,
 				CostUSD:        costUsd,
-				HighWaterCents: FloorCents1(entryCents),
+				HighWaterCents: hw,
 				StopLossPct:    stop,
 				Source:         "polymarket_api",
 				Status:         "open",
@@ -377,6 +383,9 @@ func (s *Service) SyncPositionsFromDataAPI(ctx context.Context, accountID string
 			}
 			if existing.AvgEntryCents != entryCents {
 				_ = s.st.UpdateRiskPositionAvgEntry(ctx, existing.ID, entryCents)
+			}
+			if shouldActivateTrailingStop(existing.AvgEntryCents, existing.StopLossPct, entryCents) {
+				_ = activateTrailingStopFromEntry(ctx, s.st, existing.ID, entryCents, existing.HighWaterCents)
 			}
 			if existing.Title != pos.Title {
 				_ = s.st.UpdateRiskPositionTitle(ctx, existing.ID, strings.TrimSpace(pos.Title), strings.TrimSpace(pos.Outcome))
@@ -411,7 +420,27 @@ func (s *Service) SyncRiskFromRESTTrades(ctx context.Context) error {
 	return s.SyncPositionsFromDataAPI(ctx, "")
 }
 
-func (s *Service) ListOfficialTrades(ctx context.Context, limit int) ([]map[string]any, error) {
+func officialTradeMapsFromDocs(docs []store.OfficialTradeDoc) []map[string]any {
+	out := make([]map[string]any, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, map[string]any{
+			"id":          d.ID,
+			"side":        d.Side,
+			"title":       d.Title,
+			"outcome":     d.Outcome,
+			"size":        d.Size,
+			"price":       d.Price,
+			"priceCents":  d.PriceCents,
+			"timestamp":   d.Timestamp,
+			"icon":        d.Icon,
+			"polySlug":    d.PolySlug,
+			"officialUrl": d.OfficialURL,
+		})
+	}
+	return out
+}
+
+func (s *Service) fetchOfficialTradesFromAPI(ctx context.Context, limit int) ([]store.OfficialTradeDoc, error) {
 	acct, err := s.st.GetActivePolymarketAccount(ctx)
 	if err != nil || acct == nil || strings.TrimSpace(acct.FunderAddress) == "" {
 		return nil, fmt.Errorf("no active account")
@@ -427,7 +456,7 @@ func (s *Service) ListOfficialTrades(ctx context.Context, limit int) ([]map[stri
 	if err != nil {
 		return nil, fmt.Errorf("trades api: %w", err)
 	}
-	out := make([]map[string]any, 0, len(trades))
+	out := make([]store.OfficialTradeDoc, 0, len(trades))
 	for _, t := range trades {
 		size, _ := t.Size.Float64()
 		price, _ := t.Price.Float64()
@@ -440,21 +469,52 @@ func (s *Service) ListOfficialTrades(ctx context.Context, limit int) ([]map[stri
 			t.Slug,
 		)
 		polySlug := normalizePolySlug(firstNonEmpty(t.EventSlug, t.Slug))
-		out = append(out, map[string]any{
-			"id":          t.TransactionHash.Hex(),
-			"side":        strings.ToLower(string(t.Side)),
-			"title":       t.Title,
-			"outcome":     t.Outcome,
-			"size":        size,
-			"price":       price,
-			"priceCents":  CentsFromPrice01(price),
-			"timestamp":   time.Unix(t.Timestamp, 0).UTC().Format(time.RFC3339),
-			"icon":        t.Icon,
-			"polySlug":    polySlug,
-			"officialUrl": eventURL,
+		out = append(out, store.OfficialTradeDoc{
+			ID:          t.TransactionHash.Hex(),
+			AccountID:   acct.ID,
+			Side:        strings.ToLower(string(t.Side)),
+			Title:       t.Title,
+			Outcome:     t.Outcome,
+			Size:        size,
+			Price:       price,
+			PriceCents:  CentsFromPrice01(price),
+			Timestamp:   time.Unix(t.Timestamp, 0).UTC().Format(time.RFC3339),
+			Icon:        t.Icon,
+			PolySlug:    polySlug,
+			OfficialURL: eventURL,
 		})
 	}
 	return out, nil
+}
+
+// ListOfficialTradesCached returns the last synced official fills from local storage.
+func (s *Service) ListOfficialTradesCached(ctx context.Context, limit int) ([]map[string]any, error) {
+	acct, err := s.st.GetActivePolymarketAccount(ctx)
+	if err != nil || acct == nil {
+		return nil, fmt.Errorf("no active account")
+	}
+	docs, err := s.st.ListOfficialTrades(ctx, acct.ID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return officialTradeMapsFromDocs(docs), nil
+}
+
+// SyncOfficialTradesFromAPI pulls Polymarket fills, persists them, and returns the list.
+func (s *Service) SyncOfficialTradesFromAPI(ctx context.Context, limit int) ([]map[string]any, error) {
+	docs, err := s.fetchOfficialTradesFromAPI(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(docs) > 0 {
+		acct, _ := s.st.GetActivePolymarketAccount(ctx)
+		if acct != nil {
+			if err := s.st.UpsertOfficialTrades(ctx, acct.ID, docs); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return officialTradeMapsFromDocs(docs), nil
 }
 
 // OfficialURLForRiskPosition resolves a direct Polymarket link for a stored risk row.

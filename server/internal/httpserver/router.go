@@ -99,8 +99,33 @@ func NewRouter(d Deps) *gin.Engine {
 
 		// Status
 		api.GET("/status", h.handleStatus)
+		api.GET("/connectivity/snapshot", h.handleConnectivitySnapshot)
 		api.GET("/ws/status", h.handleWSStatus)
 		api.POST("/ws/reconnect", h.handleWSReconnect)
+
+		// Monitor (next-gen risk UI + client CLOB WS)
+		api.GET("/monitor/clob-session", h.handleMonitorClobSession)
+		api.POST("/monitor/heartbeat", h.handleMonitorHeartbeat)
+		api.POST("/monitor/stop-loss/trigger", h.handleMonitorStopLossTrigger)
+		api.POST("/monitor/positions/sync", h.handleMonitorPositionsSync)
+		// Aliases: same handlers as /api/risk/* during migration
+		api.GET("/monitor/positions", h.handleRiskPositions)
+		api.GET("/monitor/book", h.handleRiskBook)
+		api.GET("/monitor/book-subscriptions", h.handleRiskBookSubscriptions)
+		api.POST("/monitor/refresh", h.handleRiskRefresh)
+		api.GET("/monitor/tasks", h.handleRiskTasks)
+		api.POST("/monitor/tasks/clear", h.handleRiskTasksClear)
+		api.GET("/monitor/runtime-logs", h.handleRiskRuntimeLogs)
+		api.GET("/monitor/stop-loss-history", h.handleStopLossHistory)
+		api.GET("/monitor/trade-history", h.handleTradeHistory)
+		api.PATCH("/monitor/positions/:id", h.handlePatchRiskPosition)
+		api.POST("/monitor/positions/:id/close", h.handleClosePosition)
+		api.POST("/monitor/close-all", h.handleCloseAll)
+		api.GET("/monitor/hidden-positions", h.handleRiskHiddenList)
+		api.POST("/monitor/hidden-positions", h.handleRiskHiddenPost)
+		api.DELETE("/monitor/hidden-positions", h.handleRiskHiddenDelete)
+		api.GET("/monitor/gate", h.handleRiskGate)
+		api.POST("/monitor/kill-switch/clear", h.handleRiskKillSwitchClear)
 
 		// Cache & restart
 		api.POST("/cache/refresh", h.handleCacheRefresh)

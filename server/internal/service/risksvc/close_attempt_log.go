@@ -31,7 +31,6 @@ type closeAttemptExtras struct {
 	// dashboard can render closure outcomes inline. Set by the close
 	// paths after ExecuteFOK(/FAK)Sell succeeds.
 	RealizedPnLUSD float64
->>>>>>> dcdb3c8 (feat(risk): SELL slippage cap so FOK/FAK refuses panic-dump prices)
 }
 
 // closeAttemptSnapshot is stored in risk_tasks.last_attempt_detail and returned to the API for replay.
