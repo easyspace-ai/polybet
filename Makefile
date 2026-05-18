@@ -58,6 +58,7 @@ deps:
 	pnpm install
 
 dashboard-build:
+	pnpm --filter polymarket-websocket-client build
 	pnpm --filter dashboard build
 
 dashboard-embed: dashboard-build
