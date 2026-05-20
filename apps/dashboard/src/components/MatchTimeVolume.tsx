@@ -1,4 +1,4 @@
-import { formatKickoffET } from '@/lib/kickoffTime';
+import { formatMatchupTime } from '@/lib/kickoffTime';
 import { formatVolumeAmount } from '@/lib/formatVolume';
 
 interface Props {
@@ -19,7 +19,7 @@ export function MatchTimeVolume({ startTime, eventVolume, compact = false }: Pro
       <div className="flex items-baseline gap-1.5">
         <span className={`${labelClass} text-muted-foreground shrink-0`}>开赛</span>
         <span className={`${timeClass} font-medium text-foreground tabular-nums`}>
-          {formatKickoffET(startTime)}
+          {formatMatchupTime(startTime)}
         </span>
       </div>
       <div className="flex items-baseline gap-1.5">

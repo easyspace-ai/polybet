@@ -107,9 +107,55 @@ func parseGammaTimeSports(raw string) (time.Time, bool) {
 // any downstream check that relies on start_time (e.g. the post-kickoff
 // open-block gate). Returning zero forces consumers to handle the
 // "unknown" case explicitly via IsKnownStartTime.
+func parseKickoffCandidate(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	iso := strings.Replace(raw, " ", "T", 1)
+	// Explicit timezone → absolute instant (RFC3339 / +00 / Z).
+	if hasTimezoneRe.MatchString(iso) {
+		if t, ok := parseGammaTime(raw); ok {
+			return t, true
+		}
+	}
+	// Bare sports wall times (e.g. "2026-05-20 08:30:00") are Eastern, not UTC.
+	if t, ok := parseGammaTimeSports(raw); ok {
+		return t, true
+	}
+	if t, ok := parseGammaTime(raw); ok {
+		return t, true
+	}
+	return time.Time{}, false
+}
+
+// startTimeFromEvent resolves tip-off for sports events.
+//
+// Polymarket sports UI and SwishAI use event.endDate as the scheduled game clock
+// (e.g. nba-sas-okc-2026-05-20 → 8:30 PM ET stored as 2026-05-21T00:30:00Z).
+// market.gameStartTime can be a different wall time on the same card; only use it
+// when EndDate is missing.
 func startTimeFromEvent(ev gammaEvent) time.Time {
-	// Prefer moneyline gameStartTime — EndDate is market close / resolution, not tip-off
-	// (using EndDate caused evening times e.g. 下午8:30 when official shows 8:30 AM).
+	if ev.EndDate != "" {
+		raw := strings.TrimSpace(ev.EndDate)
+		if t, ok := parseKickoffCandidate(raw); ok {
+			return t
+		}
+		logrus.WithFields(logx.Pairs("event_id", ev.ID, "raw", raw)).Debug("市场同步：解析 event.EndDate 失败")
+	}
+
+	for i := range ev.Markets {
+		m := &ev.Markets[i]
+		if !isMoneyline(m) || m.GameStartTime == nil {
+			continue
+		}
+		raw := strings.TrimSpace(*m.GameStartTime)
+		if t, ok := parseKickoffCandidate(raw); ok {
+			return t
+		}
+		logrus.WithFields(logx.Pairs("event_id", ev.ID, "raw", raw, "market", m.Question)).Debug("市场同步：解析 moneyline gameStartTime 失败")
+	}
+
 	var fallback time.Time
 	for i := range ev.Markets {
 		m := &ev.Markets[i]
@@ -117,33 +163,25 @@ func startTimeFromEvent(ev gammaEvent) time.Time {
 			continue
 		}
 		raw := strings.TrimSpace(*m.GameStartTime)
-		if raw == "" {
-			continue
-		}
-		t, ok := parseGammaTimeSports(raw)
-		if !ok {
-			logrus.WithFields(logx.Pairs("event_id", ev.ID, "raw", raw, "market", m.Question)).Debug("市场同步：解析 gameStartTime 失败")
-			continue
-		}
-		if isMoneyline(m) {
-			return t
-		}
-		if fallback.IsZero() {
-			fallback = t
+		if t, ok := parseKickoffCandidate(raw); ok {
+			if isMoneyline(m) {
+				return t
+			}
+			if fallback.IsZero() {
+				fallback = t
+			}
 		}
 	}
 	if !fallback.IsZero() {
 		return fallback
 	}
+
 	if ev.StartDate != "" {
-		if t, ok := parseGammaTimeSports(ev.StartDate); ok {
+		if t, ok := parseKickoffCandidate(ev.StartDate); ok {
 			return t
 		}
-		if t, ok := parseGammaTime(ev.StartDate); ok {
-			return t
-		}
-		logrus.WithFields(logx.Pairs("event_id", ev.ID, "raw", ev.StartDate)).Debug("市场同步：解析 StartDate 失败")
 	}
+
 	logrus.WithFields(logx.Pairs("event_id", ev.ID)).Warn("市场同步：开赛时间未知（保留 zero time，下游需识别）")
 	return time.Time{}
 }

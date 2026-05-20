@@ -1,5 +1,5 @@
 import { type Market } from '@/lib/api';
-import { formatKickoffET, kickoffDateKeyET, parseUtcInstant } from '@/lib/kickoffTime';
+import { formatKickoffET, formatMatchupTime, kickoffDateKeyET, parseUtcInstant } from '@/lib/kickoffTime';
 
 export interface MatchGroup {
   name: string;
@@ -267,12 +267,11 @@ export function formatDateHeader(dateKey: string): string {
 export function formatDate(iso: string): string {
   const ms = parseUtcInstant(iso);
   if (ms == null) return '—';
-  const datePart = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'America/New_York',
+  const datePart = new Date(ms).toLocaleDateString('zh-CN', {
     month: 'short',
     day: 'numeric',
-  }).format(new Date(ms));
-  return `${datePart} · ${formatKickoffET(iso)}`;
+  });
+  return `${datePart} · ${formatMatchupTime(iso)}`;
 }
 
 export function pairOutcomes(outcomes: OutcomeRow[]): [OutcomeRow, OutcomeRow | null][] {

@@ -1,5 +1,3 @@
-const ET_ZONE = 'America/New_York';
-
 /** Normalize API timestamps to a UTC instant (server stores RFC3339 UTC). */
 export function parseUtcInstant(iso: string): number | null {
   const raw = iso.trim();
@@ -13,42 +11,46 @@ export function parseUtcInstant(iso: string): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-/**
- * Kickoff time in US Eastern — matches Polymarket sports UI (e.g. 8:30 AM → 上午8:30).
- * Uses explicit Intl timeZone so display never falls back to browser local (e.g. UTC+8).
- */
-export function formatKickoffET(iso: string): string {
-  const ms = parseUtcInstant(iso);
-  if (ms == null) return '—';
-  const d = new Date(ms);
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: ET_ZONE,
+function localTimePart(ms: number): string {
+  return new Date(ms).toLocaleTimeString('en-US', {
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
-  }).formatToParts(d);
-
-  const hour = parts.find((p) => p.type === 'hour')?.value ?? '';
-  const minute = parts.find((p) => p.type === 'minute')?.value ?? '';
-  const dayPeriod = parts.find((p) => p.type === 'dayPeriod')?.value ?? '';
-  const zhPeriod = dayPeriod === 'AM' ? '上午' : dayPeriod === 'PM' ? '下午' : '';
-  return `${zhPeriod}${hour}:${minute}`;
+  });
 }
 
-/** Eastern calendar date key YYYY-MM-DD for grouping match rows. */
+/**
+ * 开赛时间：按浏览器本地时区显示日期 + 12 小时制，与 polymarket.com 页面一致。
+ * 例：8:30 PM ET 在中国显示为「5月21日 8:30 AM」。
+ */
+export function formatMatchupTime(iso: string): string {
+  const ms = parseUtcInstant(iso);
+  if (ms == null) return '—';
+
+  const datePart = new Date(ms).toLocaleDateString('zh-CN', {
+    month: 'long',
+    day: 'numeric',
+  });
+  const time = localTimePart(ms);
+  return `${datePart} ${time}`;
+}
+
+/** Short kickoff time only (e.g. 8:30 AM), local timezone. */
+export function formatKickoffET(iso: string): string {
+  const ms = parseUtcInstant(iso);
+  if (ms == null) return '—';
+  return localTimePart(ms);
+}
+
+/** Local calendar date key YYYY-MM-DD for grouping match rows. */
 export function kickoffDateKeyET(iso: string): string {
   const ms = parseUtcInstant(iso);
   if (ms == null) return '';
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: ET_ZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date(ms));
-  const y = parts.find((p) => p.type === 'year')?.value ?? '';
-  const m = parts.find((p) => p.type === 'month')?.value ?? '';
-  const d = parts.find((p) => p.type === 'day')?.value ?? '';
-  return `${y}-${m}-${d}`;
+  const d = new Date(ms);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 export function formatHistoryTimestamp(iso: string): string {
