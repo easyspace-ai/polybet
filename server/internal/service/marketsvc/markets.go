@@ -77,9 +77,10 @@ func BuildMarketsPayload(ctx context.Context, st *storage.Backend, cache *bookca
 			"betType":   m.BetType,
 			"line":      line,
 			"mainLine":  m.MainLine != 0,
-			"polySlug":  polySlug,
-			"iconUrl":   iconUrl,
-			"outcomes":  arr,
+			"polySlug":    polySlug,
+			"iconUrl":     iconUrl,
+			"eventVolume": m.EventVolume,
+			"outcomes":    arr,
 		})
 	}
 	return out, nil

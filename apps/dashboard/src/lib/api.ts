@@ -23,6 +23,7 @@ export interface Market {
   mainLine?: boolean;
   polySlug?: string;
   iconUrl?: string;
+  eventVolume?: number;
   outcomes: MarketOutcome[];
 }
 
@@ -335,6 +336,8 @@ export interface RiskPositionRow {
   title: string;
   displayTitle?: string;
   sport?: string;
+  league?: string;
+  eventVolume?: number;
   officialUrl?: string;
   officialSearchUrl?: string;
   polySlug?: string;
@@ -494,6 +497,7 @@ export interface StopLossHistoryTask {
   updatedAt: string;
   title?: string;
   officialUrl?: string;
+  league?: string;
 }
 
 export interface OfficialTrade {

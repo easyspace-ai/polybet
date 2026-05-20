@@ -8,6 +8,8 @@ type RiskDisplayMeta struct {
 	HomeTeam    string
 	AwayTeam    string
 	Sport       string
+	League      string
+	EventVolume float64
 	PolyEventID string
 	PolySlug    string
 }
@@ -21,6 +23,12 @@ func mergeRiskMeta(dst, src RiskDisplayMeta) RiskDisplayMeta {
 	}
 	if src.Sport != "" {
 		dst.Sport = src.Sport
+	}
+	if src.League != "" {
+		dst.League = src.League
+	}
+	if src.EventVolume > 0 {
+		dst.EventVolume = src.EventVolume
 	}
 	if src.PolyEventID != "" {
 		dst.PolyEventID = src.PolyEventID

@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState, useEffect, useCallback, Fragment } from "react";
 import { TopBar } from "@/components/TopBar";
 import { useTheme } from "@/lib/theme";
+import { useUiPreferences, type UiFontScale, type UiTextContrast } from "@/lib/uiPreferences";
 import { useConfig } from "@/hooks/useConfig";
 import { useSoundSettings } from "@/hooks/useSoundSettings";
 import { useAutoRefreshSettings } from "@/hooks/useAutoRefreshSettings";
@@ -304,6 +305,7 @@ function GeneralTab({
   return (
     <div className="space-y-5">
       <ThemeCard theme={theme} setTheme={setTheme} />
+      <TypographyPreferencesCard />
       <AutoRefreshCard />
 
       <section className="surface rounded-xl border border-border p-5">
@@ -482,6 +484,79 @@ function ThemeCard({
         >
           <Moon className="size-3.5" /> 深色
         </button>
+      </div>
+    </section>
+  );
+}
+
+function TypographyPreferencesCard() {
+  const { prefs, setPrefs } = useUiPreferences();
+
+  return (
+    <section className="surface rounded-xl border border-border p-5">
+      <div className="flex items-start gap-3 mb-4">
+        <div className="size-8 rounded-md bg-accent flex items-center justify-center">
+          <Monitor className="size-4 text-muted-foreground" />
+        </div>
+        <div>
+          <p className="text-[13px] font-semibold">字体与对比度</p>
+          <p className="text-[11.5px] text-muted-foreground mt-1">
+            调整全局字号与文字深浅，监控页等密集表格会同步生效
+          </p>
+        </div>
+      </div>
+      <div className="space-y-4">
+        <div>
+          <p className="text-[12px] font-medium mb-2">字号</p>
+          <div className="inline-flex p-1 bg-accent rounded-lg gap-1">
+            {(
+              [
+                { id: "compact" as UiFontScale, label: "紧凑" },
+                { id: "normal" as UiFontScale, label: "标准" },
+                { id: "comfortable" as UiFontScale, label: "偏大" },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setPrefs({ fontScale: opt.id })}
+                className={cn(
+                  "px-3 py-1.5 rounded-md text-[12px] font-medium transition",
+                  prefs.fontScale === opt.id
+                    ? "bg-brand text-brand-foreground shadow-sm"
+                    : "text-muted-foreground",
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <p className="text-[12px] font-medium mb-2">文字对比度</p>
+          <div className="inline-flex p-1 bg-accent rounded-lg gap-1">
+            {(
+              [
+                { id: "normal" as UiTextContrast, label: "标准" },
+                { id: "strong" as UiTextContrast, label: "更深" },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setPrefs({ textContrast: opt.id })}
+                className={cn(
+                  "px-3 py-1.5 rounded-md text-[12px] font-medium transition",
+                  prefs.textContrast === opt.id
+                    ? "bg-brand text-brand-foreground shadow-sm"
+                    : "text-muted-foreground",
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
     </section>
   );

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -131,12 +132,27 @@ func marketFeeRate(m *gammaMarket) (float64, bool) {
 }
 
 type gammaEvent struct {
-	ID        string        `json:"id"`
-	Slug      string        `json:"slug"`
-	Title     string        `json:"title"`
-	StartDate string        `json:"startDate"`
-	EndDate   string        `json:"endDate"`
-	Markets   []gammaMarket `json:"markets"`
+	ID         string        `json:"id"`
+	Slug       string        `json:"slug"`
+	Title      string        `json:"title"`
+	StartDate  string        `json:"startDate"`
+	EndDate    string        `json:"endDate"`
+	Volume     *optionalFee  `json:"volume"`
+	VolumeNum  *optionalFee  `json:"volumeNum"`
+	Volume24hr *optionalFee  `json:"volume24hr"`
+	Markets    []gammaMarket `json:"markets"`
+}
+
+func optionalFeeFloat(o *optionalFee) float64 {
+	s := optionalFeeString(o)
+	if s == nil {
+		return 0
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(*s), 64)
+	if err != nil || v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	return v
 }
 
 func fetchGammaEvents(ctx context.Context, httpProxy string, seriesID int) ([]gammaEvent, error) {

@@ -13,6 +13,8 @@ type DisplayMetaParts struct {
 	HomeTeam    string
 	AwayTeam    string
 	Sport       string
+	League      string
+	EventVolume float64
 	PolyEventID string
 	PolySlug    string
 }
@@ -26,6 +28,12 @@ func mergeDisplayParts(dst, src DisplayMetaParts) DisplayMetaParts {
 	}
 	if src.Sport != "" {
 		dst.Sport = src.Sport
+	}
+	if src.League != "" {
+		dst.League = src.League
+	}
+	if src.EventVolume > 0 {
+		dst.EventVolume = src.EventVolume
 	}
 	if src.PolyEventID != "" {
 		dst.PolyEventID = src.PolyEventID
@@ -61,6 +69,8 @@ func (d *DB) loadDisplayPartsTxn(txn *badger.Txn, outcomeID string) (DisplayMeta
 		HomeTeam:    strings.TrimSpace(ed.HomeTeam),
 		AwayTeam:    strings.TrimSpace(ed.AwayTeam),
 		Sport:       strings.TrimSpace(strings.ToLower(ed.Sport)),
+		League:      strings.TrimSpace(strings.ToLower(ed.League)),
+		EventVolume: ed.EventVolume,
 		PolyEventID: strings.TrimSpace(ed.PolyEventID),
 		PolySlug:    slug,
 	}, true

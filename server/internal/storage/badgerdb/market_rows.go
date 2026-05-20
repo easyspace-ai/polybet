@@ -17,7 +17,8 @@ type MarketRow struct {
 	BetType    string
 	Line       sql.NullFloat64
 	MainLine   int
-	PolySlug   string
+	PolySlug      string
+	EventVolume   float64
 }
 
 // OutcomeRow is one outcome joined for API / cache payloads.

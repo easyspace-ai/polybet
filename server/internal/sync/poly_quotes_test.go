@@ -91,6 +91,19 @@ func TestParseGammaTimeAcceptsCommonGammaFormats(t *testing.T) {
 	}
 }
 
+func TestParseGammaTimeSportsBareAssumesEastern(t *testing.T) {
+	raw := "2026-05-20 08:30:00"
+	got, ok := parseGammaTimeSports(raw)
+	if !ok {
+		t.Fatalf("parseGammaTimeSports(%q) failed", raw)
+	}
+	loc, _ := time.LoadLocation("America/New_York")
+	want := time.Date(2026, time.May, 20, 8, 30, 0, 0, loc).UTC()
+	if !got.Equal(want) {
+		t.Fatalf("parseGammaTimeSports(%q) = %s, want %s", raw, got.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+}
+
 func TestParseGammaTimeNoTimezoneAssumesUTC(t *testing.T) {
 	cases := []string{
 		"2026-05-12 19:00:00",
@@ -127,24 +140,38 @@ func TestStartTimeFromEventReturnsZeroWhenNoFieldDecodes(t *testing.T) {
 	}
 }
 
-func TestStartTimeFromEventFallsBackToEndDateViaParseGammaTime(t *testing.T) {
-	// EndDate with short offset — parseGammaTime handles it, bare time.Parse(RFC3339) would fail.
+func TestStartTimeFromEventDoesNotUseEndDate(t *testing.T) {
+	// EndDate must not be used as kickoff — only gameStartTime / StartDate.
 	gameStart := ""
 	ev := gammaEvent{
 		ID:        "test1",
 		Title:     "Team A vs. Team B",
-		StartDate: "2026-05-11T00:00:00Z",
-		EndDate:   "2026-05-12 00:00:00+00",
+		StartDate: "",
+		EndDate:   "2026-05-12 20:30:00+00",
 		Markets: []gammaMarket{
-			{
-				GameStartTime: &gameStart,
-				Active:        true,
-				Closed:        false,
-			},
+			{GameStartTime: &gameStart, Active: true, Closed: false},
 		},
 	}
 	got := startTimeFromEvent(ev)
-	want := time.Date(2026, time.May, 12, 0, 0, 0, 0, time.UTC)
+	if !got.IsZero() {
+		t.Fatalf("expected zero when only EndDate present, got %s", got.Format(time.RFC3339))
+	}
+}
+
+func TestStartTimeFromEventPrefersMoneylineGameStartTime(t *testing.T) {
+	gstML := "2026-05-20 08:30:00"
+	gstSpread := "2026-05-20 20:30:00"
+	ev := gammaEvent{
+		ID:    "ev-ml",
+		Title: "A vs B",
+		Markets: []gammaMarket{
+			{Question: "Spread", GameStartTime: &gstSpread, SportsMarketType: ptrStr("spreads")},
+			{Question: "ML", GameStartTime: &gstML, SportsMarketType: ptrStr("moneyline")},
+		},
+	}
+	got := startTimeFromEvent(ev)
+	loc, _ := time.LoadLocation("America/New_York")
+	want := time.Date(2026, time.May, 20, 8, 30, 0, 0, loc).UTC()
 	if !got.Equal(want) {
 		t.Fatalf("startTimeFromEvent() = %s, want %s", got.Format(time.RFC3339), want.Format(time.RFC3339))
 	}

@@ -4,6 +4,7 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { Toaster } from "@/components/ui/sonner";
 import { useAutoRefresh } from "@/hooks/useAutoRefresh";
 import { useSoundNotifications } from "@/hooks/useSoundNotifications";
+import { useUiPreferences } from "@/lib/uiPreferences";
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: RootComponent,
@@ -33,11 +34,12 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   useAutoRefresh();
   useSoundNotifications();
+  useUiPreferences();
   return (
     <QueryClientProvider client={queryClient}>
-      <div className="flex min-h-screen w-full bg-background text-foreground">
+      <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
         <AppSidebar />
-        <main className="flex-1 min-w-0 flex flex-col">
+        <main className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden">
           <Outlet />
         </main>
       </div>

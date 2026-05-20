@@ -194,3 +194,20 @@
 .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
 .scrollbar-thin::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--color-foreground) 15%, transparent); border-radius: 3px; }
 .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+
+/* UI density / contrast (Settings → 通用) */
+html[data-ui-font="comfortable"] {
+  font-size: 15px;
+}
+html[data-ui-font="compact"] {
+  font-size: 13px;
+}
+html[data-ui-contrast="strong"] {
+  --muted-foreground: oklch(0.38 0.02 200);
+}
+html[data-ui-contrast="strong"] .page-dense {
+  color: oklch(0.14 0.02 200);
+}
+html[data-ui-contrast="strong"] .page-dense .text-muted-foreground {
+  color: oklch(0.36 0.02 200);
+}

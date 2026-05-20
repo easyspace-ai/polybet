@@ -20,15 +20,16 @@ import (
 // --- JSON documents ---
 
 type eventDoc struct {
-	ID          string `json:"id"`
-	Sport       string `json:"sport"`
-	League      string `json:"league"`
-	HomeTeam    string `json:"homeTeam"`
-	AwayTeam    string `json:"awayTeam"`
-	StartTime   string `json:"startTime"`
-	Status      string `json:"status"`
-	PolyEventID string `json:"polyEventId"`
-	PolySlug    string `json:"polySlug"`
+	ID          string  `json:"id"`
+	Sport       string  `json:"sport"`
+	League      string  `json:"league"`
+	HomeTeam    string  `json:"homeTeam"`
+	AwayTeam    string  `json:"awayTeam"`
+	StartTime   string  `json:"startTime"`
+	EventVolume float64 `json:"eventVolume,omitempty"`
+	Status      string  `json:"status"`
+	PolyEventID string  `json:"polyEventId"`
+	PolySlug    string  `json:"polySlug"`
 }
 
 type marketDoc struct {
@@ -115,7 +116,7 @@ func (d *DB) UpsertPolyMarketQuote(ctx context.Context, q *domain.MarketQuote) e
 			eventID = "e_poly_" + q.PolyEventID
 			ev := eventDoc{
 				ID: eventID, Sport: q.Sport, League: q.League, HomeTeam: q.HomeTeam, AwayTeam: q.AwayTeam,
-				StartTime: st, Status: "active", PolyEventID: q.PolyEventID, PolySlug: strings.TrimSpace(q.PolySlug),
+				StartTime: st, EventVolume: q.EventVolume, Status: "active", PolyEventID: q.PolyEventID, PolySlug: strings.TrimSpace(q.PolySlug),
 			}
 			b, err := EncodeJSON(ev)
 			if err != nil {
@@ -135,6 +136,9 @@ func (d *DB) UpsertPolyMarketQuote(ctx context.Context, q *domain.MarketQuote) e
 			ev.Sport, ev.League = q.Sport, q.League
 			ev.HomeTeam, ev.AwayTeam = q.HomeTeam, q.AwayTeam
 			ev.StartTime = st
+			if q.EventVolume > 0 {
+				ev.EventVolume = q.EventVolume
+			}
 			ev.Status = "active"
 			if strings.TrimSpace(q.PolySlug) != "" {
 				ev.PolySlug = strings.TrimSpace(q.PolySlug)
@@ -285,6 +289,7 @@ func (d *DB) ListActiveMarketsFlat(ctx context.Context) ([]MarketRow, []OutcomeR
 				Sport: ed.Sport, League: ed.League, HomeTeam: ed.HomeTeam, AwayTeam: ed.AwayTeam,
 				StartTime: md.StartTime, Status: md.Status, BetType: md.BetType,
 				Line: sqlNF(md.Line), MainLine: boolToInt(md.MainLine), PolySlug: ed.PolySlug,
+				EventVolume: ed.EventVolume,
 			}
 			markets = append(markets, mr)
 			marketIDs[md.ID] = struct{}{}

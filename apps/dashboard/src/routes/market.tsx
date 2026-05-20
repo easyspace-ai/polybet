@@ -8,6 +8,8 @@ import { useBalanceCache } from "@/hooks/useBalanceCache";
 import { usePolyOrderBook } from "@/hooks/useOrderBook";
 import { useConfig } from "@/hooks/useConfig";
 import { groupMarkets, formatDateHeader, localDateKey, isAmericanSport, get1X2, getSpreadMLTotal, type MatchGroup, type OutcomeRow } from "@/lib/marketUtils";
+import { parseUtcInstant } from "@/lib/kickoffTime";
+import { MatchTimeVolume } from "@/components/MatchTimeVolume";
 import { DEFAULT_EVENT_CLASSIFICATION_TAGS, parseEventClassificationTags } from "@/lib/eventClassification";
 import { postTrade, type Market, type OrderBookLevel } from "@/lib/api";
 import { refreshMonitorData } from "@/hooks/useMonitorCache";
@@ -15,11 +17,6 @@ import { polymarketEventUrl } from "@/lib/polymarketLinks";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/market")({ component: MarketsPage });
-
-function formatKickoff(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleTimeString('zh-CN', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' });
-}
 
 function useFetchAge(lastFetch: Date | null): string {
   const [, setTick] = useState(0);
@@ -119,8 +116,8 @@ function MatchRow({ group, selectedOutcomeId, onSelect }: { group: MatchGroup; s
   const eventUrl = polymarketEventUrl(group.polySlug);
 
   return (
-    <div className="grid grid-cols-[80px_1fr_auto_auto] items-center gap-4 px-5 py-4 hover:bg-accent/30 transition-colors">
-      <div className="text-[12px] font-mono text-muted-foreground">{formatKickoff(group.startTime)}</div>
+    <div className="grid grid-cols-[minmax(108px,auto)_1fr_auto_auto] items-center gap-4 px-5 py-4 hover:bg-accent/30 transition-colors">
+      <MatchTimeVolume startTime={group.startTime} eventVolume={group.eventVolume} />
       <a
         href={eventUrl ?? '#'}
         target={eventUrl ? '_blank' : undefined}
@@ -143,7 +140,7 @@ function MatchRow({ group, selectedOutcomeId, onSelect }: { group: MatchGroup; s
           <ExternalLink className="size-3 text-muted-foreground shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
         )}
       </a>
-      <div className="text-[10.5px] font-mono text-muted-foreground tracking-wide">—</div>
+      <div className="w-[1px]" />
       <div className="flex items-center gap-2">
         <OddsCell 
           price={homeOutcome?.polymarket?.impliedOdds ?? null} 
@@ -298,9 +295,17 @@ function TradeSidebar({
   };
 
   return (
-    <aside className="w-[360px] max-w-[38vw] min-w-[320px] shrink-0 flex flex-col bg-sidebar/40 overflow-hidden">
-     
-      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-6 py-5 space-y-5">
+    <aside className="w-[360px] max-w-[38vw] min-w-[320px] shrink-0 h-full flex flex-col min-h-0 bg-sidebar/40 overflow-hidden border-l border-border">
+      <div className="shrink-0 px-6 pt-5 pb-3 border-b border-border">
+        <p className="text-[12px] font-medium text-foreground">投注单</p>
+        <p className="text-[10.5px] text-muted-foreground mt-0.5">点击赔率以加入投注单</p>
+      </div>
+      <div
+        className={cn(
+          "flex-1 min-h-0 px-6 py-5 space-y-5",
+          selection ? "overflow-y-auto overflow-x-hidden scrollbar-thin" : "overflow-hidden",
+        )}
+      >
         {selection ? (
           <>
             {/* <div className="rounded-lg border border-brand/30 bg-brand/5 p-4 animate-slide-up">
@@ -405,7 +410,7 @@ function TradeSidebar({
           </>
         ) : (
           <div className="text-[12px] text-muted-foreground text-center py-10 border border-dashed border-border rounded-lg">
-            点击赔率以加入投注单
+            尚未选择赔率
           </div>
         )}
       </div>
@@ -450,7 +455,10 @@ function MarketsPage() {
       byDate.get(dk)!.push(g);
     }
     for (const list of byDate.values()) {
-      list.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+      list.sort(
+        (a, b) =>
+          (parseUtcInstant(a.startTime) ?? 0) - (parseUtcInstant(b.startTime) ?? 0),
+      );
     }
     return byDate;
   }, [filteredGroups]);
@@ -487,7 +495,7 @@ function MarketsPage() {
   };
 
   return (
-    <React.Fragment>
+    <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
       <TopBar
         title="市场"
         subtitle={
@@ -521,11 +529,9 @@ function MarketsPage() {
       />
 
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        <section className="flex-1 min-w-0 flex flex-col border-r border-border">
-          <div className="flex flex-1 min-h-0">
-          {/* League list */}
-          <aside className="w-[240px] shrink-0 border-r border-border flex flex-col">
-            <div className="p-4">
+        {/* 左栏：联赛筛选，固定不滚动 */}
+        <aside className="w-[160px] shrink-0 border-r border-border flex flex-col min-h-0 overflow-hidden bg-background">
+            <div className="p-4 shrink-0">
               <div className="relative">
                 <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                 <input
@@ -534,10 +540,10 @@ function MarketsPage() {
                 />
               </div>
             </div>
-            <div className="px-4 pb-2 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+            <div className="px-4 pb-2 text-[10px] uppercase tracking-[0.18em] text-muted-foreground shrink-0">
               联赛
             </div>
-            <nav className="px-2 flex-1 overflow-y-auto scrollbar-thin">
+            <nav className="px-2 flex-1 min-h-0 overflow-hidden">
               {leagues.length === 0 ? (
                 <div className="px-3 py-2.5 text-[12px] text-muted-foreground">
                   {loading ? '加载中...' : '暂无市场'}
@@ -566,7 +572,7 @@ function MarketsPage() {
               )}
             </nav>
             <div className={cn(
-              "m-3 p-3 rounded-md border flex items-center justify-between",
+              "m-3 p-3 rounded-md border flex items-center justify-between shrink-0",
               wsConnected 
                 ? "border-success/30 bg-success/10" 
                 : "border-warning/30 bg-warning/10"
@@ -582,10 +588,10 @@ function MarketsPage() {
               </div>
               <Zap className={cn("size-4", wsConnected ? "text-success" : "text-warning")} />
             </div>
-          </aside>
+        </aside>
 
-          {/* Matches */}
-          <div className="flex-1 min-w-0 overflow-y-auto scrollbar-thin px-8 py-6 animate-slide-up">
+        {/* 中栏：仅此区域纵向滚动 */}
+        <div className="flex-1 min-w-0 min-h-0 overflow-y-auto overflow-x-hidden scrollbar-thin px-2 py-6 animate-slide-up">
             {error && (
               <div className="mb-4 p-4 rounded-md border border-destructive/30 bg-destructive/10 text-destructive text-[12px] flex items-center gap-2">
                 <span className="font-semibold">错误:</span> {error}
@@ -622,13 +628,12 @@ function MarketsPage() {
                 </div>
               </div>
             ))}
-          </div>
         </div>
-      </section>
 
-      <TradeSidebar selection={selection} selectedOutcome={selectedOutcome} onClear={() => setSelection(null)} />
+        {/* 右栏：投注单，固定不滚动（内容区内部按需滚动） */}
+        <TradeSidebar selection={selection} selectedOutcome={selectedOutcome} onClear={() => setSelection(null)} />
+      </div>
     </div>
-    </React.Fragment>
   );
 }
 

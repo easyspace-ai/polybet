@@ -1025,6 +1025,11 @@ func (h *Handler) handleStopLossHistory(c *gin.Context) {
 		if u := h.risk.OfficialURLForRiskPosition(c, pos); u != "" {
 			out[i]["officialUrl"] = u
 		}
+		if meta, err := h.st.RiskDisplayMetaForPositions(c, []store.RiskPosition{*pos}); err == nil {
+			if dm, ok := meta[pos.TokenID]; ok && dm.League != "" {
+				out[i]["league"] = dm.League
+			}
+		}
 	}
 	c.JSON(200, gin.H{"tasks": out})
 }

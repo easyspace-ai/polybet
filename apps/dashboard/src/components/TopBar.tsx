@@ -2,6 +2,7 @@ import React from "react";
 import { Moon, Sun } from "lucide-react";
 import { useTheme } from "@/lib/theme";
 import { GlobalWSStatusCluster } from "@/components/GlobalWSStatusCluster";
+import { WalletHeaderStrip } from "@/components/WalletHeaderStrip";
 
 interface Props {
   title: string;
@@ -26,6 +27,8 @@ export function TopBar({ title, subtitle, actions }: Props) {
         )}
       </div>
       <div className="flex items-center gap-3" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+        <WalletHeaderStrip />
+        <div className="h-3 w-px bg-border hidden sm:block" />
         <GlobalWSStatusCluster />
         {actions}
         <button

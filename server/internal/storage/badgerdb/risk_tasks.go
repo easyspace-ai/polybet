@@ -397,19 +397,19 @@ func (d *DB) ListRiskTasksByReason(ctx context.Context, taskType, reason string,
 				continue
 			}
 			out = append(out, taskDocToRisk(&t))
-			if len(out) >= limit {
-				break
-			}
 		}
 		return nil
 	})
-	// sort created desc
+	// sort updated desc (newest activity first), then take limit
 	for i := 0; i < len(out); i++ {
 		for j := i + 1; j < len(out); j++ {
-			if out[i].CreatedAt.Before(out[j].CreatedAt) {
+			if out[i].UpdatedAt.Before(out[j].UpdatedAt) {
 				out[i], out[j] = out[j], out[i]
 			}
 		}
+	}
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out, err
 }

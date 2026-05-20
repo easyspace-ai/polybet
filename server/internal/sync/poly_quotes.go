@@ -12,6 +12,17 @@ import (
 	"github.com/easyspace-ai/polybet/internal/logx"
 )
 
+var gammaSportsLocation *time.Location
+
+func init() {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		gammaSportsLocation = time.FixedZone("ET", -5*3600)
+	} else {
+		gammaSportsLocation = loc
+	}
+}
+
 // sportsFeeRate is the legacy hardcoded taker-fee fallback used when the
 // upstream Gamma row does not carry a parseable feeRate / feeRateBps /
 // takerBaseFee. Operators on a league with a different blanket fee can
@@ -48,14 +59,41 @@ func parseGammaTime(raw string) (time.Time, bool) {
 			return t, true
 		}
 	}
-	// Gamma sometimes sends gameStartTime without timezone (e.g. "2026-05-12 19:00:00").
-	// Treat bare datetime as UTC.
+	// Gamma sometimes sends datetimes without timezone on non-sports fields; treat as UTC.
 	if !hasTimezoneRe.MatchString(iso) {
 		iso += "Z"
 		for _, layout := range layouts {
 			if t, err := time.Parse(layout, iso); err == nil {
 				return t, true
 			}
+		}
+	}
+	return time.Time{}, false
+}
+
+// parseGammaTimeSports parses Gamma sports timestamps. Bare datetimes without a
+// timezone are interpreted as US Eastern wall time (Polymarket sports UI), not UTC.
+func parseGammaTimeSports(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	if t, ok := parseGammaTime(raw); ok && hasTimezoneRe.MatchString(strings.Replace(raw, " ", "T", 1)) {
+		return t, true
+	}
+	iso := strings.Replace(raw, " ", "T", 1)
+	if hasTimezoneRe.MatchString(iso) {
+		return parseGammaTime(raw)
+	}
+	layouts := []string{
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05.999999",
+		"2006-01-02 15:04:05.999999",
+	}
+	for _, layout := range layouts {
+		if t, err := time.ParseInLocation(layout, iso, gammaSportsLocation); err == nil {
+			return t.UTC(), true
 		}
 	}
 	return time.Time{}, false
@@ -70,21 +108,37 @@ func parseGammaTime(raw string) (time.Time, bool) {
 // open-block gate). Returning zero forces consumers to handle the
 // "unknown" case explicitly via IsKnownStartTime.
 func startTimeFromEvent(ev gammaEvent) time.Time {
-	for _, m := range ev.Markets {
-		if m.GameStartTime != nil && strings.TrimSpace(*m.GameStartTime) != "" {
-			if t, ok := parseGammaTime(*m.GameStartTime); ok {
-				return t
-			}
-			logrus.WithFields(logx.Pairs("event_id", ev.ID, "raw", *m.GameStartTime)).Debug("市场同步：解析 gameStartTime 失败")
+	// Prefer moneyline gameStartTime — EndDate is market close / resolution, not tip-off
+	// (using EndDate caused evening times e.g. 下午8:30 when official shows 8:30 AM).
+	var fallback time.Time
+	for i := range ev.Markets {
+		m := &ev.Markets[i]
+		if m.GameStartTime == nil {
+			continue
 		}
-	}
-	if ev.EndDate != "" {
-		if t, ok := parseGammaTime(ev.EndDate); ok {
+		raw := strings.TrimSpace(*m.GameStartTime)
+		if raw == "" {
+			continue
+		}
+		t, ok := parseGammaTimeSports(raw)
+		if !ok {
+			logrus.WithFields(logx.Pairs("event_id", ev.ID, "raw", raw, "market", m.Question)).Debug("市场同步：解析 gameStartTime 失败")
+			continue
+		}
+		if isMoneyline(m) {
 			return t
 		}
-		logrus.WithFields(logx.Pairs("event_id", ev.ID, "raw", ev.EndDate)).Debug("市场同步：解析 EndDate 失败")
+		if fallback.IsZero() {
+			fallback = t
+		}
+	}
+	if !fallback.IsZero() {
+		return fallback
 	}
 	if ev.StartDate != "" {
+		if t, ok := parseGammaTimeSports(ev.StartDate); ok {
+			return t
+		}
 		if t, ok := parseGammaTime(ev.StartDate); ok {
 			return t
 		}
@@ -255,6 +309,13 @@ func quoteFromMoneyline12Internal(ev gammaEvent, lg League, fee float64) (*domai
 	}
 
 	st := startTimeFromEvent(ev)
+	eventVol := optionalFeeFloat(ev.Volume)
+	if eventVol <= 0 {
+		eventVol = optionalFeeFloat(ev.VolumeNum)
+	}
+	if eventVol <= 0 {
+		eventVol = optionalFeeFloat(ev.Volume24hr)
+	}
 	// HomeTeam/AwayTeam must equal outcome labels so routercanon "12" canonicalization succeeds.
 	name := homeLabel + " vs " + awayLabel
 	return &domain.MarketQuote{
@@ -266,6 +327,7 @@ func quoteFromMoneyline12Internal(ev gammaEvent, lg League, fee float64) (*domai
 		AwayTeam:    awayLabel,
 		Name:        name,
 		StartTime:   st,
+		EventVolume: eventVol,
 		BetType:     "12",
 		MainLine:    true,
 		PolyEventID: ev.ID,

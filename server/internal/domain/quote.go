@@ -27,6 +27,8 @@ type MarketQuote struct {
 	AwayTeam    string
 	Name        string
 	StartTime   time.Time
+	// EventVolume is total traded notional on the Polymarket event (USD), when Gamma provides it.
+	EventVolume float64
 	BetType     string
 	Line        *float64
 	MainLine    bool

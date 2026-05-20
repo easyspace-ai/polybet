@@ -1,7 +1,21 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { TopBar } from "@/components/TopBar";
+import { RecordFiltersBar } from "@/components/RecordFiltersBar";
 import { RiskRuntimeLogPanel } from "@/components/RiskRuntimeLogPanel";
+import { useConfig } from "@/hooks/useConfig";
+import {
+  DEFAULT_EVENT_CLASSIFICATION_TAGS,
+  parseEventClassificationTags,
+} from "@/lib/eventClassification";
+import {
+  DEFAULT_RECORD_FILTERS,
+  type RecordFilterState,
+  recordTimestampInRange,
+  matchesLeagueTag,
+  matchesMarketQuery,
+  sortByUpdatedDesc,
+} from "@/lib/recordFilters";
 import { RefreshCw, AlertTriangle, ExternalLink, EyeOff } from "lucide-react";
 import { useMonitorCache, applyMonitorPositionPatch } from "@/hooks/useMonitorCache";
 import { monitorCoordinator } from "@/lib/monitor/coordinator";
@@ -25,6 +39,7 @@ import {
   type TrailingStopEditField,
 } from "@/lib/cents";
 import { toast } from "sonner";
+import { formatVolumeAmount } from "@/lib/formatVolume";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 export const Route = createFileRoute("/monitor")({ component: MonitorPage });
@@ -212,6 +227,14 @@ function trailDraftDiffersFromServer(
 }
 
 function MonitorPage() {
+  const { rows: configRows } = useConfig();
+  const configuredTags = useMemo(() => {
+    const raw = configRows.find((r) => r.key === "eventClassificationTags")?.value ?? "";
+    const tags = parseEventClassificationTags(raw);
+    return tags.length > 0 ? tags : DEFAULT_EVENT_CLASSIFICATION_TAGS;
+  }, [configRows]);
+  const [filters, setFilters] = useState<RecordFilterState>(DEFAULT_RECORD_FILTERS);
+
   const {
     positions,
     meta,
@@ -264,6 +287,41 @@ function MonitorPage() {
   const [hidingKey, setHidingKey] = useState<string | null>(null);
   const [officialSyncing, setOfficialSyncing] = useState(false);
   const [clearingTasks, setClearingTasks] = useState(false);
+
+  const marketSuggestions = useMemo(() => {
+    const titles = new Set<string>();
+    for (const p of positions) {
+      const t = (p.displayTitle?.trim() || p.title?.trim()) ?? "";
+      if (t) titles.add(t);
+    }
+    return [...titles].sort();
+  }, [positions]);
+
+  const filteredPositions = useMemo(() => {
+    return positions.filter((p) => {
+      const title = p.displayTitle?.trim() || p.title?.trim() || "";
+      if (!matchesLeagueTag(p.league, p.sport, filters.league)) return false;
+      if (!matchesMarketQuery(title, filters.marketQuery)) return false;
+      return true;
+    });
+  }, [positions, filters]);
+
+  const filteredTasks = useMemo(() => {
+    const sorted = sortByUpdatedDesc(tasks);
+    return sorted.filter((t) => {
+      if (!recordTimestampInRange(t.updatedAt || t.createdAt || "", filters)) return false;
+      if (filters.marketQuery.trim()) {
+        const pos = positions.find((p) => p.id === t.positionId);
+        const title = pos?.displayTitle?.trim() || pos?.title?.trim() || "";
+        if (!matchesMarketQuery(title, filters.marketQuery)) return false;
+      }
+      if (filters.league) {
+        const pos = positions.find((p) => p.id === t.positionId);
+        if (pos && !matchesLeagueTag(pos.league, pos.sport, filters.league)) return false;
+      }
+      return true;
+    });
+  }, [tasks, filters, positions]);
 
   // Init drafts; sync from server unless a field is focused or has uncommitted local edits.
   useEffect(() => {
@@ -498,7 +556,7 @@ function MonitorPage() {
   };
 
   return (
-    <>
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
       <TopBar
         title="监控"
         subtitle={
@@ -541,15 +599,22 @@ function MonitorPage() {
         }
       />
 
-      <div className="px-6 pt-4 -mb-2">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      {/* <div className="px-6 pt-4 -mb-2 shrink-0">
         <div className="rounded-lg border border-border/80 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground leading-snug">
           {riskCloseModeBanner(meta)}
           <span className="text-border mx-1.5">·</span>
           <span className="opacity-90">在「设置 → 止损平仓」修改；单笔无法切换模式。</span>
         </div>
-      </div>
+      </div> */}
 
-      <div className="p-6 pb-28 space-y-6 animate-slide-up">
+      <div className="p-6 pb-28 space-y-6 animate-slide-up page-dense">
+        <RecordFiltersBar
+          filters={filters}
+          onChange={setFilters}
+          configuredTags={configuredTags}
+          marketSuggestions={marketSuggestions}
+        />
         {error && (
           <div className="p-4 rounded-md border border-destructive/30 bg-destructive/10 text-destructive text-[12px]">
             {error}
@@ -558,9 +623,11 @@ function MonitorPage() {
 
         {loading ? (
           <div className="text-center py-12 text-muted-foreground">加载中...</div>
-        ) : positions.length === 0 ? (
+        ) : filteredPositions.length === 0 ? (
           <div className="surface rounded-xl border border-border p-8 text-center">
-            <div className="text-[14px] text-muted-foreground mb-2">暂无持仓</div>
+            <div className="text-[14px] text-muted-foreground mb-2">
+              {positions.length === 0 ? "暂无持仓" : "没有符合筛选条件的持仓"}
+            </div>
             <div className="text-[12px] text-muted-foreground max-w-xl mx-auto">
               本系统成交与官网/CLOB 成交会通过用户 WebSocket（及 REST
               兜底）合并到此处；移动止损按「设置 →
@@ -575,11 +642,11 @@ function MonitorPage() {
                 <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-2 min-w-0">
                   <h2 className="text-[13px] font-semibold shrink-0">持仓监控</h2>
                   <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-widest truncate">
-                    {positions.length} 个市场
+                    {filteredPositions.length}/{positions.length} 个市场
                   </span>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[720px] table-fixed text-[11px]">
+                  <table className="w-full min-w-[720px] table-fixed text-[12px]">
                     <colgroup>
                       <col className="w-[48px]" />
                       <col className="w-[28%]" />
@@ -603,7 +670,7 @@ function MonitorPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
-                      {positions.map((p) => {
+                      {filteredPositions.map((p) => {
                         const pnlPct =
                           p.pnlUsd != null && p.costUsd > 0 ? (p.pnlUsd / p.costUsd) * 100 : null;
                         const display = (p.displayTitle?.trim() || p.title).trim();
@@ -614,6 +681,7 @@ function MonitorPage() {
                           bookSubByToken[p.tokenId] ?? p.bookSub,
                           polyOrderbookConnected || monitorCoordinator.isOrderbookConnected(),
                         );
+                        const volumeAmt = formatVolumeAmount(p.eventVolume);
 
                         return (
                           <tr key={p.id} className="hover:bg-accent/30 transition-colors align-top">
@@ -640,7 +708,7 @@ function MonitorPage() {
                                         href={href || "#"}
                                         target={href ? "_blank" : undefined}
                                         rel={href ? "noopener noreferrer" : undefined}
-                                        className="text-[11px] font-medium text-foreground leading-snug line-clamp-2 hover:text-brand transition-colors flex items-start gap-1 min-w-0 group"
+                                        className="text-[12px] font-medium text-foreground leading-snug line-clamp-2 hover:text-brand transition-colors flex items-start gap-1 min-w-0 group"
                                       >
                                         <span className="min-w-0 break-words">{titleShort}</span>
                                         {href && (
@@ -660,6 +728,10 @@ function MonitorPage() {
                                       )}
                                     </TooltipContent>
                                   </Tooltip>
+                                  <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                                    <span>交易量</span>
+                                    <span className="font-mono tabular-nums">{volumeAmt ?? "—"}</span>
+                                  </div>
                                   <div className="text-[10px] num text-muted-foreground leading-tight">
                                     买价(均价){" "}
                                     <span className="text-foreground">
@@ -911,7 +983,7 @@ function MonitorPage() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="flex items-center gap-2 min-w-0">
                   <h2 className="text-[13px] font-semibold shrink-0">任务队列</h2>
-                  {tasks.length > 0 && (
+                  {filteredTasks.length > 0 && (
                     <button
                       type="button"
                       onClick={handleClearTaskLog}
@@ -934,13 +1006,13 @@ function MonitorPage() {
                   （与服务器日志一致）。
                 </p>
               </div>
-              {tasks.length === 0 ? (
+              {filteredTasks.length === 0 ? (
                 <div className="surface-elevated rounded-xl border border-border p-4 text-[11.5px] text-muted-foreground">
-                  暂无任务
+                  {tasks.length === 0 ? "暂无任务" : "没有符合筛选条件的任务"}
                 </div>
               ) : (
                 <div className="surface-elevated rounded-xl border border-border p-4 font-mono text-[11.5px] space-y-2 max-h-[400px] overflow-y-auto scrollbar-thin">
-                  {tasks.map((t) => {
+                  {filteredTasks.map((t) => {
                     const detailLines = closeAttemptSummaryLines(t.lastAttemptDetail ?? null);
                     return (
                       <div
@@ -993,7 +1065,8 @@ function MonitorPage() {
           </>
         )}
       </div>
+      </div>
       <RiskRuntimeLogPanel />
-    </>
+    </div>
   );
 }

@@ -1,17 +1,5 @@
 import { type Market } from '@/lib/api';
-
-function etDate(iso: string): Date {
-  const d = new Date(iso);
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    year: 'numeric', month: 'numeric', day: 'numeric',
-    hour: 'numeric', minute: 'numeric', second: 'numeric',
-    hour12: false,
-  });
-  const parts = fmt.formatToParts(d);
-  const get = (type: string) => parseInt(parts.find((p) => p.type === type)?.value || '0', 10);
-  return new Date(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
-}
+import { formatKickoffET, kickoffDateKeyET, parseUtcInstant } from '@/lib/kickoffTime';
 
 export interface MatchGroup {
   name: string;
@@ -20,6 +8,7 @@ export interface MatchGroup {
   startTime: string;
   polySlug?: string;
   iconUrl?: string;
+  eventVolume?: number;
   outcomes: OutcomeRow[];
 }
 
@@ -72,7 +61,7 @@ export function matchGroupKey(
 ): string {
   const parts = name.split(' vs ');
   const teamKey = parts.length === 2 ? [...parts].sort().join('\x00') : name;
-  const t = new Date(startTime).getTime();
+  const t = parseUtcInstant(startTime) ?? new Date(startTime).getTime();
   const bucket = Math.floor(t / (6 * 60 * 60 * 1000));
   return `${sport}\x01${league}\x01${teamKey}\x01${bucket}`;
 }
@@ -90,10 +79,14 @@ export function groupMarkets(markets: Market[]): MatchGroup[] {
         startTime: m.startTime,
         polySlug: m.polySlug,
         iconUrl: m.iconUrl,
+        eventVolume: m.eventVolume,
         outcomes: [],
       });
     }
     const group = byKey.get(key)!;
+    if ((m.eventVolume ?? 0) > (group.eventVolume ?? 0)) {
+      group.eventVolume = m.eventVolume;
+    }
 
     for (const o of m.outcomes ?? []) {
       const key = outcomeMergeKey(o.canonicalKey, m.betType, m.line, o.label);
@@ -259,7 +252,9 @@ export function categorizeOutcomes(group: MatchGroup): {
 }
 
 export function localDateKey(iso: string): string {
-  const d = etDate(iso);
+  const key = kickoffDateKeyET(iso);
+  if (key) return key;
+  const d = new Date(iso);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
@@ -270,12 +265,14 @@ export function formatDateHeader(dateKey: string): string {
 }
 
 export function formatDate(iso: string): string {
-  const d = etDate(iso);
-  return (
-    d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) +
-    ' · ' +
-    d.toLocaleTimeString('zh-CN', { hour: 'numeric', minute: '2-digit' })
-  );
+  const ms = parseUtcInstant(iso);
+  if (ms == null) return '—';
+  const datePart = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'America/New_York',
+    month: 'short',
+    day: 'numeric',
+  }).format(new Date(ms));
+  return `${datePart} · ${formatKickoffET(iso)}`;
 }
 
 export function pairOutcomes(outcomes: OutcomeRow[]): [OutcomeRow, OutcomeRow | null][] {

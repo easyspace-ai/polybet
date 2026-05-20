@@ -411,8 +411,8 @@ func (s *Store) RiskDisplayMetaForPositions(ctx context.Context, positions []Ris
 	out := make(map[string]RiskDisplayMeta, len(parts))
 	for k, v := range parts {
 		out[k] = RiskDisplayMeta{
-			TokenID: k, HomeTeam: v.HomeTeam, AwayTeam: v.AwayTeam, Sport: v.Sport,
-			PolyEventID: v.PolyEventID, PolySlug: v.PolySlug,
+			TokenID: k, HomeTeam: v.HomeTeam, AwayTeam: v.AwayTeam, Sport: v.Sport, League: v.League,
+			EventVolume: v.EventVolume, PolyEventID: v.PolyEventID, PolySlug: v.PolySlug,
 		}
 	}
 	return out, nil

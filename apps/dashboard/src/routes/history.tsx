@@ -1,11 +1,26 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { RefreshCw } from "lucide-react";
 import { TopBar } from "@/components/TopBar";
+import { RecordFiltersBar } from "@/components/RecordFiltersBar";
 import { PolymarketTitleLink } from "@/components/PolymarketTitleLink";
 import { cn } from "@/lib/utils";
 import { getStopLossHistory, getTradeHistory } from "@/lib/api";
 import type { StopLossHistoryTask, OfficialTrade } from "@/lib/api";
+import { useConfig } from "@/hooks/useConfig";
+import {
+  DEFAULT_EVENT_CLASSIFICATION_TAGS,
+  parseEventClassificationTags,
+} from "@/lib/eventClassification";
+import {
+  DEFAULT_RECORD_FILTERS,
+  type RecordFilterState,
+  recordTimestampInRange,
+  matchesLeagueTag,
+  matchesMarketQuery,
+  sortByUpdatedDesc,
+} from "@/lib/recordFilters";
+import { formatHistoryTimestamp } from "@/lib/kickoffTime";
 
 export const Route = createFileRoute("/history")({ component: HistoryPage });
 
@@ -27,6 +42,18 @@ function fmtUsd(n: number): string {
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function applyRecordFilters<T extends { title?: string; league?: string; updatedAt: string; createdAt: string }>(
+  rows: T[],
+  filters: RecordFilterState,
+): T[] {
+  return rows.filter((row) => {
+    if (!matchesLeagueTag(row.league, undefined, filters.league)) return false;
+    if (!recordTimestampInRange(row.updatedAt || row.createdAt, filters)) return false;
+    if (!matchesMarketQuery(row.title, filters.marketQuery)) return false;
+    return true;
+  });
+}
+
 export default function HistoryPage() {
   const [activeTab, setActiveTab] = useState<'stop_loss' | 'trades'>('stop_loss');
   const [stopLossTasks, setStopLossTasks] = useState<StopLossHistoryTask[]>([]);
@@ -34,6 +61,14 @@ export default function HistoryPage() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [filters, setFilters] = useState<RecordFilterState>(DEFAULT_RECORD_FILTERS);
+  const { rows: configRows } = useConfig();
+
+  const configuredTags = useMemo(() => {
+    const raw = configRows.find((r) => r.key === 'eventClassificationTags')?.value ?? '';
+    const tags = parseEventClassificationTags(raw);
+    return tags.length > 0 ? tags : DEFAULT_EVENT_CLASSIFICATION_TAGS;
+  }, [configRows]);
 
   const fetchData = useCallback(async (fromOfficial = false) => {
     if (fromOfficial) {
@@ -44,10 +79,10 @@ export default function HistoryPage() {
     setError(null);
     try {
       const [sl, tr] = await Promise.all([
-        getStopLossHistory(50, fromOfficial),
+        getStopLossHistory(200, fromOfficial),
         getTradeHistory(50, fromOfficial),
       ]);
-      setStopLossTasks(Array.isArray(sl.tasks) ? sl.tasks : []);
+      setStopLossTasks(sortByUpdatedDesc(Array.isArray(sl.tasks) ? sl.tasks : []));
       setOfficialTrades(Array.isArray(tr.trades) ? tr.trades : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载历史失败');
@@ -64,13 +99,26 @@ export default function HistoryPage() {
     void fetchData(false);
   }, [fetchData]);
 
+  const marketSuggestions = useMemo(() => {
+    const titles = new Set<string>();
+    for (const t of stopLossTasks) {
+      if (t.title?.trim()) titles.add(t.title.trim());
+    }
+    return [...titles].sort();
+  }, [stopLossTasks]);
+
+  const filteredStopLoss = useMemo(
+    () => applyRecordFilters(stopLossTasks, filters),
+    [stopLossTasks, filters],
+  );
+
   return (
-    <>
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
       <TopBar
         title="历史记录"
         subtitle={
           <span className="flex items-center gap-3">
-            <span>止损记录 {stopLossTasks.length} 条</span>
+            <span>止损 {filteredStopLoss.length}/{stopLossTasks.length} 条</span>
             <span className="text-border">·</span>
             <span>成交记录 {officialTrades.length} 条</span>
           </span>
@@ -87,14 +135,13 @@ export default function HistoryPage() {
         }
       />
 
-      <div className="p-6 space-y-4 animate-slide-up">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-6 space-y-4 animate-slide-up scrollbar-thin">
         {error && (
           <div className="p-4 rounded-md border border-destructive/30 bg-destructive/10 text-destructive text-[12px]">
             {error}
           </div>
         )}
 
-        {/* Sub-tabs */}
         <div className="flex items-center gap-1">
           <button
             onClick={() => setActiveTab('stop_loss')}
@@ -120,17 +167,28 @@ export default function HistoryPage() {
           </button>
         </div>
 
+        {activeTab === 'stop_loss' && (
+          <RecordFiltersBar
+            filters={filters}
+            onChange={setFilters}
+            configuredTags={configuredTags}
+            marketSuggestions={marketSuggestions}
+          />
+        )}
+
         {loading ? (
           <div className="text-center py-12 text-muted-foreground">加载中...</div>
         ) : activeTab === 'stop_loss' ? (
           <section className="surface rounded-xl border border-border overflow-hidden">
             <div className="px-5 py-3.5 border-b border-border flex items-center justify-between">
               <h2 className="text-[13px] font-semibold">止损触发记录</h2>
-              <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-widest">{stopLossTasks.length} 条</span>
+              <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-widest">
+                {filteredStopLoss.length} 条
+              </span>
             </div>
-            {stopLossTasks.length === 0 ? (
+            {filteredStopLoss.length === 0 ? (
               <div className="p-8 text-center text-muted-foreground text-[12px]">
-                暂无止损触发记录
+                {stopLossTasks.length === 0 ? '暂无止损触发记录' : '没有符合筛选条件的记录'}
               </div>
             ) : (
               <table className="w-full text-[12px]">
@@ -142,9 +200,11 @@ export default function HistoryPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {stopLossTasks.map((t) => (
+                  {filteredStopLoss.map((t) => (
                     <tr key={t.id} className="hover:bg-accent/30 transition-colors">
-                      <td className="px-4 py-3 text-muted-foreground">{t.updatedAt.slice(0, 16).replace('T', ' ')}</td>
+                      <td className="px-4 py-3 text-foreground/90 tabular-nums">
+                        {formatHistoryTimestamp(t.updatedAt || t.createdAt)}
+                      </td>
                       <td className="px-4 py-3 max-w-[220px]">
                         {t.title ? (
                           <PolymarketTitleLink
@@ -196,13 +256,10 @@ export default function HistoryPage() {
 
                 return (
                   <div key={t.id} className="flex items-center gap-4 px-4 py-3 hover:bg-accent/20 transition-colors">
-                    {/* Left: side icon */}
                     <div className="shrink-0 flex flex-col items-center gap-0.5 w-10">
                       <div className={cn(
                         "size-7 rounded-full flex items-center justify-center border",
-                        isBuy
-                          ? "bg-muted border-border text-muted-foreground"
-                          : "bg-muted border-border text-muted-foreground"
+                        "bg-muted border-border text-muted-foreground"
                       )}>
                         {isBuy ? (
                           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6" y1="2" x2="6" y2="10"/><line x1="2" y1="6" x2="10" y2="6"/></svg>
@@ -213,7 +270,6 @@ export default function HistoryPage() {
                       <span className="text-[10px] text-muted-foreground">{isBuy ? '买入' : '卖出'}</span>
                     </div>
 
-                    {/* Middle: market info */}
                     <div className="flex-1 min-w-0 flex items-center gap-3">
                       {t.icon ? (
                         <img src={t.icon} alt="" className="size-9 rounded-lg object-contain bg-gradient-to-br from-brand/20 to-brand/5 border border-brand/10 shrink-0" />
@@ -241,7 +297,6 @@ export default function HistoryPage() {
                       </div>
                     </div>
 
-                    {/* Right: value + time */}
                     <div className="shrink-0 text-right">
                       <p className={cn(
                         "text-[13px] font-semibold tabular-nums",
@@ -260,6 +315,6 @@ export default function HistoryPage() {
           </section>
         )}
       </div>
-    </>
+    </div>
   );
 }
