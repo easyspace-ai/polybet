@@ -146,6 +146,32 @@ func leagueKickoffPrefersGameStart(league string) bool {
 	}
 }
 
+// eventTotalVolumeUSD matches Polymarket sports cards: lifetime event volume, including
+// all active market lines (moneyline + spreads + totals). Gamma's volume vs volumeNum
+// can differ by a small amount; the UI tends to track event.volume and the sum of markets.
+func eventTotalVolumeUSD(ev gammaEvent) float64 {
+	best := optionalFeeFloat(ev.Volume)
+	if v := optionalFeeFloat(ev.VolumeNum); v > best {
+		best = v
+	}
+	var sumMarkets float64
+	for i := range ev.Markets {
+		m := &ev.Markets[i]
+		if !m.Active || m.Closed {
+			continue
+		}
+		v := optionalFeeFloat(m.Volume)
+		if vn := optionalFeeFloat(m.VolumeNum); vn > v {
+			v = vn
+		}
+		sumMarkets += v
+	}
+	if sumMarkets > best {
+		best = sumMarkets
+	}
+	return best
+}
+
 func kickoffFromEndDate(ev gammaEvent) (time.Time, bool) {
 	if ev.EndDate == "" {
 		return time.Time{}, false
@@ -462,11 +488,7 @@ func quoteFromMoneyline12Internal(ev gammaEvent, lg League, fee float64) (*domai
 	}
 
 	st := startTimeFromEvent(ev, lg.League, ml)
-	// Total event notional: volumeNum/volume are lifetime; volume24hr is not total traded.
-	eventVol := optionalFeeFloat(ev.VolumeNum)
-	if eventVol <= 0 {
-		eventVol = optionalFeeFloat(ev.Volume)
-	}
+	eventVol := eventTotalVolumeUSD(ev)
 	// HomeTeam/AwayTeam must equal outcome labels so routercanon "12" canonicalization succeeds.
 	name := homeLabel + " vs " + awayLabel
 	return &domain.MarketQuote{

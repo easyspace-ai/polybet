@@ -2,14 +2,12 @@
 export function formatVolumeAmount(usd: number | null | undefined): string | null {
   if (usd == null || !Number.isFinite(usd) || usd <= 0) return null;
   if (usd >= 1_000_000) {
-    const m = usd / 1_000_000;
-    const s = m >= 10 ? m.toFixed(1) : m.toFixed(2);
-    return `$${s}M`;
+    return `$${(usd / 1_000_000).toFixed(2)}M`;
   }
   if (usd >= 1_000) {
-    return `$${(usd / 1_000).toFixed(1)}K`;
+    return `$${(usd / 1_000).toFixed(2)}K`;
   }
-  return `$${Math.round(usd)}`;
+  return `$${usd.toFixed(2)}`;
 }
 
 /** @deprecated Prefer formatVolumeAmount + label 交易量 */

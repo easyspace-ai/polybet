@@ -240,6 +240,23 @@ func TestStartTimeFromEventMLBGameStartOnSpreadMarket(t *testing.T) {
 	}
 }
 
+func TestEventTotalVolumeUSDPrefersMaxOfEventAndMarkets(t *testing.T) {
+	volStr := "25560"
+	volNum := "25480"
+	ev := gammaEvent{
+		Volume:    &optionalFee{s: &volStr},
+		VolumeNum: &optionalFee{s: &volNum},
+		Markets: []gammaMarket{
+			{Active: true, Volume: &optionalFee{s: ptrStr("20000")}},
+			{Active: true, VolumeNum: &optionalFee{s: ptrStr("5560")}},
+		},
+	}
+	got := eventTotalVolumeUSD(ev)
+	if got != 25560 {
+		t.Fatalf("eventTotalVolumeUSD() = %v, want 25560", got)
+	}
+}
+
 func TestExtractTeamsAtSign(t *testing.T) {
 	home, away, ok := extractTeams("New York Yankees @ Boston Red Sox", "away")
 	if !ok {

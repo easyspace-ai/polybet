@@ -77,6 +77,8 @@ type gammaMarket struct {
 	SportsMarketType *string  `json:"sportsMarketType"`
 	Line             *float64 `json:"line"`
 	GameStartTime    *string  `json:"gameStartTime"`
+	Volume           *optionalFee `json:"volume"`
+	VolumeNum        *optionalFee `json:"volumeNum"`
 
 	// Fee fields. Polymarket has shipped multiple shapes over time and Gamma
 	// is not always consistent with the CLOB new_market event. We accept any
