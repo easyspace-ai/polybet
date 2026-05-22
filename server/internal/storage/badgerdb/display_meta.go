@@ -99,21 +99,11 @@ func (d *DB) RiskDisplayMetaBatch(ctx context.Context, uniqTokens []string, outc
 			if key == "" {
 				continue
 			}
-			var oid string
-			for _, candidate := range []string{NormalizeCLOBTokenID(key), key} {
-				if candidate == "" {
-					continue
-				}
-				o, ok, err := d.findOutcomeIDByTokenTxn(txn, candidate)
-				if err != nil {
-					return err
-				}
-				if ok {
-					oid = o
-					break
-				}
+			oid, ok, err := d.findOutcomeIDByTokenTxn(txn, key)
+			if err != nil {
+				return err
 			}
-			if oid == "" {
+			if !ok {
 				continue
 			}
 			parts, ok := d.loadDisplayPartsTxn(txn, oid)

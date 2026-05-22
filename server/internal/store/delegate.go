@@ -176,6 +176,10 @@ func (s *Store) DeleteRiskTasksTerminal(ctx context.Context) (int64, error) {
 	return s.kv().DeleteRiskTasksTerminal(ctx)
 }
 
+func (s *Store) DeleteRiskTasksStopLoss(ctx context.Context) (int64, error) {
+	return s.kv().DeleteRiskTasksStopLoss(ctx)
+}
+
 func (s *Store) ListRiskTasksByReason(ctx context.Context, taskType, reason string, limit int) ([]RiskTask, error) {
 	return s.kv().ListRiskTasksByReason(ctx, taskType, reason, limit)
 }

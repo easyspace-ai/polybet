@@ -519,6 +519,11 @@ export const getStopLossHistory = (limit = 50, refresh = false) =>
     `/api/risk/stop-loss-history?limit=${limit}${refresh ? "&refresh=true" : ""}`,
   );
 
+export const postStopLossHistoryClear = () =>
+  apiFetch<{ ok: boolean; deleted: number }>("/api/risk/stop-loss-history/clear", {
+    method: "POST",
+  });
+
 export const getTradeHistory = (limit = 50, refresh = false) =>
   apiFetch<{ trades: OfficialTrade[] }>(
     `/api/risk/trade-history?limit=${limit}${refresh ? "&refresh=true" : ""}`,
@@ -579,14 +584,34 @@ export const postCacheRefresh = () =>
 export const postMarketsRefresh = () =>
   apiFetch<{ ok: boolean; message: string }>("/api/markets/refresh?force=1", { method: "POST" });
 
-export const postMarketsRefreshFull = () =>
+export const postMarketsRefreshFull = (opts?: { wait?: boolean }) =>
   apiFetch<{
     ok: boolean;
     accepted?: boolean;
     alreadyRunning?: boolean;
+    completed?: boolean;
     message?: string;
     cache?: string;
-  }>("/api/markets/refresh-full", { method: "POST" });
+    markets?: number;
+  }>(`/api/markets/refresh-full${opts?.wait ? '?wait=1' : ''}`, { method: "POST" });
+
+export const postMarketsReset = () =>
+  apiFetch<{
+    ok: boolean;
+    completed?: boolean;
+    markets?: number;
+    message?: string;
+  }>("/api/markets/reset", { method: "POST" });
+
+/** Nuclear option: wipe all Badger app data (markets, positions, trades, stop-loss) then resync. */
+export const postSystemReset = () =>
+  apiFetch<{
+    ok: boolean;
+    completed?: boolean;
+    deleted?: number;
+    markets?: number;
+    message?: string;
+  }>("/api/system/reset", { method: "POST" });
 
 export interface GammaSport {
   id: number;

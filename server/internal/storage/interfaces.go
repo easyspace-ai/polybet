@@ -64,6 +64,7 @@ type RiskStore interface {
 	CancelOtherCloseTasks(ctx context.Context, positionID, exceptTaskID string) error
 	UpdateRiskTaskLastAttemptDetail(ctx context.Context, id, detailJSON string) error
 	DeleteRiskTasksTerminal(ctx context.Context) (int64, error)
+	DeleteRiskTasksStopLoss(ctx context.Context) (int64, error)
 	InsertRiskAppliedTrade(ctx context.Context, id, accountID string) (bool, error)
 	UpsertRiskHiddenPosition(ctx context.Context, accountID, tokenID, sideLabel string) error
 	ListRiskHiddenPositions(ctx context.Context, accountID string) ([]store.RiskHiddenPosition, error)
@@ -76,6 +77,9 @@ type MarketStore interface {
 	ListActiveMarketsFlat(ctx context.Context) ([]store.MarketRow, []store.OutcomeRow, error)
 	CountActiveMarkets(ctx context.Context) (int, error)
 	CountActiveOutcomes(ctx context.Context) (int, error)
+	ClearAllMarketData(ctx context.Context) error
+	ClearAllAppData(ctx context.Context) (int, error)
+	DeactivatePolyEventsNotIn(ctx context.Context, keep map[string]struct{}) (int, error)
 }
 
 // AccountStore is the Polymarket account surface (ADR §4.2).

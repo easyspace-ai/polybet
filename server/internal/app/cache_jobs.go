@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/easyspace-ai/polybet/internal/logx"
@@ -167,6 +168,51 @@ func (a *App) broadcastPositionSnapshotFast() {
 	payload := map[string]any{"type": "position_update", "data": rows}
 	a.Hub.BroadcastJSONAsync(payload)
 	a.RiskHub.BroadcastJSONAsync(payload)
+}
+
+// RefreshMarketsBlocking runs Gamma sync and broadcasts snapshot; blocks until done.
+func (a *App) RefreshMarketsBlocking(ctx context.Context, force bool) error {
+	if a == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	return a.SyncAndBroadcastMarkets(ctx, force)
+}
+
+// ResetMarketsBlocking clears persisted market rows then runs a forced sync.
+func (a *App) ResetMarketsBlocking(ctx context.Context) error {
+	if a == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	if err := a.Store.ClearAllMarketData(ctx); err != nil {
+		return err
+	}
+	return a.SyncAndBroadcastMarkets(ctx, true)
+}
+
+// ResetAllAppDataBlocking wipes all persisted app data (markets, positions,
+// trades, stop-loss history), rebuilds caches, syncs markets, and reconciles
+// positions from Polymarket when configured.
+func (a *App) ResetAllAppDataBlocking(ctx context.Context) (int, error) {
+	if a == nil {
+		return 0, fmt.Errorf("app unavailable")
+	}
+	n, err := a.Store.ClearAllAppData(ctx)
+	if err != nil {
+		return 0, err
+	}
+	a.ScheduleInvalidateAndRebuildCache()
+	if err := a.SyncAndBroadcastMarkets(ctx, true); err != nil {
+		return n, err
+	}
+	if a.Risk != nil {
+		accountID := ""
+		if acct, _ := a.Store.GetActivePolymarketAccount(ctx); acct != nil {
+			accountID = acct.ID
+		}
+		_ = a.Risk.SyncPositionsFromDataAPI(ctx, accountID)
+		a.NotifyRiskPositionsChanged()
+	}
+	return n, nil
 }
 
 // ScheduleMarketsFullRefresh invalidates risk/balance memcache and schedules a

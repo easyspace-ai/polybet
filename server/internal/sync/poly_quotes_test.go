@@ -61,7 +61,7 @@ func TestStartTimeFromEventParsesEndDateWhenNoGameStartTime(t *testing.T) {
 		Markets: []gammaMarket{{Question: "ML", SportsMarketType: ptrStr("moneyline")}},
 	}
 
-	got := startTimeFromEvent(ev)
+	got := startTimeFromEvent(ev, "nba", nil)
 	want := time.Date(2026, time.May, 12, 7, 0, 0, 0, time.UTC)
 	if !got.Equal(want) {
 		t.Fatalf("startTimeFromEvent() = %s, want %s", got.Format(time.RFC3339), want.Format(time.RFC3339))
@@ -128,7 +128,7 @@ func TestStartTimeFromEventReturnsZeroWhenNoFieldDecodes(t *testing.T) {
 		EndDate:   "",
 		Markets:   []gammaMarket{{GameStartTime: &bad}},
 	}
-	got := startTimeFromEvent(ev)
+	got := startTimeFromEvent(ev, "nba", nil)
 	if !got.IsZero() {
 		t.Fatalf("expected zero time when no field decodes, got %s", got.Format(time.RFC3339))
 	}
@@ -146,8 +146,28 @@ func TestStartTimeFromEventSasOkcPrefersEndDate(t *testing.T) {
 			{Question: "ML", GameStartTime: &gst, SportsMarketType: ptrStr("moneyline")},
 		},
 	}
-	got := startTimeFromEvent(ev)
+	got := startTimeFromEvent(ev, "nba", nil)
 	want := time.Date(2026, time.May, 21, 0, 30, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("startTimeFromEvent() = %s, want %s", got.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+}
+
+func TestStartTimeFromEventMLBPrefersMoneylineGameStart(t *testing.T) {
+	// mlb-chc-hou-2026-05-22: Poly card shows 2:20 AM ET; endDate is ~7d later at 2:20 PM.
+	endDate := "2026-05-29 14:20:00"
+	gst := "2026-05-22 02:20:00"
+	ev := gammaEvent{
+		ID:      "ev-mlb-chc-hou",
+		Title:   "Chicago Cubs @ Houston Astros",
+		EndDate: endDate,
+		Markets: []gammaMarket{
+			{Question: "ML", GameStartTime: &gst, SportsMarketType: ptrStr("moneyline")},
+		},
+	}
+	got := startTimeFromEvent(ev, "mlb", &ev.Markets[0])
+	loc, _ := time.LoadLocation("America/New_York")
+	want := time.Date(2026, time.May, 22, 2, 20, 0, 0, loc).UTC()
 	if !got.Equal(want) {
 		t.Fatalf("startTimeFromEvent() = %s, want %s", got.Format(time.RFC3339), want.Format(time.RFC3339))
 	}
@@ -174,11 +194,59 @@ func TestStartTimeFromEventFallsBackToMoneylineGameStartTime(t *testing.T) {
 			{Question: "ML", GameStartTime: &gstML, SportsMarketType: ptrStr("moneyline")},
 		},
 	}
-	got := startTimeFromEvent(ev)
+	got := startTimeFromEvent(ev, "nba", nil)
 	loc, _ := time.LoadLocation("America/New_York")
 	want := time.Date(2026, time.May, 20, 8, 30, 0, 0, loc).UTC()
 	if !got.Equal(want) {
 		t.Fatalf("startTimeFromEvent() = %s, want %s", got.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+}
+
+func TestStartTimeFromEventMLBRejectsDistantEndDateUsesSlug(t *testing.T) {
+	// Refresh instability: Gamma sometimes omits gameStartTime; endDate is +7d window.
+	endDate := "2026-05-29 14:20:00"
+	ev := gammaEvent{
+		ID:      "ev-mlb",
+		Slug:    "mlb-chc-hou-2026-05-22",
+		Title:   "Chicago Cubs @ Houston Astros",
+		EndDate: endDate,
+		Markets: []gammaMarket{
+			{Question: "ML", SportsMarketType: ptrStr("moneyline"), Active: true},
+		},
+	}
+	got := startTimeFromEvent(ev, "mlb", &ev.Markets[0])
+	loc, _ := time.LoadLocation("America/New_York")
+	want := time.Date(2026, time.May, 22, 0, 0, 0, 0, loc).UTC()
+	if !got.Equal(want) {
+		t.Fatalf("startTimeFromEvent() = %s, want slug day %s", got.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+}
+
+func TestStartTimeFromEventMLBGameStartOnSpreadMarket(t *testing.T) {
+	gst := "2026-05-22 02:20:00"
+	ev := gammaEvent{
+		Slug:    "mlb-chc-hou-2026-05-22",
+		EndDate: "2026-05-29 14:20:00",
+		Markets: []gammaMarket{
+			{Question: "ML", SportsMarketType: ptrStr("moneyline"), Active: true},
+			{Question: "Spread", SportsMarketType: ptrStr("spreads"), GameStartTime: &gst, Active: true},
+		},
+	}
+	got := startTimeFromEvent(ev, "mlb", &ev.Markets[0])
+	loc, _ := time.LoadLocation("America/New_York")
+	want := time.Date(2026, time.May, 22, 2, 20, 0, 0, loc).UTC()
+	if !got.Equal(want) {
+		t.Fatalf("startTimeFromEvent() = %s, want %s", got.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+}
+
+func TestExtractTeamsAtSign(t *testing.T) {
+	home, away, ok := extractTeams("New York Yankees @ Boston Red Sox", "away")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if home != "Boston Red Sox" || away != "New York Yankees" {
+		t.Fatalf("teams %q vs %q", home, away)
 	}
 }
 

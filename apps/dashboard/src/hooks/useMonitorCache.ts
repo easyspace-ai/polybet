@@ -7,6 +7,7 @@ import {
   type RiskPositionsMeta,
   type RiskTaskRow,
 } from "@/lib/api";
+import { runUnifiedMarketsRefresh } from "@/lib/unifiedRefresh";
 import { normalizeTokenId } from "@/lib/clobTokenId";
 import { monitorCoordinator } from "@/lib/monitor/coordinator";
 import { floorCents1, isTrailingStopActive, trailingStopCentsFromHW } from "@/lib/cents";
@@ -463,6 +464,24 @@ function stopPositionsPoll() {
 /** Module-level refresh for external triggers (e.g. account switch). */
 export function refreshMonitorData(silent = false) {
   void fetchRiskData(silent);
+}
+
+/** Top-bar refresh: full market cache rebuild, then reload monitor rows (no stale UI). */
+export async function refreshMonitorWithUnifiedMarketsSync(): Promise<void> {
+  cache.loading = true;
+  cache.positions = [];
+  cache.tasks = [];
+  cache.error = null;
+  notifySubscribers();
+  try {
+    await runUnifiedMarketsRefresh();
+    await fetchRiskData(true);
+  } catch (err) {
+    cache.loading = false;
+    cache.error = err instanceof Error ? err.message : "刷新失败";
+    notifySubscribers();
+    throw err;
+  }
 }
 
 /** Apply PATCH response without full-page loading spinner. */

@@ -1,4 +1,4 @@
-import { formatMatchupTime } from '@/lib/kickoffTime';
+import { formatBeijingTime, formatMatchupTime } from '@/lib/kickoffTime';
 import { formatVolumeAmount } from '@/lib/formatVolume';
 
 interface Props {
@@ -7,7 +7,7 @@ interface Props {
   compact?: boolean;
 }
 
-/** Polymarket-style kickoff (ET) + volume with explicit labels. */
+/** Polymarket-style kickoff (ET) + Beijing time + volume with explicit labels. */
 export function MatchTimeVolume({ startTime, eventVolume, compact = false }: Props) {
   const vol = formatVolumeAmount(eventVolume);
   const labelClass = compact ? 'text-[9px]' : 'text-[10px]';
@@ -20,6 +20,12 @@ export function MatchTimeVolume({ startTime, eventVolume, compact = false }: Pro
         <span className={`${labelClass} text-muted-foreground shrink-0`}>开赛</span>
         <span className={`${timeClass} font-medium text-foreground tabular-nums`}>
           {formatMatchupTime(startTime)}
+        </span>
+      </div>
+      <div className="flex items-baseline gap-1.5">
+        <span className={`${labelClass} text-muted-foreground shrink-0`}>北京时间</span>
+        <span className={`${timeClass} font-medium text-muted-foreground tabular-nums`}>
+          {formatBeijingTime(startTime)}
         </span>
       </div>
       <div className="flex items-baseline gap-1.5">

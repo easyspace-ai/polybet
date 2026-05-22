@@ -3,6 +3,26 @@ import { getMarkets, postMarketsRefreshFull, type Market } from '@/lib/api';
 import { wsBus, type MarketLifecycleMessage } from '@/lib/wsBus';
 
 const WS_SNAPSHOT_FALLBACK_MS = 3_000;
+const REFRESH_WAIT_MS = 120_000;
+
+function waitForMarketsSnapshot(timeoutMs: number): Promise<Market[] | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (data: Market[] | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      off();
+      resolve(data);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    const off = wsBus.onMarketLifecycle((msg) => {
+      if (msg.type === 'marketsSnapshot') {
+        finish(msg.data);
+      }
+    });
+  });
+}
 
 interface MarketListState {
   markets: Market[];
@@ -108,17 +128,36 @@ export function useMarketList(): MarketListState & { refresh: () => Promise<void
     };
   }, [handleMarketMessage, handleWsStatus, doFetchFromREST]);
 
+  const reloadLocal = useCallback(async () => {
+    setState(prev => ({ ...prev, loading: true, error: null, markets: [] }));
+    const snapshot = await waitForMarketsSnapshot(5_000);
+    if (snapshot) {
+      snapshotReceived.current = true;
+      applyFullSnapshot(snapshot);
+      setState(prev => ({ ...prev, loading: false, error: null }));
+      return;
+    }
+    doFetchFromREST(true);
+  }, [applyFullSnapshot, doFetchFromREST]);
+
   const refresh = useCallback(async () => {
-    setState(prev => ({ ...prev, loading: true, error: null }));
+    setState(prev => ({ ...prev, loading: true, error: null, markets: [] }));
     cacheRef.current.clear();
     snapshotReceived.current = false;
     try {
-      await postMarketsRefreshFull();
+      await postMarketsRefreshFull({ wait: true });
     } catch (err) {
       console.warn('[useMarketList] backend refresh failed, falling back to REST', err);
     }
+    const snapshot = await waitForMarketsSnapshot(REFRESH_WAIT_MS);
+    if (snapshot && snapshot.length >= 0) {
+      snapshotReceived.current = true;
+      applyFullSnapshot(snapshot);
+      setState(prev => ({ ...prev, loading: false, error: null }));
+      return;
+    }
     doFetchFromREST(true);
-  }, [doFetchFromREST]);
+  }, [applyFullSnapshot, doFetchFromREST]);
 
-  return { ...state, refresh };
+  return { ...state, refresh, reloadLocal };
 }

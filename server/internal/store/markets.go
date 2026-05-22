@@ -14,6 +14,14 @@ func (s *Store) ListActiveMarketsFlat(ctx context.Context) ([]MarketRow, []Outco
 	return s.kv().ListActiveMarketsFlat(ctx)
 }
 
+func (s *Store) ClearAllMarketData(ctx context.Context) error {
+	return s.kv().ClearAllMarketData(ctx)
+}
+
+func (s *Store) DeactivatePolyEventsNotIn(ctx context.Context, keep map[string]struct{}) (int, error) {
+	return s.kv().DeactivatePolyEventsNotIn(ctx, keep)
+}
+
 func (s *Store) GetOutcomeWithMarket(ctx context.Context, outcomeID string) (outcomeIDRet, marketID, label, extID, home, away string, err error) {
 	return s.kv().GetOutcomeWithMarket(ctx, outcomeID)
 }

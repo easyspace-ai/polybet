@@ -115,6 +115,7 @@ func (e *Engine) Once(ctx context.Context, force bool) error {
 	skippedGameLines := 0
 	skippedQuote := 0
 	skippedUpsertErr := 0
+	seenPolyEvents := make(map[string]struct{})
 
 	for _, lg := range leagues {
 		if err := ctx.Err(); err != nil {
@@ -152,10 +153,17 @@ func (e *Engine) Once(ctx context.Context, force bool) error {
 				e.logger.WithFields(logx.Pairs("poly_event_id", ev.ID, "external_id", q.ExternalID, "err", err)).Warn("市场同步：写入数据库失败")
 				continue
 			}
+			seenPolyEvents[strings.TrimSpace(ev.ID)] = struct{}{}
 			upserted++
 			e.logger.WithFields(logx.Pairs("poly_event_id", ev.ID, "league", lg.League, "home", q.HomeTeam, "away", q.AwayTeam)).Debug("市场同步：报价已写入")
 		}
 		e.logger.WithFields(logx.Pairs("league", lg.League, "events_in_page", len(events))).Info("市场同步：联赛页处理完成")
+	}
+
+	if deactivated, err := e.st.DeactivatePolyEventsNotIn(ctx, seenPolyEvents); err != nil {
+		e.logger.WithFields(logx.Pairs("err", err)).Warn("市场同步：清理过期事件失败")
+	} else if deactivated > 0 {
+		e.logger.WithFields(logx.Pairs("deactivated_events", deactivated)).Info("市场同步：已关闭未出现在 Gamma 的事件")
 	}
 
 	// DB row counts for operators (best-effort)

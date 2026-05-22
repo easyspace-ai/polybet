@@ -31,6 +31,11 @@ const sportsFeeRate = 0.03
 
 var shortTZOffsetRe = regexp.MustCompile(`([+-]\d{2})$`)
 var hasTimezoneRe = regexp.MustCompile(`[Zz]|[+-]\d{2}(:\d{2})?$`)
+var slugGameDateRe = regexp.MustCompile(`-(\d{4}-\d{2}-\d{2})$`)
+
+// maxEndDateDaysAfterSlug is how far event.endDate may sit past the slug game day
+// and still be treated as tip-off (NBA). MLB market windows are ~7d out.
+const maxEndDateDaysAfterSlug = 2
 
 func applyFee(p, fee float64) float64 {
 	if fee == 0 {
@@ -129,51 +134,161 @@ func parseKickoffCandidate(raw string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// leagueKickoffPrefersGameStart reports leagues where Gamma event.endDate is a
+// trading/resolution window, not the scheduled first pitch. MLB cards use
+// moneyline gameStartTime for the clock; NBA/NHL align endDate with tip-off.
+func leagueKickoffPrefersGameStart(league string) bool {
+	switch strings.ToLower(strings.TrimSpace(league)) {
+	case "mlb":
+		return true
+	default:
+		return false
+	}
+}
+
+func kickoffFromEndDate(ev gammaEvent) (time.Time, bool) {
+	if ev.EndDate == "" {
+		return time.Time{}, false
+	}
+	raw := strings.TrimSpace(ev.EndDate)
+	if t, ok := parseKickoffCandidate(raw); ok {
+		return t, true
+	}
+	logrus.WithFields(logx.Pairs("event_id", ev.ID, "raw", raw)).Debug("市场同步：解析 event.EndDate 失败")
+	return time.Time{}, false
+}
+
+func parseSlugGameDate(slug string) (time.Time, bool) {
+	m := slugGameDateRe.FindStringSubmatch(strings.TrimSpace(slug))
+	if m == nil {
+		return time.Time{}, false
+	}
+	t, err := time.ParseInLocation("2006-01-02", m[1], gammaSportsLocation)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+func etCalendarDay(t time.Time) time.Time {
+	y, m, d := t.In(gammaSportsLocation).Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, gammaSportsLocation)
+}
+
+func daysBetweenET(earlier, later time.Time) int {
+	return int(etCalendarDay(later).Sub(etCalendarDay(earlier)).Hours() / 24)
+}
+
+func earliestETTime(times []time.Time) time.Time {
+	best := times[0]
+	bestET := best.In(gammaSportsLocation)
+	for _, t := range times[1:] {
+		tET := t.In(gammaSportsLocation)
+		if tET.Before(bestET) {
+			best, bestET = t, tET
+		}
+	}
+	return best
+}
+
+// collectGameStartTimes gathers parsed instants from the combined moneyline row first,
+// then every market. Gamma often omits gameStartTime on the ML row but keeps it on spreads.
+func collectGameStartTimes(ev gammaEvent, primary *gammaMarket) []time.Time {
+	var out []time.Time
+	seen := map[int64]struct{}{}
+	add := func(m *gammaMarket) {
+		if m == nil || m.GameStartTime == nil {
+			return
+		}
+		raw := strings.TrimSpace(*m.GameStartTime)
+		t, ok := parseKickoffCandidate(raw)
+		if !ok {
+			return
+		}
+		ns := t.UTC().UnixNano()
+		if _, dup := seen[ns]; dup {
+			return
+		}
+		seen[ns] = struct{}{}
+		out = append(out, t)
+	}
+	add(primary)
+	for i := range ev.Markets {
+		add(&ev.Markets[i])
+	}
+	return out
+}
+
+func mergeSlugDayWithClock(slugDay, clock time.Time) time.Time {
+	h, min, sec := clock.In(gammaSportsLocation).Clock()
+	y, m, d := slugDay.In(gammaSportsLocation).Date()
+	return time.Date(y, m, d, h, min, sec, 0, gammaSportsLocation).UTC()
+}
+
+// resolveSlugAnchoredKickoff picks first pitch for leagues where endDate is a market window.
+// The slug suffix (e.g. mlb-chc-hou-2026-05-22) is Polymarket's canonical game day.
+func resolveSlugAnchoredKickoff(ev gammaEvent, league string, ml *gammaMarket) (time.Time, bool) {
+	slugDay, hasSlug := parseSlugGameDate(ev.Slug)
+	candidates := collectGameStartTimes(ev, ml)
+
+	if hasSlug && len(candidates) > 0 {
+		var onSlug []time.Time
+		for _, t := range candidates {
+			if etCalendarDay(t).Equal(etCalendarDay(slugDay)) {
+				onSlug = append(onSlug, t)
+			}
+		}
+		if len(onSlug) > 0 {
+			return earliestETTime(onSlug), true
+		}
+		return mergeSlugDayWithClock(slugDay, earliestETTime(candidates)), true
+	}
+	if len(candidates) > 0 {
+		return earliestETTime(candidates), true
+	}
+
+	if t, ok := kickoffFromEndDate(ev); ok {
+		if !hasSlug || daysBetweenET(slugDay, t) <= maxEndDateDaysAfterSlug {
+			return t, true
+		}
+		logrus.WithFields(logx.Pairs(
+			"event_id", ev.ID, "league", league, "slug", ev.Slug,
+			"endDate_et", t.In(gammaSportsLocation).Format(time.RFC3339),
+		)).Debug("市场同步：跳过 slug 远期的 endDate（市场窗口）")
+	}
+
+	if hasSlug {
+		if ev.StartDate != "" {
+			if t, ok := parseKickoffCandidate(ev.StartDate); ok {
+				if daysBetweenET(slugDay, t) <= maxEndDateDaysAfterSlug {
+					return mergeSlugDayWithClock(slugDay, t), true
+				}
+			}
+		}
+		return slugDay.UTC(), true
+	}
+	return time.Time{}, false
+}
+
 // startTimeFromEvent resolves tip-off for sports events.
 //
-// Polymarket sports UI and SwishAI use event.endDate as the scheduled game clock
-// (e.g. nba-sas-okc-2026-05-20 → 8:30 PM ET stored as 2026-05-21T00:30:00Z).
-// market.gameStartTime can be a different wall time on the same card; only use it
-// when EndDate is missing.
-func startTimeFromEvent(ev gammaEvent) time.Time {
-	if ev.EndDate != "" {
-		raw := strings.TrimSpace(ev.EndDate)
-		if t, ok := parseKickoffCandidate(raw); ok {
+// NBA/NHL: event.endDate is the scheduled tip-off (SwishAI / Poly sports UI).
+//
+// MLB: endDate is often a ~7d market window. Tip-off comes from gameStartTime on any
+// sub-market, anchored to the slug game day so refresh stays stable when Gamma omits
+// gameStartTime on the moneyline row.
+func startTimeFromEvent(ev gammaEvent, league string, ml *gammaMarket) time.Time {
+	if leagueKickoffPrefersGameStart(league) {
+		if t, ok := resolveSlugAnchoredKickoff(ev, league, ml); ok {
 			return t
 		}
-		logrus.WithFields(logx.Pairs("event_id", ev.ID, "raw", raw)).Debug("市场同步：解析 event.EndDate 失败")
-	}
-
-	for i := range ev.Markets {
-		m := &ev.Markets[i]
-		if !isMoneyline(m) || m.GameStartTime == nil {
-			continue
-		}
-		raw := strings.TrimSpace(*m.GameStartTime)
-		if t, ok := parseKickoffCandidate(raw); ok {
+	} else {
+		if t, ok := kickoffFromEndDate(ev); ok {
 			return t
 		}
-		logrus.WithFields(logx.Pairs("event_id", ev.ID, "raw", raw, "market", m.Question)).Debug("市场同步：解析 moneyline gameStartTime 失败")
-	}
-
-	var fallback time.Time
-	for i := range ev.Markets {
-		m := &ev.Markets[i]
-		if m.GameStartTime == nil {
-			continue
+		if times := collectGameStartTimes(ev, ml); len(times) > 0 {
+			return earliestETTime(times)
 		}
-		raw := strings.TrimSpace(*m.GameStartTime)
-		if t, ok := parseKickoffCandidate(raw); ok {
-			if isMoneyline(m) {
-				return t
-			}
-			if fallback.IsZero() {
-				fallback = t
-			}
-		}
-	}
-	if !fallback.IsZero() {
-		return fallback
 	}
 
 	if ev.StartDate != "" {
@@ -182,7 +297,7 @@ func startTimeFromEvent(ev gammaEvent) time.Time {
 		}
 	}
 
-	logrus.WithFields(logx.Pairs("event_id", ev.ID)).Warn("市场同步：开赛时间未知（保留 zero time，下游需识别）")
+	logrus.WithFields(logx.Pairs("event_id", ev.ID, "league", league)).Warn("市场同步：开赛时间未知（保留 zero time，下游需识别）")
 	return time.Time{}
 }
 
@@ -191,7 +306,7 @@ var titleSuffixRe = regexp.MustCompile(`\s+-\s+.+$`)
 
 func extractTeams(title, ordering string) (home, away string, ok bool) {
 	stripped := titleSuffixRe.ReplaceAllString(titleStripRe.ReplaceAllString(title, ""), "")
-	re := regexp.MustCompile(`(?i)^(.+?)\s+vs\.?\s+(.+)$`)
+	re := regexp.MustCompile(`(?i)^(.+?)\s+(?:vs\.?|@)\s+(.+)$`)
 	m := re.FindStringSubmatch(stripped)
 	if m == nil {
 		return "", "", false
@@ -346,13 +461,11 @@ func quoteFromMoneyline12Internal(ev gammaEvent, lg League, fee float64) (*domai
 		effectiveFee = v
 	}
 
-	st := startTimeFromEvent(ev)
-	eventVol := optionalFeeFloat(ev.Volume)
+	st := startTimeFromEvent(ev, lg.League, ml)
+	// Total event notional: volumeNum/volume are lifetime; volume24hr is not total traded.
+	eventVol := optionalFeeFloat(ev.VolumeNum)
 	if eventVol <= 0 {
-		eventVol = optionalFeeFloat(ev.VolumeNum)
-	}
-	if eventVol <= 0 {
-		eventVol = optionalFeeFloat(ev.Volume24hr)
+		eventVol = optionalFeeFloat(ev.Volume)
 	}
 	// HomeTeam/AwayTeam must equal outcome labels so routercanon "12" canonicalization succeeds.
 	name := homeLabel + " vs " + awayLabel

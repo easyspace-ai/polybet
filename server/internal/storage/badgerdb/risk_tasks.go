@@ -340,6 +340,43 @@ func (d *DB) ListRiskTasksRecent(ctx context.Context, limit int) ([]RiskTask, er
 	return all, nil
 }
 
+// DeleteRiskTasksStopLoss removes close_position tasks with reason stop_loss (history tab only).
+func (d *DB) DeleteRiskTasksStopLoss(ctx context.Context) (int64, error) {
+	var n int64
+	err := d.Update(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		pfx := []byte("risk/task/")
+		var dels [][]byte
+		for it.Seek(pfx); it.ValidForPrefix(pfx); it.Next() {
+			k := it.Item().KeyCopy(nil)
+			if strings.Contains(string(k), "/due/") {
+				continue
+			}
+			var t RiskTaskDoc
+			if err := it.Item().Value(func(v []byte) error { return DecodeJSON(v, &t) }); err != nil {
+				continue
+			}
+			if t.Type != "close_position" || t.Reason != "stop_loss" {
+				continue
+			}
+			dels = append(dels, k)
+		}
+		for _, k := range dels {
+			var t RiskTaskDoc
+			if ok, _ := d.getJSON(txn, k, &t); ok {
+				_ = d.deleteTaskDue(txn, &t)
+			}
+			if err := txn.Delete(k); err != nil {
+				return err
+			}
+			n++
+		}
+		return nil
+	})
+	return n, err
+}
+
 func (d *DB) DeleteRiskTasksTerminal(ctx context.Context) (int64, error) {
 	var n int64
 	err := d.Update(func(txn *badger.Txn) error {

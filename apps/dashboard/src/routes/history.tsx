@@ -1,11 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { TopBar } from "@/components/TopBar";
 import { RecordFiltersBar } from "@/components/RecordFiltersBar";
 import { PolymarketTitleLink } from "@/components/PolymarketTitleLink";
 import { cn } from "@/lib/utils";
-import { getStopLossHistory, getTradeHistory } from "@/lib/api";
+import { getStopLossHistory, getTradeHistory, postStopLossHistoryClear } from "@/lib/api";
+import { runUnifiedMarketsRefresh } from "@/lib/unifiedRefresh";
 import type { StopLossHistoryTask, OfficialTrade } from "@/lib/api";
 import { useConfig } from "@/hooks/useConfig";
 import {
@@ -60,6 +62,7 @@ export default function HistoryPage() {
   const [officialTrades, setOfficialTrades] = useState<OfficialTrade[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [clearingStopLoss, setClearingStopLoss] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<RecordFilterState>(DEFAULT_RECORD_FILTERS);
   const { rows: configRows } = useConfig();
@@ -70,33 +73,68 @@ export default function HistoryPage() {
     return tags.length > 0 ? tags : DEFAULT_EVENT_CLASSIFICATION_TAGS;
   }, [configRows]);
 
-  const fetchData = useCallback(async (fromOfficial = false) => {
-    if (fromOfficial) {
+  const fetchHistoryRecords = useCallback(async (syncOfficial = false) => {
+    const [sl, tr] = await Promise.all([
+      getStopLossHistory(200, syncOfficial),
+      getTradeHistory(50, syncOfficial),
+    ]);
+    setStopLossTasks(sortByUpdatedDesc(Array.isArray(sl.tasks) ? sl.tasks : []));
+    setOfficialTrades(Array.isArray(tr.trades) ? tr.trades : []);
+  }, []);
+
+  const fetchData = useCallback(async (opts?: { initial?: boolean; unifiedRefresh?: boolean }) => {
+    const initial = opts?.initial ?? false;
+    const unified = opts?.unifiedRefresh ?? false;
+    if (unified) {
       setRefreshing(true);
-    } else {
+      setStopLossTasks([]);
+      setOfficialTrades([]);
+    } else if (initial) {
       setLoading(true);
     }
     setError(null);
     try {
-      const [sl, tr] = await Promise.all([
-        getStopLossHistory(200, fromOfficial),
-        getTradeHistory(50, fromOfficial),
-      ]);
-      setStopLossTasks(sortByUpdatedDesc(Array.isArray(sl.tasks) ? sl.tasks : []));
-      setOfficialTrades(Array.isArray(tr.trades) ? tr.trades : []);
+      if (unified) {
+        await runUnifiedMarketsRefresh();
+      }
+      await fetchHistoryRecords(unified);
+      if (unified) {
+        toast.success('已刷新', { description: '市场缓存已重建，历史记录已更新' });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载历史失败');
+      if (unified) {
+        toast.error('刷新失败', { description: err instanceof Error ? err.message : '请稍后重试' });
+      }
     } finally {
-      if (fromOfficial) {
+      if (unified) {
         setRefreshing(false);
-      } else {
+      } else if (initial) {
         setLoading(false);
       }
     }
-  }, []);
+  }, [fetchHistoryRecords]);
+
+  const handleUnifiedRefresh = () => void fetchData({ unifiedRefresh: true });
+
+  const handleClearStopLossHistory = async () => {
+    if (!window.confirm('确定清空所有止损触发记录？此操作不可恢复。')) {
+      return;
+    }
+    setClearingStopLoss(true);
+    try {
+      const r = await postStopLossHistoryClear();
+      setStopLossTasks([]);
+      toast.success('已清空止损记录', { description: `已删除 ${r.deleted} 条` });
+    } catch (err) {
+      toast.error('清空失败', { description: err instanceof Error ? err.message : '请稍后重试' });
+    } finally {
+      setClearingStopLoss(false);
+    }
+  };
 
   useEffect(() => {
-    void fetchData(false);
+    void fetchData({ initial: true });
   }, [fetchData]);
 
   const marketSuggestions = useMemo(() => {
@@ -125,12 +163,12 @@ export default function HistoryPage() {
         }
         actions={
           <button
-            onClick={() => void fetchData(true)}
+            onClick={handleUnifiedRefresh}
             disabled={loading || refreshing}
             className="h-8 px-3 text-[12px] rounded-md border border-border bg-surface hover:bg-accent transition flex items-center gap-1.5 disabled:opacity-50"
           >
             <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
-            {refreshing ? '同步中...' : '刷新'}
+            {refreshing ? '刷新中...' : '刷新'}
           </button>
         }
       />
@@ -176,15 +214,29 @@ export default function HistoryPage() {
           />
         )}
 
-        {loading ? (
-          <div className="text-center py-12 text-muted-foreground">加载中...</div>
+        {loading || refreshing ? (
+          <div className="text-center py-12 text-muted-foreground">
+            <RefreshCw className="size-6 mx-auto mb-3 animate-spin opacity-60" />
+            <p className="text-[12px]">{refreshing ? '正在同步市场并加载记录…' : '加载中...'}</p>
+          </div>
         ) : activeTab === 'stop_loss' ? (
           <section className="surface rounded-xl border border-border overflow-hidden">
-            <div className="px-5 py-3.5 border-b border-border flex items-center justify-between">
+            <div className="px-5 py-3.5 border-b border-border flex items-center justify-between gap-3">
               <h2 className="text-[13px] font-semibold">止损触发记录</h2>
-              <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-widest">
-                {filteredStopLoss.length} 条
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-widest">
+                  {filteredStopLoss.length} 条
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void handleClearStopLossHistory()}
+                  disabled={clearingStopLoss || stopLossTasks.length === 0}
+                  className="h-7 px-2.5 text-[11px] rounded-md border border-destructive/40 bg-destructive/5 text-destructive hover:bg-destructive/10 transition flex items-center gap-1 disabled:opacity-50"
+                >
+                  <Trash2 className={cn("size-3", clearingStopLoss && "animate-pulse")} />
+                  {clearingStopLoss ? '清空中' : '清空止损记录'}
+                </button>
+              </div>
             </div>
             {filteredStopLoss.length === 0 ? (
               <div className="p-8 text-center text-muted-foreground text-[12px]">

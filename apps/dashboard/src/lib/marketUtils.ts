@@ -260,8 +260,14 @@ export function localDateKey(iso: string): string {
 
 export function formatDateHeader(dateKey: string): string {
   const [year, month, day] = dateKey.split('-').map(Number);
-  const d = new Date(year, month - 1, day);
-  return d.toLocaleDateString('zh-CN', { weekday: 'long', month: 'short', day: 'numeric' });
+  if (!year || !month || !day) return dateKey;
+  const d = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  return d.toLocaleDateString('zh-CN', {
+    weekday: 'long',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'America/New_York',
+  });
 }
 
 export function formatDate(iso: string): string {

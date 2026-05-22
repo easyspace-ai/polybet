@@ -6,7 +6,7 @@ import { useUiPreferences, type UiFontScale, type UiTextContrast } from "@/lib/u
 import { useConfig } from "@/hooks/useConfig";
 import { useSoundSettings } from "@/hooks/useSoundSettings";
 import { useAutoRefreshSettings } from "@/hooks/useAutoRefreshSettings";
-import { putConfig, testTelegram, getSports, type GammaSport } from "@/lib/api";
+import { putConfig, testTelegram, getSports, postSystemReset, type GammaSport } from "@/lib/api";
 import {
   DEFAULT_EVENT_CLASSIFICATION_TAGS,
   parseEventClassificationTags,
@@ -33,12 +33,35 @@ import {
   ChevronsUpDown,
   Radio,
   Scale,
+  Database,
+  AlertTriangle,
 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { applyWSConfigPatch } from "@/hooks/useWSConfig";
 
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
 
-type SettingsTab = "general" | "connection" | "proxy" | "telegram" | "tags" | "prices" | "riskClose" | "sound" | "about";
+type SettingsTab =
+  | "general"
+  | "connection"
+  | "proxy"
+  | "telegram"
+  | "tags"
+  | "prices"
+  | "riskClose"
+  | "sound"
+  | "cache"
+  | "about";
 
 const TABS: { id: SettingsTab; icon: typeof Monitor; title: string; desc: string }[] = [
   { id: "general", icon: Monitor, title: "通用", desc: "主题、机器人参数" },
@@ -49,6 +72,7 @@ const TABS: { id: SettingsTab; icon: typeof Monitor; title: string; desc: string
   { id: "prices", icon: DollarSign, title: "价格", desc: "资金区间与止损" },
   { id: "riskClose", icon: Scale, title: "止损平仓", desc: "FOK / FAK / 对冲执行" },
   { id: "sound", icon: Volume2, title: "声音", desc: "提醒与音效测试" },
+  { id: "cache", icon: Database, title: "缓存清理", desc: "清空本地数据库" },
   { id: "about", icon: Info, title: "关于", desc: "版本与更新" },
 ];
 
@@ -136,11 +160,11 @@ function SettingsPage() {
   const { rows, loading, error, refresh, save } = useConfig();
 
   return (
-    <>
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
       <TopBar title="设置" subtitle={<span>{rows.length} 项配置</span>} />
 
-      <div className="p-6 grid grid-cols-[260px_1fr] gap-6 animate-slide-up">
-        <nav className="space-y-1">
+      <div className="flex-1 min-h-0 p-6 grid grid-cols-[260px_1fr] gap-6 animate-slide-up overflow-hidden">
+        <nav className="space-y-1 shrink-0 overflow-y-auto overflow-x-hidden scrollbar-thin pr-1">
           {TABS.map((t) => {
             const Icon = t.icon;
             const isActive = active === t.id;
@@ -164,7 +188,7 @@ function SettingsPage() {
           })}
         </nav>
 
-        <div className="space-y-5">
+        <div className="min-h-0 min-w-0 overflow-y-auto overflow-x-hidden scrollbar-thin space-y-5">
           {loading ? (
             <div className="text-muted-foreground">加载中...</div>
           ) : error ? (
@@ -181,12 +205,13 @@ function SettingsPage() {
               {active === "prices" && <PricesTab rows={rows} onSave={save} />}
               {active === "riskClose" && <RiskCloseExecutionTab rows={rows} onSave={save} />}
               {active === "sound" && <SoundTab />}
+              {active === "cache" && <CacheClearTab />}
               {active === "about" && <AboutTab />}
             </>
           )}
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -1378,6 +1403,88 @@ function SoundTab() {
         </div>
       )}
     </div>
+  );
+}
+
+function CacheClearTab() {
+  const [resetting, setResetting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  async function handleReset() {
+    setResetting(true);
+    try {
+      const res = await postSystemReset();
+      toast.success("缓存已清空", {
+        description: `已删除 ${res.deleted ?? 0} 条记录，市场 ${res.markets ?? 0} 条已重新同步`,
+      });
+      setConfirmOpen(false);
+    } catch (err) {
+      toast.error("清空失败", { description: err instanceof Error ? err.message : "未知错误" });
+    } finally {
+      setResetting(false);
+    }
+  }
+
+  return (
+    <section className="surface rounded-xl border border-destructive/40 p-5 max-w-xl">
+      <div className="flex items-start gap-3 mb-4">
+        <div className="size-8 rounded-md bg-destructive/15 flex items-center justify-center shrink-0">
+          <AlertTriangle className="size-4 text-destructive" />
+        </div>
+        <div>
+          <p className="text-[13px] font-semibold">全量缓存清理</p>
+          <p className="text-[11.5px] text-muted-foreground mt-1 leading-[1.55]">
+            清空 Badger 数据库中的全部应用数据并重新同步。与监控/市场/历史页的「刷新」不同：本操作会删除止损历史、持仓与成交记录。
+          </p>
+        </div>
+      </div>
+
+      <ul className="text-[11px] text-muted-foreground space-y-1 mb-4 list-disc pl-4">
+        <li>市场与赛事缓存</li>
+        <li>风控持仓与隐藏持仓</li>
+        <li>成交与官方交易历史</li>
+        <li>止损任务与平仓记录</li>
+      </ul>
+      <p className="text-[11px] text-muted-foreground mb-4">
+        保留：机器人配置（设置项）、Polymarket 账户凭证。清空后会自动全量同步市场，并从 Polymarket 重新拉取持仓。
+      </p>
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogTrigger asChild>
+          <button
+            type="button"
+            disabled={resetting}
+            className="w-full h-10 rounded-md text-[12px] font-semibold transition bg-destructive text-destructive-foreground hover:opacity-90 disabled:opacity-50"
+          >
+            清空全部缓存…
+          </button>
+        </AlertDialogTrigger>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认清空全部缓存？</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-left">
+                <p>此操作不可撤销，将删除本地数据库中的市场、持仓、成交与止损历史。</p>
+                <p className="font-medium text-foreground">清空后需要数分钟完成全量市场同步。</p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={resetting}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={resetting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(e) => {
+                e.preventDefault();
+                void handleReset();
+              }}
+            >
+              {resetting ? "清空中…" : "确认清空"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </section>
   );
 }
 

@@ -41,6 +41,9 @@ type Deps struct {
 		ScheduleRiskOfficialRefresh() bool
 		ScheduleMarketsFullRefresh() bool
 		ScheduleMarketsRefresh(force bool) bool
+		RefreshMarketsBlocking(context.Context, bool) error
+		ResetMarketsBlocking(context.Context) error
+		ResetAllAppDataBlocking(context.Context) (int, error)
 		RequestRestart()
 		ForceWSReconnect(channel string) bool
 		EnsureOrderbookToken(tokenID string)

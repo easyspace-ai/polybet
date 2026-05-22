@@ -30,6 +30,8 @@ func NewRouter(d Deps) *gin.Engine {
 		api.GET("/sports", h.handleSports)
 		api.POST("/markets/refresh", h.handleMarketsRefresh)
 		api.POST("/markets/refresh-full", h.handleMarketsRefreshFull)
+		api.POST("/markets/reset", h.handleMarketsReset)
+		api.POST("/system/reset", h.handleSystemReset)
 
 		// Trades
 		api.GET("/trade/orderbook", h.handleOrderbook)
@@ -67,6 +69,7 @@ func NewRouter(d Deps) *gin.Engine {
 		api.POST("/risk/tasks/clear", h.handleRiskTasksClear)
 		api.GET("/risk/runtime-logs", h.handleRiskRuntimeLogs)
 		api.GET("/risk/stop-loss-history", h.handleStopLossHistory)
+		api.POST("/risk/stop-loss-history/clear", h.handleStopLossHistoryClear)
 		api.GET("/risk/trade-history", h.handleTradeHistory)
 		api.PATCH("/risk/positions/:id", h.handlePatchRiskPosition)
 		api.POST("/risk/positions/:id/close", h.handleClosePosition)
@@ -117,6 +120,7 @@ func NewRouter(d Deps) *gin.Engine {
 		api.POST("/monitor/tasks/clear", h.handleRiskTasksClear)
 		api.GET("/monitor/runtime-logs", h.handleRiskRuntimeLogs)
 		api.GET("/monitor/stop-loss-history", h.handleStopLossHistory)
+		api.POST("/monitor/stop-loss-history/clear", h.handleStopLossHistoryClear)
 		api.GET("/monitor/trade-history", h.handleTradeHistory)
 		api.PATCH("/monitor/positions/:id", h.handlePatchRiskPosition)
 		api.POST("/monitor/positions/:id/close", h.handleClosePosition)

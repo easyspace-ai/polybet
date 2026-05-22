@@ -158,6 +158,10 @@ func (a *slowWSReconnectApp) ScheduleInvalidateAndRebuildCache()             {}
 func (a *slowWSReconnectApp) ScheduleRiskOfficialRefresh() bool                { return false }
 func (a *slowWSReconnectApp) ScheduleMarketsFullRefresh() bool                 { return false }
 func (a *slowWSReconnectApp) ScheduleMarketsRefresh(force bool) bool           { return false }
+func (a *slowWSReconnectApp) RefreshMarketsBlocking(context.Context, bool) error {
+	return nil
+}
+func (a *slowWSReconnectApp) ResetMarketsBlocking(context.Context) error { return nil }
 func (a *slowWSReconnectApp) RequestRestart()                                  {}
 func (a *slowWSReconnectApp) EnsureOrderbookToken(tokenID string)              {}
 func (a *slowWSReconnectApp) PolyBookClientSubscribe(tokenID string)           {}

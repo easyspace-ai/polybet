@@ -17,13 +17,16 @@ import {
   sortByUpdatedDesc,
 } from "@/lib/recordFilters";
 import { RefreshCw, AlertTriangle, ExternalLink, EyeOff } from "lucide-react";
-import { useMonitorCache, applyMonitorPositionPatch } from "@/hooks/useMonitorCache";
+import {
+  useMonitorCache,
+  applyMonitorPositionPatch,
+  refreshMonitorWithUnifiedMarketsSync,
+} from "@/hooks/useMonitorCache";
 import { monitorCoordinator } from "@/lib/monitor/coordinator";
 import {
   postMonitorClosePosition,
   postMonitorCloseAll,
   patchMonitorPosition,
-  postMonitorOfficialRefresh,
   postMonitorHidePosition,
   postMonitorTasksClear,
   type RiskPositionRow,
@@ -285,7 +288,7 @@ function MonitorPage() {
   };
   const [patchingKey, setPatchingKey] = useState<string | null>(null);
   const [hidingKey, setHidingKey] = useState<string | null>(null);
-  const [officialSyncing, setOfficialSyncing] = useState(false);
+  const [pageRefreshing, setPageRefreshing] = useState(false);
   const [clearingTasks, setClearingTasks] = useState(false);
 
   const marketSuggestions = useMemo(() => {
@@ -317,7 +320,7 @@ function MonitorPage() {
       }
       if (filters.league) {
         const pos = positions.find((p) => p.id === t.positionId);
-        if (pos && !matchesLeagueTag(pos.league, pos.sport, filters.league)) return false;
+        if (!pos || !matchesLeagueTag(pos.league, pos.sport, filters.league)) return false;
       }
       return true;
     });
@@ -538,20 +541,15 @@ function MonitorPage() {
     }
   };
 
-  const handleOfficialRefresh = async () => {
-    setOfficialSyncing(true);
+  const handlePageRefresh = async () => {
+    setPageRefreshing(true);
     try {
-      const r = await postMonitorOfficialRefresh();
-      if (r.alreadyRunning) {
-        toast.info("同步进行中", { description: "已有官方同步任务在后台运行，请稍候" });
-      } else {
-        toast.success("已提交", { description: "官方持仓同步已在后台进行，完成后会自动更新" });
-      }
-      refresh();
+      await refreshMonitorWithUnifiedMarketsSync();
+      toast.success("已刷新", { description: "市场缓存已重建，监控数据已更新" });
     } catch (err) {
       toast.error("刷新失败", { description: err instanceof Error ? err.message : "未知错误" });
     } finally {
-      setOfficialSyncing(false);
+      setPageRefreshing(false);
     }
   };
 
@@ -580,12 +578,12 @@ function MonitorPage() {
         actions={
           <>
             <button
-              onClick={handleOfficialRefresh}
-              disabled={officialSyncing}
+              onClick={() => void handlePageRefresh()}
+              disabled={pageRefreshing || loading}
               className="h-8 px-3 text-[12px] rounded-md border border-border bg-surface hover:bg-accent transition flex items-center gap-1.5 disabled:opacity-50"
             >
-              <RefreshCw className={cn("size-3.5", officialSyncing && "animate-spin")} />
-              {officialSyncing ? "同步中..." : "刷新"}
+              <RefreshCw className={cn("size-3.5", (pageRefreshing || loading) && "animate-spin")} />
+              {pageRefreshing || loading ? "刷新中..." : "刷新"}
             </button>
             <button
               onClick={handleCloseAll}

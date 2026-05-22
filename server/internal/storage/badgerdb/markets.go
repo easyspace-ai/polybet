@@ -80,8 +80,32 @@ func (d *DB) getJSON(txn *badger.Txn, key []byte, dest any) (bool, error) {
 	return err == nil, err
 }
 
+const marketKickoffGrace = 4 * time.Hour
+
+func parseMarketStartInstant(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	layouts := []string{time.RFC3339Nano, time.RFC3339}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
 func (d *DB) eventPolyIndexKey(polyEventID string) []byte {
 	return []byte("market/eventPoly/" + polyEventID)
+}
+
+func isMarketKickoffOpen(startTime string, now time.Time) bool {
+	t, ok := parseMarketStartInstant(startTime)
+	if !ok {
+		return true
+	}
+	return now.Before(t.Add(marketKickoffGrace))
 }
 
 // UpsertPolyMarketQuote writes event, market, canonical bets, and outcomes (Polymarket only).
@@ -210,8 +234,8 @@ func (d *DB) UpsertPolyMarketQuote(ctx context.Context, q *domain.MarketQuote) e
 				return err
 			}
 			tok := strings.TrimSpace(oc.ExternalID)
-			if tok != "" {
-				if err := txn.Set(KeyMarketTokenLookup(tok), []byte(outcomeID)); err != nil {
+			for _, lookupKey := range CLOBTokenLookupVariants(tok) {
+				if err := txn.Set(KeyMarketTokenLookup(lookupKey), []byte(outcomeID)); err != nil {
 					return err
 				}
 			}
@@ -282,6 +306,9 @@ func (d *DB) ListActiveMarketsFlat(ctx context.Context) ([]MarketRow, []OutcomeR
 				continue
 			}
 			if ed.Status != "active" {
+				continue
+			}
+			if !isMarketKickoffOpen(md.StartTime, time.Now().UTC()) {
 				continue
 			}
 			mr := MarketRow{
@@ -364,17 +391,14 @@ func (d *DB) FindOutcomeIDByToken(ctx context.Context, tokenID string) (string, 
 			return ctx.Err()
 		default:
 		}
-		item, err := txn.Get(KeyMarketTokenLookup(tokenID))
-		if errors.Is(err, badger.ErrKeyNotFound) {
-			return nil
-		}
+		id, ok, err := d.findOutcomeIDByTokenTxn(txn, tokenID)
 		if err != nil {
 			return err
 		}
-		return item.Value(func(v []byte) error {
-			out = string(v)
-			return nil
-		})
+		if ok {
+			out = id
+		}
+		return nil
 	})
 	if err != nil || strings.TrimSpace(out) == "" {
 		return "", false, err
@@ -466,19 +490,27 @@ func (d *DB) PolyEventSlugForToken(ctx context.Context, tokenID string) string {
 }
 
 func (d *DB) findOutcomeIDByTokenTxn(txn *badger.Txn, tokenID string) (string, bool, error) {
-	item, err := txn.Get(KeyMarketTokenLookup(tokenID))
-	if errors.Is(err, badger.ErrKeyNotFound) {
-		return "", false, nil
+	for _, candidate := range CLOBTokenLookupVariants(tokenID) {
+		item, err := txn.Get(KeyMarketTokenLookup(candidate))
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			continue
+		}
+		if err != nil {
+			return "", false, err
+		}
+		var id string
+		err = item.Value(func(v []byte) error {
+			id = string(v)
+			return nil
+		})
+		if err != nil {
+			return "", false, err
+		}
+		if strings.TrimSpace(id) != "" {
+			return id, true, nil
+		}
 	}
-	if err != nil {
-		return "", false, err
-	}
-	var id string
-	err = item.Value(func(v []byte) error {
-		id = string(v)
-		return nil
-	})
-	return id, strings.TrimSpace(id) != "", err
+	return "", false, nil
 }
 
 // MarketStartTimeForToken returns market start time when known and valid.
@@ -600,4 +632,101 @@ func (d *DB) ListActiveOutcomeIDsForCanonical(ctx context.Context, canonID strin
 		return nil
 	})
 	return ids, err
+}
+
+var marketDataPrefixes = [][]byte{
+	[]byte("market/event/"), []byte("market/market/"), []byte("market/outcome/"),
+	[]byte("market/canonical/"), []byte("market/canonOut/"), []byte("market/tokenLookup/"), []byte("market/eventPoly/"),
+}
+
+func (d *DB) ClearAllMarketData(ctx context.Context) error {
+	if d == nil {
+		return errors.New("badgerdb: nil db")
+	}
+	return d.Update(func(txn *badger.Txn) error {
+		for _, prefix := range marketDataPrefixes {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			it := txn.NewIterator(badger.DefaultIteratorOptions)
+			var keys [][]byte
+			for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+				keys = append(keys, append([]byte(nil), it.Item().Key()...))
+			}
+			it.Close()
+			for _, k := range keys {
+				if err := txn.Delete(k); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func (d *DB) DeactivatePolyEventsNotIn(ctx context.Context, keep map[string]struct{}) (int, error) {
+	if d == nil {
+		return 0, errors.New("badgerdb: nil db")
+	}
+	if keep == nil {
+		keep = map[string]struct{}{}
+	}
+	now := time.Now().UTC()
+	n := 0
+	err := d.Update(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		for it.Seek([]byte("market/event/")); it.ValidForPrefix([]byte("market/event/")); it.Next() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			var ev eventDoc
+			if err := it.Item().Value(func(v []byte) error { return DecodeJSON(v, &ev) }); err != nil {
+				return err
+			}
+			if ev.Status == "closed" || strings.TrimSpace(ev.PolyEventID) == "" {
+				continue
+			}
+			if _, ok := keep[ev.PolyEventID]; ok {
+				continue
+			}
+			ev.Status = "closed"
+			b, err := EncodeJSON(ev)
+			if err != nil {
+				return err
+			}
+			n++
+			if err := txn.Set(KeyMarketEvent(ev.ID), b); err != nil {
+				return err
+			}
+		}
+		mp := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer mp.Close()
+		for mp.Seek([]byte("market/market/")); mp.ValidForPrefix([]byte("market/market/")); mp.Next() {
+			var md marketDoc
+			if err := mp.Item().Value(func(v []byte) error { return DecodeJSON(v, &md) }); err != nil {
+				return err
+			}
+			if md.Status != "active" {
+				continue
+			}
+			var ev eventDoc
+			if ok, err := d.getJSON(txn, KeyMarketEvent(md.EventID), &ev); err != nil || !ok {
+				continue
+			}
+			if ev.Status != "closed" && isMarketKickoffOpen(md.StartTime, now) {
+				continue
+			}
+			md.Status = "closed"
+			b, err := EncodeJSON(md)
+			if err != nil {
+				return err
+			}
+			if err := txn.Set(KeyMarketMarket(md.ID), b); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return n, err
 }

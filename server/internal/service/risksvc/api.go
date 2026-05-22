@@ -253,7 +253,7 @@ func (s *Service) listRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 		if sport != "" {
 			sport = strings.ToLower(sport)
 		}
-		league := strings.ToLower(strings.TrimSpace(dm.League))
+		league := ResolveRiskLeague(dm, gm, p.PolyEventSlug, p.PolyMarketSlug, dm.PolySlug)
 		eventURL, searchURL := polymarketLinks(dm, gm, displayTitle, p.SideLabel, p.PolyEventSlug, p.PolyMarketSlug)
 		polySlug := normalizePolySlug(firstNonEmpty(dm.PolySlug, p.PolyEventSlug, gm.EventSlug, p.PolyMarketSlug, gm.Slug))
 		image := strings.TrimSpace(gm.Image)

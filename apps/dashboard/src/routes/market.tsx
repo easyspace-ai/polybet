@@ -45,7 +45,11 @@ const CLOSED_MARKET_STATUSES = new Set([
 ]);
 
 function isOpenMarket(market: Market): boolean {
-  return !CLOSED_MARKET_STATUSES.has(market.status.toLowerCase());
+  if (CLOSED_MARKET_STATUSES.has(market.status.toLowerCase())) return false;
+  const ms = parseUtcInstant(market.startTime);
+  if (ms == null) return true;
+  const kickoffGraceMs = 4 * 60 * 60 * 1000;
+  return ms + kickoffGraceMs > Date.now();
 }
 
 function isSettledLikePrice(price: number | null | undefined): boolean {
@@ -514,11 +518,11 @@ function MarketsPage() {
           <>
             <button
               onClick={handleRefresh}
-              disabled={refreshing}
+              disabled={refreshing || loading}
               className="h-8 px-3 text-[12px] rounded-md border border-border bg-surface hover:bg-accent transition flex items-center gap-1.5 disabled:opacity-50"
             >
-              <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
-              {refreshing ? '刷新中' : '刷新'}
+              <RefreshCw className={cn("size-3.5", (refreshing || loading) && "animate-spin")} />
+              {refreshing || loading ? '刷新中' : '刷新'}
             </button>
             <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-success/30 bg-success/10 text-success text-[10.5px] font-mono">
               <Circle className="size-1.5 fill-success text-success animate-breathe" />
@@ -598,7 +602,12 @@ function MarketsPage() {
               </div>
             )}
             
-            {groupsByDate.size === 0 && !loading && (
+            {loading ? (
+              <div className="text-center py-12 text-muted-foreground">
+                <RefreshCw className="size-6 mx-auto mb-3 animate-spin opacity-60" />
+                <p className="text-[12px]">正在同步市场数据…</p>
+              </div>
+            ) : groupsByDate.size === 0 ? (
               <div className="text-center py-12 text-muted-foreground">
                 <p className="text-[12px]">
                   {markets.length === 0
@@ -606,9 +615,11 @@ function MarketsPage() {
                     : `暂无「${activeLeague.toUpperCase()}」相关市场。`}
                 </p>
               </div>
-            )}
+            ) : null}
 
-            {Array.from(groupsByDate.entries()).map(([dateKey, dateGroups]) => (
+            {!loading && Array.from(groupsByDate.entries())
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([dateKey, dateGroups]) => (
               <div key={dateKey} className="mb-8">
                 <div className="flex items-center gap-3 mb-3">
                   <h2 className="text-[14px] font-semibold tracking-tight">{formatDateHeader(dateKey)}</h2>

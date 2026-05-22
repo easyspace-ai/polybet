@@ -62,6 +62,8 @@ type Handler struct {
 		ScheduleRiskOfficialRefresh() bool
 		ScheduleMarketsFullRefresh() bool
 		ScheduleMarketsRefresh(force bool) bool
+		RefreshMarketsBlocking(context.Context, bool) error
+		ResetMarketsBlocking(context.Context) error
 		RequestRestart()
 		ForceWSReconnect(channel string) bool
 		EnsureOrderbookToken(tokenID string)
@@ -521,6 +523,26 @@ func (h *Handler) handleMarketsRefreshFull(c *gin.Context) {
 	if h.logService != nil {
 		h.logService.Info("市场同步", "用户触发全量刷新（缓存重建 + Gamma 同步）")
 	}
+	wait := strings.TrimSpace(strings.ToLower(c.Query("wait")))
+	if (wait == "1" || wait == "true" || wait == "yes") && h.app != nil {
+		if syncApp, ok := h.app.(interface {
+			RefreshMarketsBlocking(context.Context, bool) error
+		}); ok {
+			ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
+			defer cancel()
+			h.app.ScheduleInvalidateAndRebuildCache()
+			if err := syncApp.RefreshMarketsBlocking(ctx, true); err != nil {
+				c.JSON(500, gin.H{"error": "markets_refresh_failed", "detail": err.Error()})
+				return
+			}
+			n := 0
+			if data, err := marketsvc.BuildMarketsPayload(ctx, h.st, h.cache, nil); err == nil {
+				n = len(data)
+			}
+			c.JSON(200, gin.H{"ok": true, "completed": true, "message": "markets_full_refresh_completed", "markets": n})
+			return
+		}
+	}
 	started := h.app.ScheduleMarketsFullRefresh()
 	body := gin.H{
 		"ok":       true,
@@ -532,6 +554,84 @@ func (h *Handler) handleMarketsRefreshFull(c *gin.Context) {
 		body["alreadyRunning"] = true
 	}
 	c.JSON(202, body)
+}
+
+func (h *Handler) handleMarketsReset(c *gin.Context) {
+	rid := c.GetString("request_id")
+	if h.cfg.ReadOnlyMode {
+		logrus.WithFields(logx.Pairs("request_id", rid)).Warn("市场重置：只读模式已阻止")
+		c.JSON(403, gin.H{"error": "read_only"})
+		return
+	}
+	if h.app == nil {
+		c.JSON(500, gin.H{"error": "app_unavailable"})
+		return
+	}
+	syncApp, ok := h.app.(interface {
+		ResetMarketsBlocking(context.Context) error
+	})
+	if !ok {
+		c.JSON(500, gin.H{"error": "reset_unsupported"})
+		return
+	}
+	logrus.WithFields(logx.Pairs("request_id", rid)).Info("市场重置：清空 Badger 市场数据并全量同步")
+	if h.logService != nil {
+		h.logService.Info("市场同步", "用户触发市场缓存清空与重建")
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
+	defer cancel()
+	if err := syncApp.ResetMarketsBlocking(ctx); err != nil {
+		c.JSON(500, gin.H{"error": "markets_reset_failed", "detail": err.Error()})
+		return
+	}
+	n := 0
+	if data, err := marketsvc.BuildMarketsPayload(ctx, h.st, h.cache, nil); err == nil {
+		n = len(data)
+	}
+	c.JSON(200, gin.H{"ok": true, "completed": true, "message": "markets_reset_completed", "markets": n})
+}
+
+func (h *Handler) handleSystemReset(c *gin.Context) {
+	rid := c.GetString("request_id")
+	if h.cfg.ReadOnlyMode {
+		logrus.WithFields(logx.Pairs("request_id", rid)).Warn("全量重置：只读模式已阻止")
+		c.JSON(403, gin.H{"error": "read_only"})
+		return
+	}
+	if h.app == nil {
+		c.JSON(500, gin.H{"error": "app_unavailable"})
+		return
+	}
+	syncApp, ok := h.app.(interface {
+		ResetAllAppDataBlocking(context.Context) (int, error)
+	})
+	if !ok {
+		c.JSON(500, gin.H{"error": "reset_unsupported"})
+		return
+	}
+	logrus.WithFields(logx.Pairs("request_id", rid)).Info("全量重置：清空 Badger 应用数据并重建")
+	if h.logService != nil {
+		h.logService.Info("系统", "用户触发全量缓存清空与重建")
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
+	defer cancel()
+	deleted, err := syncApp.ResetAllAppDataBlocking(ctx)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "system_reset_failed", "detail": err.Error()})
+		return
+	}
+	tasksCache.Delete("list")
+	markets := 0
+	if data, err := marketsvc.BuildMarketsPayload(ctx, h.st, h.cache, nil); err == nil {
+		markets = len(data)
+	}
+	c.JSON(200, gin.H{
+		"ok":        true,
+		"completed": true,
+		"deleted":   deleted,
+		"markets":   markets,
+		"message":   "system_reset_completed",
+	})
 }
 
 func (h *Handler) handleOrderbook(c *gin.Context) {
@@ -998,6 +1098,20 @@ func queryRefreshOfficial(c *gin.Context) bool {
 	return q == "1" || q == "true" || q == "yes"
 }
 
+func (h *Handler) handleStopLossHistoryClear(c *gin.Context) {
+	if h.cfg.ReadOnlyMode {
+		c.JSON(403, gin.H{"error": "read_only"})
+		return
+	}
+	n, err := h.st.DeleteRiskTasksStopLoss(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": "clear_failed"})
+		return
+	}
+	tasksCache.Delete("list")
+	c.JSON(200, gin.H{"ok": true, "deleted": n})
+}
+
 func (h *Handler) handleStopLossHistory(c *gin.Context) {
 	limit := 50
 	if l, err := strconv.Atoi(c.DefaultQuery("limit", "50")); err == nil && l > 0 {
@@ -1025,10 +1139,8 @@ func (h *Handler) handleStopLossHistory(c *gin.Context) {
 		if u := h.risk.OfficialURLForRiskPosition(c, pos); u != "" {
 			out[i]["officialUrl"] = u
 		}
-		if meta, err := h.st.RiskDisplayMetaForPositions(c, []store.RiskPosition{*pos}); err == nil {
-			if dm, ok := meta[pos.TokenID]; ok && dm.League != "" {
-				out[i]["league"] = dm.League
-			}
+		if lg := h.risk.LeagueForRiskPosition(c.Request.Context(), pos); lg != "" {
+			out[i]["league"] = lg
 		}
 	}
 	c.JSON(200, gin.H{"tasks": out})
