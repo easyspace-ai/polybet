@@ -1,0 +1,1 @@
+import{_ as a}from"./index-cZvxf_ku.js";async function s(n,t){const{HttpsProxyAgent:e}=await a(async()=>{const{HttpsProxyAgent:r}=await import("./https-proxy-agent-1leyOunu.js");return{HttpsProxyAgent:r}},[]),o=t?{headers:t}:void 0;return new e(n,o)}export{s as createProxyAgent};
