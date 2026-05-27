@@ -26,30 +26,30 @@ extraResources:
     to: sounds
     filter:
       - "**/*.mp3"
-  # CI ships mac arm64 + x64 (zip + dmg) and Windows x64 (NSIS + zip). Linux
-  # installers are intentionally omitted — use `pnpm package -- --linux` only to
-  # get a clear “unsupported” error from `scripts/package.mjs`.
-  mac:
-    # Disable signing for local dev builds - set CSC_IDENTITY_AUTO_DISCOVERY
-    # or CODE_SIGNING_KEYCHAIN in CI to enable
-    sign: false
-    # Notarization requires signed builds; keep off for unsigned CI/local builds.
-    notarize: false
-    entitlementsInherit: build/entitlements.mac.plist
-    # Zip is listed first so `latest-mac.yml` (electron-updater) prefers the .zip
-    # download path — better for unsigned / manual extract flows. DMG remains for
-    # first-time installs from the release page.
-    # Both arm64 (Apple Silicon) and x64 (Intel) are built via separate CI matrix
-    # entries (macos-14 and macos-13 respectively).
-    target:
-      - target: zip
-        arch:
-          - arm64
-          - x64
-      - target: dmg
-        arch:
-          - arm64
-          - x64
+# CI ships mac arm64 + x64 (zip + dmg) and Windows x64 (NSIS + zip). Linux
+# installers are intentionally omitted — use `pnpm package -- --linux` only to
+# get a clear “unsupported” error from `scripts/package.mjs`.
+mac:
+  # Disable signing for local dev builds - set CSC_IDENTITY_AUTO_DISCOVERY
+  # or CODE_SIGNING_KEYCHAIN in CI to enable
+  sign: false
+  # Notarization requires signed builds; keep off for unsigned CI/local builds.
+  notarize: false
+  entitlementsInherit: build/entitlements.mac.plist
+  # Zip is listed first so `latest-mac.yml` (electron-updater) prefers the .zip
+  # download path — better for unsigned / manual extract flows. DMG remains for
+  # first-time installs from the release page.
+  # Both arm64 (Apple Silicon) and x64 (Intel) are built via separate CI matrix
+  # entries (macos-14 and macos-13 respectively).
+  target:
+    - target: zip
+      arch:
+        - arm64
+        - x64
+    - target: dmg
+      arch:
+        - arm64
+        - x64
   # Hardcoded name avoids the `@polybet/desktop-*` subdirectory that
   # `${name}` produces for scoped package names.
   # Naming scheme: polybet-desktop-<version>-<platform>-<arch>.<ext>
