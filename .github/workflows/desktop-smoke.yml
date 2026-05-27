@@ -6,8 +6,8 @@ on:
 permissions:
   contents: read
 
-# Mirrors release desktop targets: mac arm64 (dmg + zip) and Windows x64
-# (NSIS + zip). No Linux job — see `.github/workflows/release.yml`.
+  # Mirrors release desktop targets: mac arm64 (dmg + zip), mac x64 (dmg + zip),
+  # and Windows x64 (NSIS + zip). No Linux job — see `.github/workflows/release.yml`.
 #
 # Same build order as release.yml desktop job: pnpm install → make
 # dashboard-embed (dashboard Vite build + copy into Go embed dir) →
@@ -21,6 +21,9 @@ jobs:
           - os: macos-14
             target: mac
             arch: arm64
+          - os: macos-13
+            target: mac
+            arch: x64
           - os: windows-latest
             target: win
             arch: x64
@@ -65,13 +68,23 @@ jobs:
         run: node scripts/package.mjs --${{ matrix.target }} --${{ matrix.arch }} --publish never
 
       - name: Upload Desktop artifacts (mac arm64)
-        if: matrix.target == 'mac'
+        if: matrix.target == 'mac' && matrix.arch == 'arm64'
         uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.target }}-${{ matrix.arch }}
           path: |
             apps/desktop/dist/polybet-desktop-*-mac-arm64.dmg
             apps/desktop/dist/polybet-desktop-*-mac-arm64.zip
+          if-no-files-found: error
+
+      - name: Upload Desktop artifacts (mac x64)
+        if: matrix.target == 'mac' && matrix.arch == 'x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}-${{ matrix.arch }}
+          path: |
+            apps/desktop/dist/polybet-desktop-*-mac-x64.dmg
+            apps/desktop/dist/polybet-desktop-*-mac-x64.zip
           if-no-files-found: error
 
       - name: Upload Desktop artifacts (win x64)

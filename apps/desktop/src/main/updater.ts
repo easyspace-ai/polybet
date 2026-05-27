@@ -14,6 +14,13 @@ if (process.platform === "win32" && process.arch === "arm64") {
   autoUpdater.channel = "latest-arm64";
 }
 
+// macOS x64 (Intel) uses a separate channel to avoid clobbering the arm64
+// `latest-mac.yml` when both architectures are built in parallel by CI.
+// The publish-side counterpart is in scripts/package.mjs.
+if (process.platform === "darwin" && process.arch === "x64") {
+  autoUpdater.channel = "latest-mac-x64";
+}
+
 const STARTUP_CHECK_DELAY_MS = 5_000;
 const PERIODIC_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 

@@ -70,11 +70,11 @@ jobs:
   #
   # Each matrix job uploads its native installers plus the update metadata
   # file that job produced under `apps/desktop/dist/`, so electron-updater can
-  # resolve `latest.yml` (Windows x64) and `latest-mac.yml` (macOS arm64)
-  # without either job overwriting the other's primary metadata:
-  #   - Windows: `latest.yml` + NSIS `.exe` + portable `.zip`
-  #   - macOS:   `latest-mac.yml` + `.dmg` + `.zip` (zip is first in
+  # resolve the correct metadata without cross-arch clobbering:
+  #   - Windows x64:   `latest.yml` + `.exe` + `.zip`
+  #   - macOS arm64:   `latest-mac.yml` + `.dmg` + `.zip` (zip is first in
   #     `electron-builder.yml` so `latest-mac.yml` prefers the zip URL)
+  #   - macOS x64:     `latest-mac-x64.yml` + `-mac-x64.dmg` + `-mac-x64.zip`
   #
   # Unsigned builds by default; enable signing/notarization via CSC_* / APPLE_*.
   #
@@ -96,6 +96,9 @@ jobs:
           - os: macos-14
             target: mac
             arch: arm64
+          - os: macos-13
+            target: mac
+            arch: x64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -146,7 +149,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           dist="apps/desktop/dist"
-          if [[ "${{ matrix.target }}" == "mac" ]]; then
+          if [[ "${{ matrix.target }}" == "mac" && "${{ matrix.arch }}" == "arm64" ]]; then
             meta=("$dist/latest-mac.yml")
             dmgs=("$dist"/polybet-desktop-*-mac-arm64.dmg)
             zips=("$dist"/polybet-desktop-*-mac-arm64.zip)
@@ -165,7 +168,28 @@ jobs:
               ls -la "$dist" || true
               exit 1
             fi
-            echo "Uploading (mac): ${meta[0]} ${dmgs[0]} ${zips[0]}"
+            echo "Uploading (mac arm64): ${meta[0]} ${dmgs[0]} ${zips[0]}"
+            gh release upload "${GITHUB_REF_NAME}" "${meta[0]}" "${dmgs[0]}" "${zips[0]}" --clobber
+          elif [[ "${{ matrix.target }}" == "mac" && "${{ matrix.arch }}" == "x64" ]]; then
+            meta=("$dist/latest-mac-x64.yml")
+            dmgs=("$dist"/polybet-desktop-*-mac-x64.dmg)
+            zips=("$dist"/polybet-desktop-*-mac-x64.zip)
+            if [[ "${#meta[@]}" -ne 1 || ! -f "${meta[0]}" ]]; then
+              echo "::error::Expected exactly one $dist/latest-mac-x64.yml"
+              ls -la "$dist" || true
+              exit 1
+            fi
+            if [[ "${#dmgs[@]}" -ne 1 ]]; then
+              echo "::error::Expected exactly one mac x64 DMG, got ${#dmgs[@]}: ${dmgs[*]}"
+              ls -la "$dist" || true
+              exit 1
+            fi
+            if [[ "${#zips[@]}" -ne 1 ]]; then
+              echo "::error::Expected exactly one mac x64 zip, got ${#zips[@]}: ${zips[*]}"
+              ls -la "$dist" || true
+              exit 1
+            fi
+            echo "Uploading (mac x64): ${meta[0]} ${dmgs[0]} ${zips[0]}"
             gh release upload "${GITHUB_REF_NAME}" "${meta[0]}" "${dmgs[0]}" "${zips[0]}" --clobber
           else
             meta=("$dist/latest.yml")

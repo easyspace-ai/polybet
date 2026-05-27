@@ -62,9 +62,12 @@ const ARCH_FLAGS = new Map([
 ]);
 
 const SUPPORTED_CLI_ARCHS = new Set(["x64", "arm64"]);
-// Matches shipped CI artifacts: mac arm64 + Windows x64 (see electron-builder.yml).
+// Matches shipped CI artifacts: mac arm64 + mac x64 + Windows x64 (see
+// electron-builder.yml). macOS x64 uses its own channel to avoid colliding
+// with the arm64 `latest-mac.yml` during parallel CI uploads.
 const MAC_ALL_PLATFORM_TARGETS = [
   { platform: "mac", arch: "arm64" },
+  { platform: "mac", arch: "x64" },
   { platform: "win", arch: "x64" },
 ];
 
@@ -397,6 +400,9 @@ export function builderArgsForTarget(
   // the renderer-side updater pins the matching channel per arch.
   if (target.platform === "win" && target.arch === "arm64") {
     builderArgs.push("-c.publish.channel=latest-arm64");
+  }
+  if (target.platform === "mac" && target.arch === "x64") {
+    builderArgs.push("-c.publish.channel=latest-mac-x64");
   }
   return builderArgs;
 }
