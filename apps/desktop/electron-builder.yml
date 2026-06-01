@@ -40,7 +40,7 @@ mac:
   # download path — better for unsigned / manual extract flows. DMG remains for
   # first-time installs from the release page.
   # Both arm64 (Apple Silicon) and x64 (Intel) are built via separate CI matrix
-  # entries (macos-14 and macos-13 respectively).
+  # entries (macos-15 and macos-15-intel respectively).
   target:
     - target: zip
       arch:

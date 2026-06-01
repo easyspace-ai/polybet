@@ -14,7 +14,8 @@ import (
 	"github.com/sirupsen/logrus"
 
 	appconn "github.com/easyspace-ai/polybet/internal/application/connectivity"
-	appmonitor "github.com/easyspace-ai/polybet/internal/application/monitor"
+	appmonitor 	"github.com/easyspace-ai/polybet/internal/application/monitor"
+	"github.com/easyspace-ai/polybet/internal/autoorder"
 	domainconn "github.com/easyspace-ai/polybet/internal/domain/connectivity"
 	"github.com/easyspace-ai/polybet/internal/bookcache"
 	"github.com/easyspace-ai/polybet/internal/config"
@@ -60,6 +61,8 @@ type App struct {
 	Risk         *risksvc.Service
 	SyncEngine   *marketsync.Engine
 	SportsCache  *marketsync.SportsCache
+	TeamsCache   *marketsync.TeamsCache
+	AutoOrder    *autoorder.Engine
 	Debounce     *debounce.Debouncer
 	Log          *logrus.Logger
 	BalanceCache *memcache.BalanceCache
@@ -120,6 +123,7 @@ func New(cfg *config.Config, be *storage.Backend, log *logrus.Logger) *App {
 	}
 	risk := risksvc.New(cfg, be, cache, dataClient, log, riskRuntime)
 	sportsCache := marketsync.NewSportsCache(cfg.HTTPPlatformProxy, time.Hour)
+	teamsCache := marketsync.NewTeamsCache(cfg.HTTPPlatformProxy, time.Hour)
 	syncEng := marketsync.NewEngine(cfg, be, cache, sportsCache, log)
 
 	balanceCache := memcache.NewBalanceCache(be, cfg, log)
@@ -134,7 +138,9 @@ func New(cfg *config.Config, be *storage.Backend, log *logrus.Logger) *App {
 
 	a := &App{
 		Cfg: cfg, Store: be, Cache: cache, Hub: hub, RiskHub: riskHub, RiskRuntime: riskRuntime, Risk: risk,
-		SyncEngine: syncEng, SportsCache: sportsCache, Debounce: debounce.New(120 * time.Millisecond), Log: log,
+		SyncEngine: syncEng, SportsCache: sportsCache, TeamsCache: teamsCache,
+		AutoOrder: autoorder.NewEngine(cfg, be, cache, risk, balanceCache, log),
+		Debounce: debounce.New(120 * time.Millisecond), Log: log,
 		BalanceCache: balanceCache, RiskCache: riskCache, InitService: initSvc,
 		LogService: logSvc,
 		ConnRegistry: connReg, Conn: connSvc, Monitor: monitorSvc,
@@ -169,7 +175,7 @@ func (a *App) Run(ctx context.Context) error {
 	deps := httpserver.Deps{
 		Cfg: a.Cfg, Store: a.Store, Cache: a.Cache, Hub: a.Hub, RiskHub: a.RiskHub, Risk: a.Risk, Debounce: a.Debounce,
 		BalanceCache: a.BalanceCache, RiskCache: a.RiskCache, InitService: a.InitService, LogService: a.LogService,
-		SportsCache: a.SportsCache, RiskRuntime: a.RiskRuntime,
+		SportsCache: a.SportsCache, TeamsCache: a.TeamsCache, RiskRuntime: a.RiskRuntime,
 		Conn: a.Conn, Monitor: a.Monitor,
 		App: a,
 	}
@@ -257,6 +263,8 @@ func (a *App) Run(ctx context.Context) error {
 	}()
 	a.wg.Add(1)
 	go a.syncTicker(ctx)
+	a.wg.Add(1)
+	go a.autoOrderTicker(ctx)
 	a.wg.Add(1)
 	go a.restTradesTicker(ctx)
 	a.wg.Add(1)
@@ -422,6 +430,27 @@ func (a *App) syncTicker(ctx context.Context) {
 			_ = callCtx(ctx, func() error {
 				return a.SyncAndBroadcastMarkets(ctx, false)
 			})
+		}
+	}
+}
+
+func (a *App) autoOrderTicker(ctx context.Context) {
+	defer a.wg.Done()
+	for {
+		iv := autoorder.TickIntervalSec(context.Background(), a.Store)
+		d := time.Duration(iv) * time.Second
+		t := time.NewTimer(d)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+			if ctx.Err() != nil {
+				return
+			}
+			if a.AutoOrder != nil {
+				a.AutoOrder.Tick(ctx)
+			}
 		}
 	}
 }

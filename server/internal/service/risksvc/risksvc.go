@@ -396,6 +396,15 @@ func (s *Service) EnqueueStopLossClose(ctx context.Context, positionID string) e
 	return s.ensureCloseTask(ctx, positionID, "stop_loss")
 }
 
+// EvaluateProfitProtectForPosition runs profit-protect arming/trigger for one position (browser backup path).
+func (s *Service) EvaluateProfitProtectForPosition(ctx context.Context, positionID string, bidCents, askCents float64) error {
+	pos, err := s.st.GetRiskPosition(ctx, positionID)
+	if err != nil || pos == nil {
+		return err
+	}
+	return s.EvaluateProfitProtect(ctx, *pos, bidCents, askCents)
+}
+
 // queueReason: "manual" | "stop_loss" | "" (silent, e.g. batch from close_all).
 func (s *Service) ensureCloseTask(ctx context.Context, positionID, queueReason string) error {
 	meta := s.loadOrStoreCloseLock(positionID)
@@ -457,7 +466,9 @@ func (s *Service) ensureCloseTask(ctx context.Context, positionID, queueReason s
 			}
 		}
 	}
-	s.log.WithFields(taskFields).Info("风控：平仓任务已创建")
+	if s.log != nil {
+		s.log.WithFields(taskFields).Info("风控：平仓任务已创建")
+	}
 	if queueReason == "stop_loss" {
 		logx.StopLoss().WithFields(taskFields).Info("风控：止损平仓任务已创建")
 	} else if queueReason != "" {
@@ -473,6 +484,9 @@ func (s *Service) ensureCloseTask(ctx context.Context, positionID, queueReason s
 			d["stopLossPct"] = pos.StopLossPct
 			d["highWaterCents"] = FloorCents1(pos.HighWaterCents)
 			s.rt.Publish("position", "warn", "position.stop_loss_triggered", pos.AccountID, "", pos.TokenID, t.ID, d)
+		case "profit_protect":
+			d["peakProfitPct"] = pos.PeakProfitPct
+			s.rt.Publish("position", "warn", "position.profit_protect_triggered", pos.AccountID, "", pos.TokenID, t.ID, d)
 		case "manual":
 			s.rt.Publish("position", "info", "position.close_queued", pos.AccountID, "", pos.TokenID, t.ID, d)
 		}
@@ -497,6 +511,8 @@ func formatCloseQueuedTelegram(reason string, pos *store.RiskPosition, positionI
 		return fmt.Sprintf("Polybet 手动平仓已排队\n%s\n份额 %.2f", title, shares)
 	case "stop_loss":
 		return fmt.Sprintf("Polybet 移动止损触发，已排队平仓\n%s\n份额 %.2f", title, shares)
+	case "profit_protect":
+		return fmt.Sprintf("Polybet 收益保护触发，已排队止盈\n%s\n份额 %.2f", title, shares)
 	default:
 		return ""
 	}
@@ -832,6 +848,10 @@ func (s *Service) RiskEvaluateTokenAfterBookUpdate(ctx context.Context, tokenID 
 			fields := logx.Pairs("err", err, "position_id", p.ID, "token_id", tokenID)
 			s.log.WithFields(fields).Warn("风控：评估止损失败")
 			logx.StopLoss().WithFields(fields).Warn("风控：评估止损失败")
+		}
+		if perr := s.EvaluateProfitProtect(ctx, p, bid, ask); perr != nil {
+			fields := logx.Pairs("err", perr, "position_id", p.ID, "token_id", tokenID)
+			s.log.WithFields(fields).Warn("风控：评估收益保护失败")
 		}
 	}
 	return nil

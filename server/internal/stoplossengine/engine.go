@@ -14,6 +14,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/easyspace-ai/polybet/internal/bookcache"
+	"github.com/easyspace-ai/polybet/internal/storage/badgerdb"
 	"github.com/easyspace-ai/polybet/internal/config"
 	"github.com/easyspace-ai/polybet/internal/debounce"
 	"github.com/easyspace-ai/polybet/internal/logx"
@@ -775,18 +776,37 @@ func (e *Engine) handleTickSizeChange(ev marketstream.TickSizeChangeEvent) {
 // market so a stale book doesn't satisfy the trade-gate freshness check
 // after the underlying market is settled.
 func (e *Engine) handleMarketResolved(ev marketstream.MarketResolvedEvent) {
-	if e.cache == nil {
-		return
+	resolvedAt := strings.TrimSpace(ev.Timestamp)
+	if resolvedAt == "" {
+		resolvedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	for _, tok := range ev.AssetsIDs {
-		tid := normalizeTokenID(tok)
-		if tid == "" {
-			continue
+	if e.st != nil && e.st.Badger != nil {
+		tokens := make([]string, 0, len(ev.AssetsIDs))
+		for _, tok := range ev.AssetsIDs {
+			if tid := normalizeTokenID(tok); tid != "" {
+				tokens = append(tokens, tid)
+			}
 		}
-		// Set fee rate to 0 so any future stale ladder lookup is at least
-		// not double-charged for fees on a market that no longer exists.
-		// PruneIdle eventually evicts the token's book entirely.
-		e.cache.SetFeeRate(tid, 0)
+		cid := strings.TrimSpace(ev.Market)
+		if cid != "" {
+			_ = e.st.Badger.UpsertMarketResolution(context.Background(), &badgerdb.MarketResolutionDoc{
+				ConditionID:    cid,
+				ResolvedAt:     resolvedAt,
+				WinningOutcome: ev.WinningOutcome,
+				WinningAssetID: ev.WinningAssetID,
+				TokenIDs:       tokens,
+				Source:         badgerdb.ResolutionSourceWS,
+			})
+		}
+	}
+	if e.cache != nil {
+		for _, tok := range ev.AssetsIDs {
+			tid := normalizeTokenID(tok)
+			if tid == "" {
+				continue
+			}
+			e.cache.SetFeeRate(tid, 0)
+		}
 	}
 	if e.log != nil {
 		e.log.WithFields(logx.Pairs(

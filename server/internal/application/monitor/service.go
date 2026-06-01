@@ -117,6 +117,17 @@ type StopLossTriggerResult struct {
 	Position string `json:"positionId"`
 }
 
+type ProfitProtectEvaluateInput struct {
+	PositionID string  `json:"positionId"`
+	BidCents   float64 `json:"bidCents"`
+	AskCents   float64 `json:"askCents"`
+}
+
+type ProfitProtectEvaluateResult struct {
+	OK       bool `json:"ok"`
+	Position string `json:"positionId"`
+}
+
 func (s *Service) TriggerStopLoss(ctx context.Context, in StopLossTriggerInput) (*StopLossTriggerResult, error) {
 	pid := strings.TrimSpace(in.PositionID)
 	if pid == "" {
@@ -127,6 +138,27 @@ func (s *Service) TriggerStopLoss(ctx context.Context, in StopLossTriggerInput) 
 	}
 	s.watcher.Register(pid)
 	return &StopLossTriggerResult{OK: true, Position: pid}, nil
+}
+
+// EvaluateProfitProtect runs server-side profit-protect arming/trigger using browser book prices (second defense line).
+func (s *Service) EvaluateProfitProtect(ctx context.Context, in ProfitProtectEvaluateInput) (*ProfitProtectEvaluateResult, error) {
+	pid := strings.TrimSpace(in.PositionID)
+	if pid == "" {
+		return nil, errors.New("position_id_required")
+	}
+	bid := in.BidCents
+	ask := in.AskCents
+	if ask <= 0 && bid > 0 {
+		ask = bid
+	}
+	if bid <= 0 && ask > 0 {
+		bid = ask
+	}
+	if err := s.risk.EvaluateProfitProtectForPosition(ctx, pid, bid, ask); err != nil {
+		return nil, err
+	}
+	s.watcher.Register(pid)
+	return &ProfitProtectEvaluateResult{OK: true, Position: pid}, nil
 }
 
 // BroadcastAccountChanged notifies dashboard to reconnect CLOB after account switch.

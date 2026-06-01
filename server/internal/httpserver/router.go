@@ -28,6 +28,12 @@ func NewRouter(d Deps) *gin.Engine {
 		// Markets
 		api.GET("/markets", h.handleMarkets)
 		api.GET("/sports", h.handleSports)
+		api.GET("/teams", h.handleTeams)
+
+		// Auto-order
+		api.GET("/auto-order/config", h.handleAutoOrderConfigGet)
+		api.PUT("/auto-order/config", h.handleAutoOrderConfigPut)
+		api.GET("/auto-order/runs", h.handleAutoOrderRuns)
 		api.POST("/markets/refresh", h.handleMarketsRefresh)
 		api.POST("/markets/refresh-full", h.handleMarketsRefreshFull)
 		api.POST("/markets/reset", h.handleMarketsReset)
@@ -87,6 +93,11 @@ func NewRouter(d Deps) *gin.Engine {
 		api.GET("/trade-quality/aggregate", h.handleTradeQualityAggregate)
 		api.GET("/risk/realized-pnl-by-event", h.handleRealizedPnLByEvent)
 
+		// Analytics (settlement-time PnL reports)
+		api.GET("/analytics/daily", h.handleAnalyticsDaily)
+		api.GET("/analytics/trades", h.handleAnalyticsTrades)
+		api.POST("/analytics/full-sync", h.handleAnalyticsFullSync)
+
 		// Stats
 		api.GET("/stats/markets", h.handleStatsMarkets)
 
@@ -110,6 +121,7 @@ func NewRouter(d Deps) *gin.Engine {
 		api.GET("/monitor/clob-session", h.handleMonitorClobSession)
 		api.POST("/monitor/heartbeat", h.handleMonitorHeartbeat)
 		api.POST("/monitor/stop-loss/trigger", h.handleMonitorStopLossTrigger)
+		api.POST("/monitor/profit-protect/evaluate", h.handleMonitorProfitProtectEvaluate)
 		api.POST("/monitor/positions/sync", h.handleMonitorPositionsSync)
 		// Aliases: same handlers as /api/risk/* during migration
 		api.GET("/monitor/positions", h.handleRiskPositions)

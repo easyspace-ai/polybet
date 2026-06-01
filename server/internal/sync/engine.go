@@ -160,6 +160,8 @@ func (e *Engine) Once(ctx context.Context, force bool) error {
 		e.logger.WithFields(logx.Pairs("league", lg.League, "events_in_page", len(events))).Info("市场同步：联赛页处理完成")
 	}
 
+	e.backfillClosedMarketResolutions(ctx, leagues)
+
 	if deactivated, err := e.st.DeactivatePolyEventsNotIn(ctx, seenPolyEvents); err != nil {
 		e.logger.WithFields(logx.Pairs("err", err)).Warn("市场同步：清理过期事件失败")
 	} else if deactivated > 0 {

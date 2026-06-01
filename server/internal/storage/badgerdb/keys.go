@@ -1,6 +1,9 @@
 package badgerdb
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 // Key prefixes follow docs/ADR-badgerdb-migration.md (use '/' as separator).
 
@@ -39,6 +42,16 @@ func KeyMarketCanonOutcome(canonID, outcomeID string) []byte {
 
 func KeyMarketTokenLookup(externalID string) []byte {
 	return []byte("market/tokenLookup/" + externalID)
+}
+
+// KeyMarketResolution stores official settlement metadata by Polymarket condition id.
+func KeyMarketResolution(conditionID string) []byte {
+	return []byte("market/resolution/" + strings.TrimSpace(conditionID))
+}
+
+// KeyMarketResolutionToken maps a CLOB token id to its condition id for fast lookup.
+func KeyMarketResolutionToken(tokenID string) []byte {
+	return []byte("market/resolutionToken/" + tokenID)
 }
 
 func KeyRiskPosition(id string) []byte {

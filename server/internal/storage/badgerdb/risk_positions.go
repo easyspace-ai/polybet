@@ -30,10 +30,23 @@ type RiskPosition struct {
 	HighWaterCents float64
 	StopLossPct    float64
 	Source         string
-	Status         string
-	PositionSeq    int64
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	Status             string
+	PositionSeq        int64
+	RealizedPnLUSD     *float64
+	ClosedAt           *time.Time
+	ProfitProtectArmed             bool
+	PeakProfitPct                  float64
+	PeakMarkCents                  float64
+	ProfitProtectCustom            bool
+	ProfitProtectUseEnableOverride bool
+	ProfitProtectEnableOverride    bool
+	ProfitProtectArmPctOverride    float64
+	ProfitProtectDrawdownOverride  float64
+	ProfitProtectArmCentsOverride  float64
+	ProfitProtectStopCentsOverride float64
+	InvestedUSD                    float64
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 func docToRisk(p *RiskPosDoc) RiskPosition {
@@ -42,8 +55,28 @@ func docToRisk(p *RiskPosDoc) RiskPosition {
 		Title: p.Title, SideLabel: p.SideLabel, PolyEventSlug: p.PolyEventSlug, PolyMarketSlug: p.PolyMarketSlug,
 		AvgEntryCents: p.AvgEntryCents, SizeShares: p.SizeShares, CostUSD: p.CostUSD,
 		HighWaterCents: p.HighWaterCents, StopLossPct: p.StopLossPct, Source: p.Source, Status: p.Status,
-		PositionSeq: p.PositionSeq,
-		CreatedAt: ParseTimeFlexible(p.CreatedAt), UpdatedAt: ParseTimeFlexible(p.UpdatedAt),
+		PositionSeq:        p.PositionSeq,
+		ProfitProtectArmed:             p.ProfitProtectArmed,
+		PeakProfitPct:                  p.PeakProfitPct,
+		PeakMarkCents:                  p.PeakMarkCents,
+		ProfitProtectCustom:            p.ProfitProtectCustom,
+		ProfitProtectUseEnableOverride: p.ProfitProtectUseEnableOverride,
+		ProfitProtectEnableOverride:    p.ProfitProtectEnableOverride,
+		ProfitProtectArmPctOverride:    p.ProfitProtectArmPctOverride,
+		ProfitProtectDrawdownOverride:  p.ProfitProtectDrawdownOverride,
+		ProfitProtectArmCentsOverride:  p.ProfitProtectArmCentsOverride,
+		ProfitProtectStopCentsOverride: p.ProfitProtectStopCentsOverride,
+		InvestedUSD:                    p.InvestedUSD,
+		CreatedAt:          ParseTimeFlexible(p.CreatedAt), UpdatedAt: ParseTimeFlexible(p.UpdatedAt),
+	}
+	if p.RealizedPnLUSD != nil {
+		out.RealizedPnLUSD = p.RealizedPnLUSD
+	}
+	if p.ClosedAt != nil {
+		t := ParseTimeFlexible(*p.ClosedAt)
+		if !t.IsZero() {
+			out.ClosedAt = &t
+		}
 	}
 	if strings.TrimSpace(p.OutcomeID) != "" {
 		out.OutcomeID = sql.NullString{String: p.OutcomeID, Valid: true}
@@ -70,17 +103,35 @@ func riskToDoc(p *RiskPosition) *RiskPosDoc {
 	if hw == 0 && p.AvgEntryCents > 0 {
 		hw = p.AvgEntryCents
 	}
-	return &RiskPosDoc{
+	doc := &RiskPosDoc{
 		ID: p.ID, Platform: p.Platform, AccountID: p.AccountID, OutcomeID: oc, TokenID: NormalizeCLOBTokenID(p.TokenID),
 		Title: p.Title, SideLabel: p.SideLabel, PolyEventSlug: p.PolyEventSlug, PolyMarketSlug: p.PolyMarketSlug,
 		AvgEntryCents: p.AvgEntryCents, SizeShares: p.SizeShares, CostUSD: p.CostUSD,
 		HighWaterCents: hw, StopLossPct: slp, Source: p.Source, Status: p.Status,
-		PositionSeq: p.PositionSeq,
-		RealizedPnLUSD: nil,
-		ClosedAt:       nil,
-		CreatedAt:      p.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt:      p.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		PositionSeq:        p.PositionSeq,
+		ProfitProtectArmed:             p.ProfitProtectArmed,
+		PeakProfitPct:                  p.PeakProfitPct,
+		PeakMarkCents:                  p.PeakMarkCents,
+		ProfitProtectCustom:            p.ProfitProtectCustom,
+		ProfitProtectUseEnableOverride: p.ProfitProtectUseEnableOverride,
+		ProfitProtectEnableOverride:    p.ProfitProtectEnableOverride,
+		ProfitProtectArmPctOverride:    p.ProfitProtectArmPctOverride,
+		ProfitProtectDrawdownOverride:  p.ProfitProtectDrawdownOverride,
+		ProfitProtectArmCentsOverride:  p.ProfitProtectArmCentsOverride,
+		ProfitProtectStopCentsOverride: p.ProfitProtectStopCentsOverride,
+		InvestedUSD:                    p.InvestedUSD,
+		CreatedAt:          p.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:          p.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
+	if p.RealizedPnLUSD != nil {
+		v := *p.RealizedPnLUSD
+		doc.RealizedPnLUSD = &v
+	}
+	if p.ClosedAt != nil && !p.ClosedAt.IsZero() {
+		s := p.ClosedAt.UTC().Format(time.RFC3339Nano)
+		doc.ClosedAt = &s
+	}
+	return doc
 }
 
 func (d *DB) scanPositions(ctx context.Context, pred func(RiskPosDoc) bool) ([]RiskPosition, error) {
@@ -378,21 +429,53 @@ func (d *DB) UpdateRiskPositionSharesCost(ctx context.Context, id string, shares
 	})
 }
 
+func (d *DB) snapshotInvestedAndClose(txn *badger.Txn, p *RiskPosDoc, realized *float64) error {
+	if p == nil {
+		return errors.New("nil position")
+	}
+	_ = d.deleteOpenIndexIfMatch(txn, p)
+	if p.InvestedUSD <= 0 && p.CostUSD > 0 {
+		p.InvestedUSD = p.CostUSD
+	}
+	p.Status = "closed"
+	p.SizeShares, p.CostUSD = 0, 0
+	if realized != nil {
+		v := *realized
+		p.RealizedPnLUSD = &v
+	}
+	if p.ClosedAt == nil {
+		s := nowRFC()
+		p.ClosedAt = &s
+	}
+	p.UpdatedAt = nowRFC()
+	if err := d.writeRiskPos(txn, p); err != nil {
+		return err
+	}
+	if err := d.writeClosedIndex(txn, p); err != nil {
+		return err
+	}
+	InvalidateAnalyticsCache(p.AccountID)
+	return nil
+}
+
+func (d *DB) writeClosedIndex(txn *badger.Txn, p *RiskPosDoc) error {
+	if p == nil || strings.TrimSpace(p.AccountID) == "" || p.ClosedAt == nil {
+		return nil
+	}
+	ts := ParseTimeFlexible(*p.ClosedAt).UnixNano()
+	if ts <= 0 {
+		ts = time.Now().UTC().UnixNano()
+	}
+	return txn.Set(KeyRiskClosed(p.AccountID, ts, p.ID), []byte{1})
+}
+
 func (d *DB) CloseRiskPosition(ctx context.Context, id string) error {
 	return d.Update(func(txn *badger.Txn) error {
 		p, err := d.readRiskPos(txn, id)
 		if err != nil || p == nil {
 			return err
 		}
-		_ = d.deleteOpenIndexIfMatch(txn, p)
-		p.Status = "closed"
-		p.SizeShares, p.CostUSD = 0, 0
-		if p.ClosedAt == nil {
-			s := nowRFC()
-			p.ClosedAt = &s
-		}
-		p.UpdatedAt = nowRFC()
-		return d.writeRiskPos(txn, p)
+		return d.snapshotInvestedAndClose(txn, p, nil)
 	})
 }
 
@@ -402,18 +485,243 @@ func (d *DB) CloseRiskPositionPnL(ctx context.Context, id string, realizedPnLUSD
 		if err != nil || p == nil {
 			return err
 		}
+		v := realizedPnLUSD
+		return d.snapshotInvestedAndClose(txn, p, &v)
+	})
+}
+
+// GetRiskPositionByTokenAccount returns any local row for token+account (prefers open/closing).
+func (d *DB) GetRiskPositionByTokenAccount(ctx context.Context, tokenID, accountID string) (*RiskPosition, error) {
+	tok := NormalizeCLOBTokenID(tokenID)
+	accountID = strings.TrimSpace(accountID)
+	rows, err := d.scanPositions(ctx, func(p RiskPosDoc) bool {
+		return NormalizeCLOBTokenID(p.TokenID) == tok && strings.TrimSpace(p.AccountID) == accountID
+	})
+	if err != nil || len(rows) == 0 {
+		return nil, err
+	}
+	for _, r := range rows {
+		if r.Status == "open" || r.Status == "closing" {
+			return &r, nil
+		}
+	}
+	best := rows[0]
+	for _, r := range rows[1:] {
+		if r.ClosedAt != nil && (best.ClosedAt == nil || r.ClosedAt.After(*best.ClosedAt)) {
+			best = r
+		}
+	}
+	return &best, nil
+}
+
+// CloseRiskPositionOfficial closes with official PnL, invested snapshot, and settlement time.
+func (d *DB) CloseRiskPositionOfficial(ctx context.Context, id string, investedUSD, realizedPnLUSD float64, closedAt time.Time) error {
+	return d.Update(func(txn *badger.Txn) error {
+		p, err := d.readRiskPos(txn, id)
+		if err != nil || p == nil {
+			return err
+		}
+		if investedUSD > 0 {
+			p.InvestedUSD = investedUSD
+		} else if p.InvestedUSD <= 0 && p.CostUSD > 0 {
+			p.InvestedUSD = p.CostUSD
+		}
+		v := realizedPnLUSD
 		_ = d.deleteOpenIndexIfMatch(txn, p)
 		p.Status = "closed"
 		p.SizeShares, p.CostUSD = 0, 0
-		v := realizedPnLUSD
 		p.RealizedPnLUSD = &v
-		if p.ClosedAt == nil {
+		if !closedAt.IsZero() {
+			s := closedAt.UTC().Format(time.RFC3339Nano)
+			p.ClosedAt = &s
+		} else if p.ClosedAt == nil {
 			s := nowRFC()
 			p.ClosedAt = &s
 		}
 		p.UpdatedAt = nowRFC()
+		if err := d.writeRiskPos(txn, p); err != nil {
+			return err
+		}
+		if err := d.writeClosedIndex(txn, p); err != nil {
+			return err
+		}
+		InvalidateAnalyticsCache(p.AccountID)
+		return nil
+	})
+}
+
+// UpdateClosedRiskPositionOfficial refreshes a closed row from Polymarket Data API.
+func (d *DB) UpdateClosedRiskPositionOfficial(ctx context.Context, id string, investedUSD, realizedPnLUSD float64, closedAt time.Time, title, sideLabel, eventSlug, marketSlug string) error {
+	return d.Update(func(txn *badger.Txn) error {
+		p, err := d.readRiskPos(txn, id)
+		if err != nil || p == nil {
+			return err
+		}
+		if investedUSD > 0 {
+			p.InvestedUSD = investedUSD
+		}
+		v := realizedPnLUSD
+		p.RealizedPnLUSD = &v
+		if !closedAt.IsZero() {
+			s := closedAt.UTC().Format(time.RFC3339Nano)
+			p.ClosedAt = &s
+		}
+		if strings.TrimSpace(title) != "" {
+			p.Title = strings.TrimSpace(title)
+		}
+		if strings.TrimSpace(sideLabel) != "" {
+			p.SideLabel = strings.TrimSpace(sideLabel)
+		}
+		if strings.TrimSpace(eventSlug) != "" {
+			p.PolyEventSlug = strings.TrimSpace(eventSlug)
+		}
+		if strings.TrimSpace(marketSlug) != "" {
+			p.PolyMarketSlug = strings.TrimSpace(marketSlug)
+		}
+		p.UpdatedAt = nowRFC()
+		if err := d.writeRiskPos(txn, p); err != nil {
+			return err
+		}
+		if err := d.writeClosedIndex(txn, p); err != nil {
+			return err
+		}
+		InvalidateAnalyticsCache(p.AccountID)
+		return nil
+	})
+}
+
+// ImportClosedRiskPosition inserts a historical closed position (no open index).
+func (d *DB) ImportClosedRiskPosition(ctx context.Context, p *RiskPosition) error {
+	if d == nil || p == nil {
+		return errors.New("badgerdb: nil position")
+	}
+	pc := *p
+	if pc.Status != "closed" {
+		return errors.New("badgerdb: import requires closed status")
+	}
+	pc.TokenID = NormalizeCLOBTokenID(pc.TokenID)
+	if strings.TrimSpace(pc.ID) == "" {
+		pc.ID = uuid.New().String()
+	}
+	if pc.CreatedAt.IsZero() {
+		pc.CreatedAt = time.Now().UTC()
+	}
+	if pc.UpdatedAt.IsZero() {
+		pc.UpdatedAt = pc.CreatedAt
+	}
+	return d.Update(func(txn *badger.Txn) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		openK := riskOpenKey(pc.AccountID, pc.TokenID, pc.SideLabel)
+		if item, err := txn.Get(openK); err == nil {
+			var existingID string
+			_ = item.Value(func(v []byte) error {
+				existingID = string(v)
+				return nil
+			})
+			if existingID != "" && existingID != pc.ID {
+				return fmt.Errorf("open position exists for token %s", pc.TokenID)
+			}
+		} else if !errors.Is(err, badger.ErrKeyNotFound) {
+			return err
+		}
+		doc := riskToDoc(&pc)
+		doc.Status = "closed"
+		doc.SizeShares, doc.CostUSD = 0, 0
+		now := nowRFC()
+		if doc.CreatedAt == "" {
+			doc.CreatedAt = now
+		}
+		doc.UpdatedAt = now
+		seq, err := d.nextRiskPositionSeq(txn)
+		if err != nil {
+			return err
+		}
+		doc.PositionSeq = seq
+		if err := d.writeRiskPos(txn, doc); err != nil {
+			return err
+		}
+		if err := d.writeClosedIndex(txn, doc); err != nil {
+			return err
+		}
+		InvalidateAnalyticsCache(doc.AccountID)
+		return nil
+	})
+}
+
+func (d *DB) UpdateRiskPositionProfitProtectState(ctx context.Context, id string, armed bool, peakProfitPct, peakMarkCents float64) error {
+	return d.Update(func(txn *badger.Txn) error {
+		p, err := d.readRiskPos(txn, id)
+		if err != nil || p == nil {
+			return err
+		}
+		p.ProfitProtectArmed = armed
+		p.PeakProfitPct = peakProfitPct
+		p.PeakMarkCents = peakMarkCents
+		p.UpdatedAt = nowRFC()
 		return d.writeRiskPos(txn, p)
 	})
+}
+
+// ProfitProtectSettingsPatch updates per-position profit-protect overrides (empty = unchanged).
+type ProfitProtectSettingsPatch struct {
+	Custom             *bool
+	UseEnableOverride  *bool
+	EnableOverride     *bool
+	ArmPct             *float64
+	DrawdownPct        *float64
+	ArmCents           *float64
+	StopCents          *float64
+	ClearCustom        bool
+}
+
+func (d *DB) UpdateRiskPositionProfitProtectSettings(ctx context.Context, id string, patch ProfitProtectSettingsPatch) error {
+	return d.Update(func(txn *badger.Txn) error {
+		p, err := d.readRiskPos(txn, id)
+		if err != nil || p == nil {
+			return err
+		}
+		if patch.ClearCustom {
+			p.ProfitProtectCustom = false
+			p.ProfitProtectUseEnableOverride = false
+			p.ProfitProtectEnableOverride = false
+			p.ProfitProtectArmPctOverride = 0
+			p.ProfitProtectDrawdownOverride = 0
+			p.ProfitProtectArmCentsOverride = 0
+			p.ProfitProtectStopCentsOverride = 0
+		}
+		if patch.Custom != nil {
+			p.ProfitProtectCustom = *patch.Custom
+		}
+		if patch.UseEnableOverride != nil {
+			p.ProfitProtectUseEnableOverride = *patch.UseEnableOverride
+		}
+		if patch.EnableOverride != nil {
+			p.ProfitProtectEnableOverride = *patch.EnableOverride
+		}
+		if patch.ArmPct != nil {
+			p.ProfitProtectArmPctOverride = *patch.ArmPct
+		}
+		if patch.DrawdownPct != nil {
+			p.ProfitProtectDrawdownOverride = *patch.DrawdownPct
+		}
+		if patch.ArmCents != nil {
+			p.ProfitProtectArmCentsOverride = *patch.ArmCents
+		}
+		if patch.StopCents != nil {
+			p.ProfitProtectStopCentsOverride = *patch.StopCents
+		}
+		p.UpdatedAt = nowRFC()
+		return d.writeRiskPos(txn, p)
+	})
+}
+
+// UpdateRiskPositionProfitProtect keeps the legacy signature for tests.
+func (d *DB) UpdateRiskPositionProfitProtect(ctx context.Context, id string, armed bool, peakProfitPct float64) error {
+	return d.UpdateRiskPositionProfitProtectState(ctx, id, armed, peakProfitPct, 0)
 }
 
 func (d *DB) UpdateRiskPositionPolySlugs(ctx context.Context, id, eventSlug, marketSlug string) error {

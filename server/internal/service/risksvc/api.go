@@ -231,6 +231,18 @@ func (s *Service) listRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 				logx.StopLoss().WithFields(fields).Warn("风控：更新高点/止损队列失败")
 			}
 		}
+		// Profit protect is independent of trailing stop — evaluate whenever book is available.
+		if ok {
+			if perr := s.EvaluateProfitProtect(ctx, p, bid, ask); perr != nil {
+				fields := logx.Pairs("err", perr, "position_id", p.ID)
+				s.log.WithFields(fields).Warn("风控：评估收益保护失败")
+				logx.StopLoss().WithFields(fields).Warn("风控：评估收益保护失败")
+			} else if upd, uerr := s.st.GetRiskPosition(ctx, p.ID); uerr == nil && upd != nil {
+				p.ProfitProtectArmed = upd.ProfitProtectArmed
+				p.PeakProfitPct = upd.PeakProfitPct
+				p.PeakMarkCents = upd.PeakMarkCents
+			}
+		}
 		var valUsd, pnl *float64
 		if curPtr != nil {
 			v := *curPtr / 100
@@ -264,6 +276,7 @@ func (s *Service) listRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 		if image == "" {
 			image = icon
 		}
+		ppFields := profitProtectDisplayFields(ctx, s, p, pnl, curPtr)
 		m := map[string]any{
 			"id": p.ID, "positionSeq": p.PositionSeq, "title": p.Title, "sideLabel": p.SideLabel,
 			"displayTitle": displayTitle, "sport": sport, "league": league, "eventVolume": dm.EventVolume,
@@ -278,6 +291,9 @@ func (s *Service) listRiskPositionsEnriched(ctx context.Context, meta Meta, acco
 			"trailingStopCents": trail, "valueUsd": valUsd, "pnlUsd": pnl,
 			"maxPayoffUsd": maxPay, "potentialProfitUsd": pot,
 			"status": p.Status, "source": p.Source,
+		}
+		for k, v := range ppFields {
+			m[k] = v
 		}
 		out = append(out, m)
 	}

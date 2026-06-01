@@ -31,10 +31,21 @@ type RiskPosDoc struct {
 	Source         string   `json:"source"`
 	Status         string   `json:"status"`
 	PositionSeq    int64    `json:"positionSeq,omitempty"`
-	RealizedPnLUSD *float64 `json:"realizedPnlUsd,omitempty"`
-	ClosedAt       *string  `json:"closedAt,omitempty"`
-	CreatedAt      string   `json:"createdAt"`
-	UpdatedAt      string   `json:"updatedAt"`
+	RealizedPnLUSD     *float64 `json:"realizedPnlUsd,omitempty"`
+	InvestedUSD        float64  `json:"investedUsd,omitempty"`
+	ClosedAt           *string  `json:"closedAt,omitempty"`
+	ProfitProtectArmed            bool    `json:"profitProtectArmed,omitempty"`
+	PeakProfitPct                 float64 `json:"peakProfitPct,omitempty"`
+	PeakMarkCents                 float64 `json:"peakMarkCents,omitempty"`
+	ProfitProtectCustom           bool    `json:"profitProtectCustom,omitempty"`
+	ProfitProtectUseEnableOverride bool   `json:"profitProtectUseEnableOverride,omitempty"`
+	ProfitProtectEnableOverride   bool    `json:"profitProtectEnableOverride,omitempty"`
+	ProfitProtectArmPctOverride   float64 `json:"profitProtectArmPctOverride,omitempty"`
+	ProfitProtectDrawdownOverride float64 `json:"profitProtectDrawdownOverride,omitempty"`
+	ProfitProtectArmCentsOverride float64 `json:"profitProtectArmCentsOverride,omitempty"`
+	ProfitProtectStopCentsOverride float64 `json:"profitProtectStopCentsOverride,omitempty"`
+	CreatedAt                     string  `json:"createdAt"`
+	UpdatedAt          string   `json:"updatedAt"`
 }
 
 // RiskTaskDoc persisted at risk/task/{id}.

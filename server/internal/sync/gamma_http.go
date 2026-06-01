@@ -197,7 +197,20 @@ func isRetryableError(err error) bool {
 		strings.Contains(s, "temporary failure")
 }
 
+// fetchGammaClosedEvents pulls recently closed sports events for resolution backfill.
+// maxPages caps pagination (each page up to 500 events).
+func fetchGammaClosedEvents(ctx context.Context, httpProxy string, seriesID, maxPages int) ([]gammaEvent, error) {
+	if maxPages <= 0 {
+		maxPages = 2
+	}
+	return doFetchGammaEventsWithClosed(ctx, httpProxy, seriesID, true, maxPages)
+}
+
 func doFetchGammaEvents(ctx context.Context, httpProxy string, seriesID int) ([]gammaEvent, error) {
+	return doFetchGammaEventsWithClosed(ctx, httpProxy, seriesID, false, 0)
+}
+
+func doFetchGammaEventsWithClosed(ctx context.Context, httpProxy string, seriesID int, closed bool, maxPages int) ([]gammaEvent, error) {
 	var all []gammaEvent
 	offset := 0
 	const limit = 500
@@ -215,7 +228,11 @@ func doFetchGammaEvents(ctx context.Context, httpProxy string, seriesID int) ([]
 			return nil, err
 		}
 		q := url.Values{}
-		q.Set("closed", "false")
+		if closed {
+			q.Set("closed", "true")
+		} else {
+			q.Set("closed", "false")
+		}
 		q.Set("limit", strconv.Itoa(limit))
 		q.Set("offset", strconv.Itoa(offset))
 		q.Set("series_id", strconv.Itoa(seriesID))
@@ -252,6 +269,9 @@ func doFetchGammaEvents(ctx context.Context, httpProxy string, seriesID int) ([]
 			break
 		}
 		offset += limit
+		if closed && maxPages > 0 && offset/limit >= maxPages {
+			break
+		}
 	}
 	return all, nil
 }

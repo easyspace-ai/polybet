@@ -64,6 +64,28 @@ func (h *Handler) handleMonitorStopLossTrigger(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+func (h *Handler) handleMonitorProfitProtectEvaluate(c *gin.Context) {
+	if h.cfg.ReadOnlyMode {
+		c.JSON(http.StatusForbidden, gin.H{"error": "read_only"})
+		return
+	}
+	if h.monitor == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "monitor_unavailable"})
+		return
+	}
+	var body appmonitor.ProfitProtectEvaluateInput
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body"})
+		return
+	}
+	out, err := h.monitor.EvaluateProfitProtect(c.Request.Context(), body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
 func (h *Handler) handleMonitorPositionsSync(c *gin.Context) {
 	if h.monitor == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "monitor_unavailable"})

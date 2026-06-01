@@ -54,6 +54,7 @@ type Handler struct {
 	initService  *initsvc.Service
 	logService   *logsvc.Service
 	sportsCache  *mktSync.SportsCache
+	teamsCache   *mktSync.TeamsCache
 	riskRuntime  *riskruntime.Bus
 	conn         *appconn.Service
 	monitor      *appmonitor.Service
@@ -168,6 +169,7 @@ func NewHandler(d Deps) *Handler {
 		initService:  d.InitService,
 		logService:   d.LogService,
 		sportsCache:  d.SportsCache,
+		teamsCache:   d.TeamsCache,
 		riskRuntime: d.RiskRuntime,
 		conn:        d.Conn,
 		monitor:     d.Monitor,
@@ -1204,27 +1206,79 @@ func (h *Handler) handlePatchRiskPosition(c *gin.Context) {
 		return
 	}
 	var body struct {
-		StopLossPct    *float64 `json:"stopLossPct"`
-		HighWaterCents *float64 `json:"highWaterCents"`
+		StopLossPct                    *float64 `json:"stopLossPct"`
+		HighWaterCents                 *float64 `json:"highWaterCents"`
+		ProfitProtectCustom            *bool    `json:"profitProtectCustom"`
+		ProfitProtectUseEnableOverride *bool    `json:"profitProtectUseEnableOverride"`
+		ProfitProtectEnableOverride    *bool    `json:"profitProtectEnableOverride"`
+		ProfitProtectArmPct            *float64 `json:"profitProtectArmPct"`
+		ProfitProtectDrawdownPct       *float64 `json:"profitProtectDrawdownPct"`
+		ProfitProtectArmCents          *float64 `json:"profitProtectArmCents"`
+		ProfitProtectStopCents         *float64 `json:"profitProtectStopCents"`
 	}
 	_ = c.BindJSON(&body)
-	if body.StopLossPct == nil && body.HighWaterCents == nil {
-		c.JSON(400, gin.H{"error": "no_fields", "message": "stopLossPct or highWaterCents required"})
+	hasStop := body.StopLossPct != nil || body.HighWaterCents != nil
+	hasPP := body.ProfitProtectCustom != nil || body.ProfitProtectUseEnableOverride != nil ||
+		body.ProfitProtectEnableOverride != nil || body.ProfitProtectArmPct != nil ||
+		body.ProfitProtectDrawdownPct != nil || body.ProfitProtectArmCents != nil ||
+		body.ProfitProtectStopCents != nil
+	if !hasStop && !hasPP {
+		c.JSON(400, gin.H{"error": "no_fields", "message": "stopLossPct, highWaterCents, or profit-protect fields required"})
 		return
 	}
 	id := c.Param("id")
-	if err := h.st.UpdateRiskPositionStop(c, id, body.StopLossPct, body.HighWaterCents); err != nil {
-		if errors.Is(err, store.ErrRiskPatchNoFields) {
-			c.JSON(400, gin.H{"error": "no_fields"})
+	if hasStop {
+		if err := h.st.UpdateRiskPositionStop(c, id, body.StopLossPct, body.HighWaterCents); err != nil {
+			if errors.Is(err, store.ErrRiskPatchNoFields) {
+				c.JSON(400, gin.H{"error": "no_fields"})
+				return
+			}
+			c.JSON(400, gin.H{"error": "update_failed"})
 			return
 		}
-		c.JSON(400, gin.H{"error": "update_failed"})
-		return
+	}
+	if hasPP {
+		patch := store.ProfitProtectSettingsPatch{}
+		if body.ProfitProtectCustom != nil && !*body.ProfitProtectCustom {
+			patch.ClearCustom = true
+		}
+		if body.ProfitProtectCustom != nil {
+			patch.Custom = body.ProfitProtectCustom
+		}
+		patch.UseEnableOverride = body.ProfitProtectUseEnableOverride
+		patch.EnableOverride = body.ProfitProtectEnableOverride
+		patch.ArmPct = body.ProfitProtectArmPct
+		patch.DrawdownPct = body.ProfitProtectDrawdownPct
+		patch.ArmCents = body.ProfitProtectArmCents
+		patch.StopCents = body.ProfitProtectStopCents
+		if err := risksvc.ValidateProfitProtectSettingsPatch(c, h.st.Store, patch); err != nil {
+			switch {
+			case errors.Is(err, store.ErrProfitProtectWrongMode):
+				c.JSON(400, gin.H{"error": "profit_protect_wrong_mode"})
+			case errors.Is(err, store.ErrProfitProtectInvalidCents):
+				c.JSON(400, gin.H{"error": "profit_protect_invalid_cents"})
+			case errors.Is(err, store.ErrProfitProtectInvalidPct):
+				c.JSON(400, gin.H{"error": "profit_protect_invalid_pct"})
+			default:
+				c.JSON(400, gin.H{"error": "invalid_profit_protect"})
+			}
+			return
+		}
+		if err := h.st.UpdateRiskPositionProfitProtectSettings(c, id, patch); err != nil {
+			c.JSON(400, gin.H{"error": "update_failed"})
+			return
+		}
 	}
 	p, err := h.st.GetRiskPosition(c, id)
 	if err != nil || p == nil {
 		c.JSON(404, gin.H{"error": "not_found"})
 		return
+	}
+	if bid, ask, ok := h.risk.BestBidAskCentsFromCache(p.TokenID); ok {
+		_ = h.risk.EvaluateProfitProtectForPosition(c, id, bid, ask)
+	}
+	if upd, _ := h.st.GetRiskPosition(c, id); upd != nil {
+		p = upd
 	}
 	fields := logx.Pairs("request_id", c.GetString("request_id"), "position_id", id)
 	if body.StopLossPct != nil {
@@ -1234,6 +1288,9 @@ func (h *Handler) handlePatchRiskPosition(c *gin.Context) {
 		floored := risksvc.FloorCents1(*body.HighWaterCents)
 		body.HighWaterCents = &floored
 		fields["high_water_cents"] = floored
+	}
+	if body.ProfitProtectCustom != nil {
+		fields["profit_protect_custom"] = *body.ProfitProtectCustom
 	}
 	logx.Position().WithFields(fields).Info("风控持仓：PATCH 已更新")
 	row := h.riskRowFromPosition(c, p)
@@ -1251,6 +1308,8 @@ func (h *Handler) riskRowFromPosition(ctx context.Context, p *store.RiskPosition
 	row["trailingStopCents"] = risksvc.TrailingStopCentsFromHWWithAbs(hw, p.StopLossPct, h.st.GetBotConfigFloat(ctx, "priceStopLossAbsCents", 0))
 
 	// PATCH must return quickly — use in-memory book cache only (no REST /book).
+	var pnlPtr *float64
+	var curPtr *float64
 	if bid, ask, ok := h.risk.BestBidAskCentsFromCache(p.TokenID); ok {
 		cur := bid
 		if cur <= 0 && ask > 0 {
@@ -1261,6 +1320,15 @@ func (h *Handler) riskRowFromPosition(ctx context.Context, p *store.RiskPosition
 		row["valueUsd"] = v
 		pnl := v - p.CostUSD
 		row["pnlUsd"] = pnl
+		curPtr = &cur
+		if p.CostUSD > 0 {
+			pnlPtr = &pnl
+		}
+	}
+	// Always include profit-protect fields so per-position enable/disable PATCH
+	// updates the monitor UI even when the book cache is cold.
+	for k, v := range h.risk.ProfitProtectDisplayFields(ctx, *p, pnlPtr, curPtr) {
+		row[k] = v
 	}
 
 	return row

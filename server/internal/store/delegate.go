@@ -29,6 +29,12 @@ const DefaultStopLossPct = badgerdb.DefaultStopLossPct
 // ErrRiskPatchNoFields is returned when PATCH omits both fields.
 var ErrRiskPatchNoFields = badgerdb.ErrRiskPatchNoFields
 
+var (
+	ErrProfitProtectWrongMode    = errors.New("profit_protect_wrong_mode")
+	ErrProfitProtectInvalidCents = errors.New("profit_protect_invalid_cents")
+	ErrProfitProtectInvalidPct   = errors.New("profit_protect_invalid_pct")
+)
+
 // RiskPositionConfig is retained for API compatibility (merged into RiskPosition in storage).
 type RiskPositionConfig struct {
 	PositionID     string
@@ -162,6 +168,22 @@ func (s *Store) CloseRiskPosition(ctx context.Context, id string) error {
 
 func (s *Store) CloseRiskPositionPnL(ctx context.Context, id string, realizedPnLUSD float64) error {
 	return s.kv().CloseRiskPositionPnL(ctx, id, realizedPnLUSD)
+}
+
+func (s *Store) GetRiskPositionByTokenAccount(ctx context.Context, tokenID, accountID string) (*RiskPosition, error) {
+	return s.kv().GetRiskPositionByTokenAccount(ctx, tokenID, accountID)
+}
+
+func (s *Store) CloseRiskPositionOfficial(ctx context.Context, id string, investedUSD, realizedPnLUSD float64, closedAt time.Time) error {
+	return s.kv().CloseRiskPositionOfficial(ctx, id, investedUSD, realizedPnLUSD, closedAt)
+}
+
+func (s *Store) UpdateClosedRiskPositionOfficial(ctx context.Context, id string, investedUSD, realizedPnLUSD float64, closedAt time.Time, title, sideLabel, eventSlug, marketSlug string) error {
+	return s.kv().UpdateClosedRiskPositionOfficial(ctx, id, investedUSD, realizedPnLUSD, closedAt, title, sideLabel, eventSlug, marketSlug)
+}
+
+func (s *Store) ImportClosedRiskPosition(ctx context.Context, p *RiskPosition) error {
+	return s.kv().ImportClosedRiskPosition(ctx, p)
 }
 
 func (s *Store) ListRiskPositionsOpenClosing(ctx context.Context, accountID string) ([]RiskPosition, error) {
@@ -315,6 +337,32 @@ func (s *Store) UpsertOfficialTrades(ctx context.Context, accountID string, rows
 
 func (s *Store) ListOfficialTrades(ctx context.Context, accountID string, limit int) ([]OfficialTradeDoc, error) {
 	return s.kv().ListOfficialTrades(ctx, accountID, limit)
+}
+
+func (s *Store) UpdateRiskPositionProfitProtect(ctx context.Context, id string, armed bool, peakProfitPct float64) error {
+	return s.kv().UpdateRiskPositionProfitProtect(ctx, id, armed, peakProfitPct)
+}
+
+func (s *Store) UpdateRiskPositionProfitProtectState(ctx context.Context, id string, armed bool, peakProfitPct, peakMarkCents float64) error {
+	return s.kv().UpdateRiskPositionProfitProtectState(ctx, id, armed, peakProfitPct, peakMarkCents)
+}
+
+type ProfitProtectSettingsPatch = badgerdb.ProfitProtectSettingsPatch
+
+func (s *Store) UpdateRiskPositionProfitProtectSettings(ctx context.Context, id string, patch ProfitProtectSettingsPatch) error {
+	return s.kv().UpdateRiskPositionProfitProtectSettings(ctx, id, patch)
+}
+
+func (s *Store) UpsertMarketResolution(ctx context.Context, doc *badgerdb.MarketResolutionDoc) error {
+	return s.kv().UpsertMarketResolution(ctx, doc)
+}
+
+func (s *Store) ListClosedPositionsForAnalytics(ctx context.Context, accountID string) ([]badgerdb.AnalyticsTradeRow, error) {
+	return s.kv().ListClosedPositionsForAnalyticsCached(ctx, accountID)
+}
+
+func (s *Store) InvalidateAnalyticsCache(accountID string) {
+	badgerdb.InvalidateAnalyticsCache(accountID)
 }
 
 func (s *Store) GetActivePolymarketAccount(ctx context.Context) (*PolymarketAccount, error) {

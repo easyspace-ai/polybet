@@ -330,6 +330,15 @@ func (s *Store) SeedDefaultConfig(ctx context.Context) error {
 		//     USD depth. Filters microstructure noise on illiquid books.
 		{"riskHwUseMicroPrice", "false"},
 		{"riskHwMinDepthUsd", "0"},
+		{"profitProtectEnabled", "true"},
+		{"profitProtectMode", "pct"},
+		{"profitProtectArmPct", "30"},
+		{"profitProtectDrawdownPct", "10"},
+		{"profitProtectArmCents", "95"},
+		{"profitProtectStopCents", "85"},
+		{"autoOrderConfig", `{"enabled":false,"dailyPool":{"mode":"percent_balance","value":10},"outcomePolicy":{"side":"popular","minImpliedOdds":0.5},"groups":[]}`},
+		{"autoOrderDryRun", "true"},
+		{"autoOrderTickSec", "45"},
 		// Pre-submit /book freshness check. When > 0 and elapsed since the
 		// initial fetch exceeds this many ms, polyexec refetches /book and
 		// recomputes the limit price before signing. Catches build-then-

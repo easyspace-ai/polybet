@@ -33,6 +33,7 @@ type Deps struct {
 	InitService  *initsvc.Service
 	LogService   *logsvc.Service
 	SportsCache  *mktSync.SportsCache
+	TeamsCache   *mktSync.TeamsCache
 	RiskRuntime  *riskruntime.Bus
 	Conn         *appconn.Service
 	Monitor      *appmonitor.Service
