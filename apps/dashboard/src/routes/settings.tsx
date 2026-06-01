@@ -33,6 +33,7 @@ import {
   ChevronsUpDown,
   Radio,
   Scale,
+  Shield,
   Database,
   AlertTriangle,
 } from "lucide-react";
@@ -58,6 +59,7 @@ type SettingsTab =
   | "telegram"
   | "tags"
   | "prices"
+  | "profitProtect"
   | "riskClose"
   | "sound"
   | "cache"
@@ -70,6 +72,7 @@ const TABS: { id: SettingsTab; icon: typeof Monitor; title: string; desc: string
   { id: "telegram", icon: Send, title: "电报", desc: "Bot 与消息推送" },
   { id: "tags", icon: Tag, title: "分类", desc: "赛事标签管理" },
   { id: "prices", icon: DollarSign, title: "价格", desc: "资金区间与止损" },
+  { id: "profitProtect", icon: Shield, title: "收益保护", desc: "追踪止盈阈值" },
   { id: "riskClose", icon: Scale, title: "止损平仓", desc: "FOK / FAK / 对冲执行" },
   { id: "sound", icon: Volume2, title: "声音", desc: "提醒与音效测试" },
   { id: "cache", icon: Database, title: "缓存清理", desc: "清空本地数据库" },
@@ -203,6 +206,7 @@ function SettingsPage() {
               {active === "telegram" && <TelegramTab rows={rows} onSave={save} />}
               {active === "tags" && <TagsTab rows={rows} onSave={save} />}
               {active === "prices" && <PricesTab rows={rows} onSave={save} />}
+              {active === "profitProtect" && <ProfitProtectTab rows={rows} onSave={save} />}
               {active === "riskClose" && <RiskCloseExecutionTab rows={rows} onSave={save} />}
               {active === "sound" && <SoundTab />}
               {active === "cache" && <CacheClearTab />}
@@ -923,6 +927,154 @@ function TagsTab({
         className="w-full h-10 rounded-md text-[12px] font-semibold transition bg-brand text-brand-foreground hover:opacity-90 disabled:opacity-50"
       >
         {saving ? "保存中..." : "保存赛事分类"}
+      </button>
+    </div>
+  );
+}
+
+function ProfitProtectTab({
+  rows,
+  onSave,
+}: {
+  rows: { key: string; value: string }[];
+  onSave: (k: string, v: string) => Promise<void>;
+}) {
+  const row = (k: string, d: string) => (rows.find((r) => r.key === k)?.value ?? d).trim();
+  const [enabled, setEnabled] = useState(row("profitProtectEnabled", "true").toLowerCase() !== "false");
+  const [mode, setMode] = useState<"pct" | "cents">(
+    row("profitProtectMode", "pct").toLowerCase() === "cents" ? "cents" : "pct",
+  );
+  const [armPct, setArmPct] = useState(row("profitProtectArmPct", "30"));
+  const [drawdownPct, setDrawdownPct] = useState(row("profitProtectDrawdownPct", "10"));
+  const [armCents, setArmCents] = useState(row("profitProtectArmCents", "95"));
+  const [stopCents, setStopCents] = useState(row("profitProtectStopCents", "85"));
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setEnabled(row("profitProtectEnabled", "true").toLowerCase() !== "false");
+    setMode(row("profitProtectMode", "pct").toLowerCase() === "cents" ? "cents" : "pct");
+    setArmPct(row("profitProtectArmPct", "30"));
+    setDrawdownPct(row("profitProtectDrawdownPct", "10"));
+    setArmCents(row("profitProtectArmCents", "95"));
+    setStopCents(row("profitProtectStopCents", "85"));
+  }, [rows]);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await onSave("profitProtectEnabled", enabled ? "true" : "false");
+      await onSave("profitProtectMode", mode);
+      await onSave("profitProtectArmPct", armPct.trim() || "30");
+      await onSave("profitProtectDrawdownPct", drawdownPct.trim() || "10");
+      await onSave("profitProtectArmCents", armCents.trim() || "95");
+      await onSave("profitProtectStopCents", stopCents.trim() || "85");
+      toast.success("已保存", { description: "收益保护" });
+    } catch (err) {
+      toast.error("保存失败", { description: err instanceof Error ? err.message : "未知错误" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="rounded-[var(--tm-rad)] border border-border bg-surface p-5 space-y-4 max-w-lg">
+      <div className="text-[13px] font-semibold">收益保护</div>
+      <p className="text-[11px] text-muted-foreground leading-[1.55]">
+        全局仅启用一种模式：按浮动收益率（峰值回撤）或按美分价位（激活价 / 止损价）。监控页可对单个持仓覆盖阈值，单独设置优先于全局。
+      </p>
+      <label className="flex items-center gap-2 text-[12px]">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => setEnabled(e.target.checked)}
+          className="rounded border-border"
+        />
+        启用收益保护（默认开启）
+      </label>
+      <div className="space-y-2">
+        <div className="text-[11px] text-muted-foreground">计算模式（全局唯一）</div>
+        <div className="flex flex-wrap gap-3 text-[12px]">
+          <label className="flex items-center gap-1.5">
+            <input
+              type="radio"
+              name="profitProtectMode"
+              checked={mode === "pct"}
+              onChange={() => setMode("pct")}
+            />
+            按收益率 %
+          </label>
+          <label className="flex items-center gap-1.5">
+            <input
+              type="radio"
+              name="profitProtectMode"
+              checked={mode === "cents"}
+              onChange={() => setMode("cents")}
+            />
+            按美分 ¢
+          </label>
+        </div>
+      </div>
+      {mode === "pct" ? (
+        <>
+          <label className="block space-y-1">
+            <span className="text-[11px] text-muted-foreground">激活收益率 %</span>
+            <input
+              type="number"
+              min={0}
+              max={500}
+              value={armPct}
+              onChange={(e) => setArmPct(e.target.value)}
+              className="w-full h-9 px-2 text-[12px] rounded border border-border bg-background"
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-[11px] text-muted-foreground">利润回撤阈值 %（相对峰值）</span>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={drawdownPct}
+              onChange={(e) => setDrawdownPct(e.target.value)}
+              className="w-full h-9 px-2 text-[12px] rounded border border-border bg-background"
+            />
+          </label>
+        </>
+      ) : (
+        <>
+          <label className="block space-y-1">
+            <span className="text-[11px] text-muted-foreground">激活价位 ¢（市价 ≥ 此值时进入保护）</span>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              step={0.1}
+              value={armCents}
+              onChange={(e) => setArmCents(e.target.value)}
+              className="w-full h-9 px-2 text-[12px] rounded border border-border bg-background"
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-[11px] text-muted-foreground">止损价位 ¢（激活后市价 ≤ 此值时止盈）</span>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              step={0.1}
+              value={stopCents}
+              onChange={(e) => setStopCents(e.target.value)}
+              className="w-full h-9 px-2 text-[12px] rounded border border-border bg-background"
+            />
+          </label>
+          <p className="text-[10px] text-muted-foreground">示例：激活 95¢、止损 85¢ — 涨到 95¢ 后保护，回落到 85¢ 平仓。</p>
+        </>
+      )}
+      <button
+        type="button"
+        onClick={() => void handleSave()}
+        disabled={saving}
+        className="w-full h-10 rounded-md text-[12px] font-semibold bg-brand text-brand-foreground hover:opacity-90 disabled:opacity-50"
+      >
+        {saving ? "保存中..." : "保存收益保护"}
       </button>
     </div>
   );

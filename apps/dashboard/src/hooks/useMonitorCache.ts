@@ -11,6 +11,7 @@ import { runUnifiedMarketsRefresh } from "@/lib/unifiedRefresh";
 import { normalizeTokenId } from "@/lib/clobTokenId";
 import { monitorCoordinator } from "@/lib/monitor/coordinator";
 import { floorCents1, isTrailingStopActive, trailingStopCentsFromHW } from "@/lib/cents";
+import { profitProtectEffectiveArmed, effectiveProfitProtectEnabled } from "@/lib/profitProtect";
 import { bestBidCentsFromBookFrame, mergePolyBookFrame, topOfBookMarkCents } from "@/lib/riskBook";
 import {
   riskWsBus,
@@ -232,14 +233,22 @@ function updatePositionsFromBook() {
     }
 
     const bid = getBestBidCentsFromFrame(frame);
-    const mark = getTopOfBookMarkCents(frame);
+    const markTop = getTopOfBookMarkCents(frame);
     // 「当前价」= 买一（best bid），与 Bid 列同源
     if (bid != null && bid !== pos.currentCents) {
       pos.currentCents = bid;
       changed = true;
     }
+    const mark = floorCents1(bid != null && bid > 0 ? bid : (markTop ?? 0));
+    if (effectiveProfitProtectEnabled(pos, pos.profitProtectEnabled !== false)) {
+      const effectiveArmed = profitProtectEffectiveArmed(pos, mark);
+      if (pos.profitProtectEffectiveArmed !== effectiveArmed) {
+        pos.profitProtectEffectiveArmed = effectiveArmed;
+        changed = true;
+      }
+    }
     if (isTrailingStopActive(pos)) {
-      const effHw = floorCents1(Math.max(floorCents1(pos.highWaterCents), mark ?? 0));
+      const effHw = floorCents1(Math.max(floorCents1(pos.highWaterCents), markTop ?? 0));
       const trail = trailingStopCentsFromHW(effHw, pos.stopLossPct);
       if (pos.trailingStopCents !== trail) {
         pos.trailingStopCents = trail;

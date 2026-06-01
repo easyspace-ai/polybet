@@ -15,6 +15,8 @@ import { Route as MonitorRouteImport } from './routes/monitor'
 import { Route as MarketRouteImport } from './routes/market'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as HistoryRouteImport } from './routes/history'
+import { Route as AutoOrderRouteImport } from './routes/auto-order'
+import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as AccountsRouteImport } from './routes/accounts'
 import { Route as IndexRouteImport } from './routes/index'
 
@@ -48,6 +50,16 @@ const HistoryRoute = HistoryRouteImport.update({
   path: '/history',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AutoOrderRoute = AutoOrderRouteImport.update({
+  id: '/auto-order',
+  path: '/auto-order',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AnalyticsRoute = AnalyticsRouteImport.update({
+  id: '/analytics',
+  path: '/analytics',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AccountsRoute = AccountsRouteImport.update({
   id: '/accounts',
   path: '/accounts',
@@ -62,6 +74,8 @@ const IndexRoute = IndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/accounts': typeof AccountsRoute
+  '/analytics': typeof AnalyticsRoute
+  '/auto-order': typeof AutoOrderRoute
   '/history': typeof HistoryRoute
   '/logs': typeof LogsRoute
   '/market': typeof MarketRoute
@@ -72,6 +86,8 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/accounts': typeof AccountsRoute
+  '/analytics': typeof AnalyticsRoute
+  '/auto-order': typeof AutoOrderRoute
   '/history': typeof HistoryRoute
   '/logs': typeof LogsRoute
   '/market': typeof MarketRoute
@@ -83,6 +99,8 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/accounts': typeof AccountsRoute
+  '/analytics': typeof AnalyticsRoute
+  '/auto-order': typeof AutoOrderRoute
   '/history': typeof HistoryRoute
   '/logs': typeof LogsRoute
   '/market': typeof MarketRoute
@@ -95,6 +113,8 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/accounts'
+    | '/analytics'
+    | '/auto-order'
     | '/history'
     | '/logs'
     | '/market'
@@ -105,6 +125,8 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/accounts'
+    | '/analytics'
+    | '/auto-order'
     | '/history'
     | '/logs'
     | '/market'
@@ -115,6 +137,8 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/accounts'
+    | '/analytics'
+    | '/auto-order'
     | '/history'
     | '/logs'
     | '/market'
@@ -126,6 +150,8 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AccountsRoute: typeof AccountsRoute
+  AnalyticsRoute: typeof AnalyticsRoute
+  AutoOrderRoute: typeof AutoOrderRoute
   HistoryRoute: typeof HistoryRoute
   LogsRoute: typeof LogsRoute
   MarketRoute: typeof MarketRoute
@@ -178,6 +204,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof HistoryRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/auto-order': {
+      id: '/auto-order'
+      path: '/auto-order'
+      fullPath: '/auto-order'
+      preLoaderRoute: typeof AutoOrderRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/analytics': {
+      id: '/analytics'
+      path: '/analytics'
+      fullPath: '/analytics'
+      preLoaderRoute: typeof AnalyticsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/accounts': {
       id: '/accounts'
       path: '/accounts'
@@ -198,6 +238,8 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AccountsRoute: AccountsRoute,
+  AnalyticsRoute: AnalyticsRoute,
+  AutoOrderRoute: AutoOrderRoute,
   HistoryRoute: HistoryRoute,
   LogsRoute: LogsRoute,
   MarketRoute: MarketRoute,

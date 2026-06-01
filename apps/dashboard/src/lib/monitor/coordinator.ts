@@ -3,11 +3,17 @@ import {
   getMonitorPositions,
   postMonitorHeartbeat,
   postMonitorPositionsSync,
+  postMonitorProfitProtectEvaluate,
   postMonitorStopLossTrigger,
   type MonitorClobSession,
   type RiskPositionRow,
 } from "@/lib/api";
 import { floorCents1, isTrailingStopActive, trailingStopCentsFromHW } from "@/lib/cents";
+import {
+  effectiveProfitProtectEnabled,
+  profitProtectShouldTrigger,
+  resolveProfitProtectCents,
+} from "@/lib/profitProtect";
 import { clobAssetIdForAPI, normalizeTokenId } from "@/lib/clobTokenId";
 import {
   clobBookToPolyFrame,
@@ -29,6 +35,7 @@ import {
 
 const HEARTBEAT_MS = 20_000;
 const STOP_LOSS_CLOSE_COOLDOWN_MS = 30_000;
+const PROFIT_PROTECT_EVAL_COOLDOWN_MS = 8_000;
 const RECONNECT_DEBOUNCE_MS = 5_000;
 
 type BookListener = (tokenId: string, frame: PolyBookFrame) => void;
@@ -55,6 +62,10 @@ class MonitorCoordinatorImpl {
   private tokenBookMap = new Map<string, PolyBookFrame>();
   private positions: RiskPositionRow[] = [];
   private stopLossGuard = new Map<
+    string,
+    { inflight: Promise<unknown> | null; lastAttemptMs: number; lastKey: string }
+  >();
+  private profitProtectGuard = new Map<
     string,
     { inflight: Promise<unknown> | null; lastAttemptMs: number; lastKey: string }
   >();
@@ -216,6 +227,7 @@ class MonitorCoordinatorImpl {
     this.tokenBookMap.set(tid, merged);
     for (const fn of this.bookListeners) fn(tid, merged);
     this.evaluateStopLossFromBook(tid, merged);
+    this.evaluateProfitProtectFromBook(tid, merged);
   }
 
   private reconcileMarketSubs() {
@@ -339,6 +351,59 @@ class MonitorCoordinatorImpl {
       trailCents: trail,
     })
       .catch((err) => console.error("[Monitor] stop-loss trigger failed", err))
+      .finally(() => {
+        guard!.inflight = null;
+      });
+  }
+
+  private evaluateProfitProtectFromBook(tid: string, frame: PolyBookFrame) {
+    for (const pos of this.positions) {
+      if (pos.status !== "open" || normalizeTokenId(pos.tokenId) !== tid) continue;
+      if (!effectiveProfitProtectEnabled(pos, pos.profitProtectEnabled !== false)) continue;
+      if (pos.profitProtectMode !== "cents") continue;
+      const bid = bestBidCentsFromBookFrame(frame);
+      const mark = floorCents1(bid != null && bid > 0 ? bid : (topOfBookMarkCents(frame) ?? 0));
+      if (mark <= 0) continue;
+
+      const cfg = resolveProfitProtectCents(pos);
+      if (!cfg) continue;
+
+      if (profitProtectShouldTrigger(pos, mark)) {
+        void this.maybeEvaluateProfitProtect(pos, mark, cfg.stop, "trigger");
+        continue;
+      }
+      if (!pos.profitProtectArmed && mark >= cfg.arm) {
+        void this.maybeEvaluateProfitProtect(pos, mark, cfg.arm, "arm");
+      }
+    }
+  }
+
+  private async maybeEvaluateProfitProtect(
+    pos: RiskPositionRow,
+    mark: number,
+    refCents: number,
+    phase: "arm" | "trigger",
+  ) {
+    const key = `${phase}|${mark}|${refCents}|${pos.profitProtectCustom ? "c" : "g"}`;
+    let guard = this.profitProtectGuard.get(pos.id);
+    if (!guard) {
+      guard = { inflight: null, lastAttemptMs: 0, lastKey: "" };
+      this.profitProtectGuard.set(pos.id, guard);
+    }
+    if (guard.inflight) return;
+    const now = Date.now();
+    const cooldown =
+      phase === "trigger" ? STOP_LOSS_CLOSE_COOLDOWN_MS : PROFIT_PROTECT_EVAL_COOLDOWN_MS;
+    if (now - guard.lastAttemptMs < cooldown && guard.lastKey === key) return;
+    guard.lastAttemptMs = now;
+    guard.lastKey = key;
+    guard.inflight = postMonitorProfitProtectEvaluate({
+      positionId: pos.id,
+      bidCents: mark,
+      askCents: mark,
+    })
+      .then(() => this.refreshPositions())
+      .catch((err) => console.error("[Monitor] profit-protect evaluate failed", err))
       .finally(() => {
         guard!.inflight = null;
       });

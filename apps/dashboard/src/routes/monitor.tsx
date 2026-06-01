@@ -34,6 +34,12 @@ import {
 import { resolvePolymarketEventUrl } from "@/lib/polymarketLinks";
 import { cn } from "@/lib/utils";
 import {
+  effectiveProfitProtectEnabled,
+  globalProfitProtectEnabled,
+  positionHasProfitProtectOverride,
+  profitProtectEffectiveArmed,
+} from "@/lib/profitProtect";
+import {
   floorCents1,
   isTrailingStopActive,
   linkTrailingStopDraft,
@@ -229,6 +235,149 @@ function trailDraftDiffersFromServer(
   );
 }
 
+type ProfitProtectDraft = {
+  enabled: boolean;
+  armPct: string;
+  drawdownPct: string;
+  armCents: string;
+  stopCents: string;
+};
+
+function profitProtectDraftFor(
+  p: RiskPositionRow,
+  globalEnabled: boolean,
+  prev?: ProfitProtectDraft,
+): ProfitProtectDraft {
+  return {
+    enabled: prev?.enabled ?? effectiveProfitProtectEnabled(p, globalEnabled),
+    armPct: String(p.profitProtectArmPctOverride ?? p.profitProtectArmPct ?? 30),
+    drawdownPct: String(p.profitProtectDrawdownOverride ?? p.profitProtectDrawdownPct ?? 10),
+    armCents: String(p.profitProtectArmCentsOverride ?? p.profitProtectArmCents ?? 95),
+    stopCents: String(p.profitProtectStopCentsOverride ?? p.profitProtectStopCents ?? 85),
+  };
+}
+
+function parseProfitProtectDraft(
+  d: ProfitProtectDraft,
+  mode: "pct" | "cents",
+  globalEnabled: boolean,
+  p: RiskPositionRow,
+):
+  | {
+      useEnableOverride: boolean;
+      enableOverride: boolean;
+      custom: boolean;
+      armPct?: number;
+      drawdownPct?: number;
+      armCents?: number;
+      stopCents?: number;
+    }
+  | null {
+  if (!d.enabled) {
+    return {
+      useEnableOverride: true,
+      enableOverride: false,
+      custom: true,
+    };
+  }
+  if (mode === "cents") {
+    const arm = Number(d.armCents);
+    const stop = Number(d.stopCents);
+    if (
+      !Number.isFinite(arm) ||
+      !Number.isFinite(stop) ||
+      arm <= 0 ||
+      arm > 100 ||
+      stop <= 0 ||
+      stop > 100 ||
+      stop >= arm
+    ) {
+      return null;
+    }
+    const armF = floorCents1(arm);
+    const stopF = floorCents1(stop);
+    const globalArm = p.profitProtectArmCents ?? 95;
+    const globalStop = p.profitProtectStopCents ?? 85;
+    const thresholdsDiffer =
+      Math.abs(armF - globalArm) > 1e-6 || Math.abs(stopF - globalStop) > 1e-6;
+    if (globalEnabled && !thresholdsDiffer && !p.profitProtectUseEnableOverride) {
+      return null;
+    }
+    if (!globalEnabled) {
+      return {
+        useEnableOverride: true,
+        enableOverride: true,
+        custom: true,
+        armCents: armF,
+        stopCents: stopF,
+      };
+    }
+    return {
+      useEnableOverride: false,
+      enableOverride: true,
+      custom: true,
+      armCents: armF,
+      stopCents: stopF,
+    };
+  }
+  const arm = Number(d.armPct);
+  const dd = Number(d.drawdownPct);
+  if (!Number.isFinite(arm) || arm < 0 || !Number.isFinite(dd) || dd <= 0 || dd > 100) {
+    return null;
+  }
+  const globalArm = p.profitProtectArmPct ?? 30;
+  const globalDd = p.profitProtectDrawdownPct ?? 10;
+  const thresholdsDiffer =
+    Math.abs(arm - globalArm) > 1e-6 || Math.abs(dd - globalDd) > 1e-6;
+  if (globalEnabled && !thresholdsDiffer && !p.profitProtectUseEnableOverride) {
+    return null;
+  }
+  if (!globalEnabled) {
+    return {
+      useEnableOverride: true,
+      enableOverride: true,
+      custom: true,
+      armPct: arm,
+      drawdownPct: dd,
+    };
+  }
+  return {
+    useEnableOverride: false,
+    enableOverride: true,
+    custom: true,
+    armPct: arm,
+    drawdownPct: dd,
+  };
+}
+
+function profitProtectDraftDiffersFromServer(
+  d: ProfitProtectDraft,
+  p: RiskPositionRow,
+  globalEnabled: boolean,
+): boolean {
+  if (d.enabled !== effectiveProfitProtectEnabled(p, globalEnabled)) return true;
+  if (!d.enabled) return false;
+  const mode = p.profitProtectMode === "cents" ? "cents" : profitProtectModeFromRow(p);
+  if (mode === "cents") {
+    const arm = p.profitProtectArmCentsOverride ?? p.profitProtectArmCents ?? 95;
+    const stop = p.profitProtectStopCentsOverride ?? p.profitProtectStopCents ?? 85;
+    const armN = Number(d.armCents);
+    const stopN = Number(d.stopCents);
+    if (!Number.isFinite(armN) || !Number.isFinite(stopN)) return true;
+    return Math.abs(floorCents1(armN) - arm) > 1e-6 || Math.abs(floorCents1(stopN) - stop) > 1e-6;
+  }
+  const arm = p.profitProtectArmPctOverride ?? p.profitProtectArmPct ?? 30;
+  const dd = p.profitProtectDrawdownOverride ?? p.profitProtectDrawdownPct ?? 10;
+  const armN = Number(d.armPct);
+  const ddN = Number(d.drawdownPct);
+  if (!Number.isFinite(armN) || !Number.isFinite(ddN)) return true;
+  return Math.abs(armN - arm) > 1e-6 || Math.abs(ddN - dd) > 1e-6;
+}
+
+function profitProtectModeFromRow(p: RiskPositionRow): "pct" | "cents" {
+  return p.profitProtectMode === "cents" ? "cents" : "pct";
+}
+
 function MonitorPage() {
   const { rows: configRows } = useConfig();
   const configuredTags = useMemo(() => {
@@ -236,6 +385,17 @@ function MonitorPage() {
     const tags = parseEventClassificationTags(raw);
     return tags.length > 0 ? tags : DEFAULT_EVENT_CLASSIFICATION_TAGS;
   }, [configRows]);
+  const profitProtectMode = useMemo<"pct" | "cents">(() => {
+    const raw = configRows.find((r) => r.key === "profitProtectMode")?.value ?? "pct";
+    return raw.trim().toLowerCase() === "cents" ? "cents" : "pct";
+  }, [configRows]);
+  const globalProfitProtectOn = useMemo(
+    () =>
+      globalProfitProtectEnabled(
+        configRows.find((r) => r.key === "profitProtectEnabled")?.value,
+      ),
+    [configRows],
+  );
   const [filters, setFilters] = useState<RecordFilterState>(DEFAULT_RECORD_FILTERS);
 
   const {
@@ -254,6 +414,10 @@ function MonitorPage() {
   const [drafts, setDrafts] = useState<Record<string, { sl: string; hw: string; trigger: string }>>(
     {},
   );
+  const [ppDrafts, setPpDrafts] = useState<Record<string, ProfitProtectDraft>>({});
+  const ppDraftsRef = useRef(ppDrafts);
+  ppDraftsRef.current = ppDrafts;
+  const syncPpInFlightRef = useRef<Set<string>>(new Set());
   /** Row + field focused — blocks server sync for that field while the input is active. */
   const [trailEditing, setTrailEditing] = useState<{
     rowId: string;
@@ -410,6 +574,35 @@ function MonitorPage() {
     });
   }, [positions, trailEditing, trailDirty]);
 
+  useEffect(() => {
+    setPpDrafts((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const p of positions) {
+        const d0 = profitProtectDraftFor(p, globalProfitProtectOn);
+        if (!next[p.id]) {
+          next[p.id] = d0;
+          changed = true;
+          continue;
+        }
+        if (!profitProtectDraftDiffersFromServer(next[p.id], p, globalProfitProtectOn)) {
+          const cur = next[p.id];
+          if (
+            cur.enabled !== d0.enabled ||
+            cur.armPct !== d0.armPct ||
+            cur.drawdownPct !== d0.drawdownPct ||
+            cur.armCents !== d0.armCents ||
+            cur.stopCents !== d0.stopCents
+          ) {
+            next[p.id] = d0;
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [positions, globalProfitProtectOn]);
+
   const handleCloseOne = async (id: string) => {
     setClosingId(id);
     try {
@@ -487,6 +680,102 @@ function MonitorPage() {
       }
     },
     [],
+  );
+
+  const commitProfitProtectDraft = useCallback(
+    async (
+      id: string,
+      serverPos: RiskPositionRow,
+      draft: ProfitProtectDraft,
+      opts?: { resetGlobal?: boolean },
+    ) => {
+      if (serverPos.status !== "open") return;
+      if (syncPpInFlightRef.current.has(id)) return;
+      syncPpInFlightRef.current.add(id);
+      setPatchingKey(`${id}:pp`);
+      try {
+        if (opts?.resetGlobal) {
+          const resp = await patchMonitorPosition(id, { profitProtectCustom: false });
+          if (resp.position) {
+            applyMonitorPositionPatch(resp.position);
+            setPpDrafts((prev) => ({
+              ...prev,
+              [id]: profitProtectDraftFor(resp.position, globalProfitProtectOn),
+            }));
+          }
+          return;
+        }
+        if (!profitProtectDraftDiffersFromServer(draft, serverPos, globalProfitProtectOn)) {
+          return;
+        }
+        const mode =
+          serverPos.profitProtectMode === "cents" ? "cents" : profitProtectMode;
+        const parsed = parseProfitProtectDraft(draft, mode, globalProfitProtectOn, serverPos);
+        if (!parsed) {
+          if (!draft.enabled) {
+            const resp = await patchMonitorPosition(id, {
+              profitProtectUseEnableOverride: true,
+              profitProtectEnableOverride: false,
+              profitProtectCustom: true,
+            });
+            if (resp.position) {
+              const patched: RiskPositionRow = {
+                ...resp.position,
+                profitProtectUseEnableOverride: true,
+                profitProtectEnableOverride: false,
+                profitProtectEnabledEffective: false,
+              };
+              applyMonitorPositionPatch(patched);
+              setPpDrafts((prev) => ({
+                ...prev,
+                [id]: profitProtectDraftFor(patched, globalProfitProtectOn),
+              }));
+            }
+            return;
+          }
+          toast.error("无效", {
+            description:
+              mode === "cents"
+                ? "激活价须大于止损价，且均在 (0, 100] ¢"
+                : "激活 % ≥ 0，回撤 % 须在 1–100",
+          });
+          return;
+        }
+        const body: Parameters<typeof patchMonitorPosition>[1] = {
+          profitProtectCustom: parsed.custom,
+        };
+        if (parsed.useEnableOverride) {
+          body.profitProtectUseEnableOverride = true;
+          body.profitProtectEnableOverride = parsed.enableOverride;
+        }
+        if (parsed.armCents != null) body.profitProtectArmCents = parsed.armCents;
+        if (parsed.stopCents != null) body.profitProtectStopCents = parsed.stopCents;
+        if (parsed.armPct != null) body.profitProtectArmPct = parsed.armPct;
+        if (parsed.drawdownPct != null) body.profitProtectDrawdownPct = parsed.drawdownPct;
+        const resp = await patchMonitorPosition(id, body);
+        if (resp.position) {
+          const patched: RiskPositionRow = { ...resp.position };
+          if (parsed.useEnableOverride) {
+            patched.profitProtectUseEnableOverride = true;
+            patched.profitProtectEnableOverride = parsed.enableOverride;
+            patched.profitProtectEnabledEffective = parsed.enableOverride;
+          }
+          applyMonitorPositionPatch(patched);
+          setPpDrafts((prev) => ({
+            ...prev,
+            [id]: profitProtectDraftFor(patched, globalProfitProtectOn),
+          }));
+        }
+      } catch (err) {
+        toast.error("同步失败", {
+          description: err instanceof Error ? err.message : "收益保护参数未能写入服务端",
+        });
+      } finally {
+        syncPpInFlightRef.current.delete(id);
+        setPatchingKey(null);
+      }
+    },
+    [globalProfitProtectOn, profitProtectMode],
   );
 
   const applyRiskControls = async (id: string) => {
@@ -757,6 +1046,230 @@ function MonitorPage() {
                                       {fmtUsd(p.potentialProfitUsd)}
                                     </span>
                                   </div>
+                                  {p.status === "open" && (
+                                    <div className="text-[10px] num text-muted-foreground leading-tight space-y-1">
+                                      <div>
+                                        收益保护{" "}
+                                        <span className="text-muted-foreground/80">
+                                          ({p.profitProtectMode === "cents" || profitProtectMode === "cents"
+                                            ? "美分"
+                                            : "收益率"})
+                                        </span>{" "}
+                                        {!effectiveProfitProtectEnabled(p, globalProfitProtectOn) ? (
+                                          <span className="text-muted-foreground">已关闭</span>
+                                        ) : (
+                                          <span
+                                            className={cn(
+                                              profitProtectEffectiveArmed(
+                                                p,
+                                                p.currentCents ?? 0,
+                                              )
+                                                ? "text-brand"
+                                                : "text-muted-foreground",
+                                            )}
+                                          >
+                                            {profitProtectEffectiveArmed(
+                                              p,
+                                              p.currentCents ?? 0,
+                                            )
+                                              ? "已激活"
+                                              : "未激活"}
+                                          </span>
+                                        )}
+                                        {p.profitProtectMode === "cents" && p.currentCents != null && (
+                                          <>
+                                            <span className="text-border mx-1">·</span>
+                                            现价 {fmtCents(p.currentCents)}
+                                          </>
+                                        )}
+                                        {effectiveProfitProtectEnabled(p, globalProfitProtectOn) &&
+                                          profitProtectEffectiveArmed(
+                                            p,
+                                            p.currentCents ?? 0,
+                                          ) &&
+                                          (p.profitProtectMode === "cents" ||
+                                            profitProtectMode === "cents") &&
+                                          p.profitProtectTriggerCents != null && (
+                                            <>
+                                              <span className="text-border mx-1">·</span>
+                                              止损≤{fmtCents(p.profitProtectTriggerCents)}
+                                            </>
+                                          )}
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                        <label className="inline-flex items-center gap-1">
+                                          <input
+                                            type="checkbox"
+                                            checked={
+                                              ppDrafts[p.id]?.enabled ??
+                                              effectiveProfitProtectEnabled(p, globalProfitProtectOn)
+                                            }
+                                            disabled={patchingKey === `${p.id}:pp`}
+                                            onChange={(e) => {
+                                              const enabled = e.target.checked;
+                                              const base = profitProtectDraftFor(
+                                                p,
+                                                globalProfitProtectOn,
+                                              );
+                                              const next: ProfitProtectDraft = {
+                                                ...base,
+                                                enabled,
+                                              };
+                                              setPpDrafts((prev) => ({ ...prev, [p.id]: next }));
+                                              void commitProfitProtectDraft(p.id, p, next);
+                                            }}
+                                            className="rounded border-border scale-90"
+                                          />
+                                          启用
+                                        </label>
+                                        {(ppDrafts[p.id]?.enabled ??
+                                          effectiveProfitProtectEnabled(p, globalProfitProtectOn)) &&
+                                          (p.profitProtectMode === "cents" ||
+                                            profitProtectMode === "cents") && (
+                                            <>
+                                              <span>激活</span>
+                                              <input
+                                                type="number"
+                                                min={1}
+                                                max={100}
+                                                step={0.1}
+                                                value={
+                                                  ppDrafts[p.id]?.armCents ??
+                                                  String(p.profitProtectArmCents ?? 95)
+                                                }
+                                                disabled={patchingKey === `${p.id}:pp`}
+                                                onChange={(e) =>
+                                                  setPpDrafts((prev) => ({
+                                                    ...prev,
+                                                    [p.id]: {
+                                                      ...(prev[p.id] ??
+                                                        profitProtectDraftFor(p, globalProfitProtectOn)),
+                                                      enabled: true,
+                                                      armCents: e.target.value,
+                                                    },
+                                                  }))
+                                                }
+                                                onBlur={() => {
+                                                  const d = ppDraftsRef.current[p.id];
+                                                  if (d) void commitProfitProtectDraft(p.id, p, d);
+                                                }}
+                                                className="w-14 h-6 px-1 text-[10px] rounded border border-border bg-background"
+                                              />
+                                              <span>¢ 止损</span>
+                                              <input
+                                                type="number"
+                                                min={1}
+                                                max={100}
+                                                step={0.1}
+                                                value={
+                                                  ppDrafts[p.id]?.stopCents ??
+                                                  String(p.profitProtectStopCents ?? 85)
+                                                }
+                                                disabled={patchingKey === `${p.id}:pp`}
+                                                onChange={(e) =>
+                                                  setPpDrafts((prev) => ({
+                                                    ...prev,
+                                                    [p.id]: {
+                                                      ...(prev[p.id] ??
+                                                        profitProtectDraftFor(p, globalProfitProtectOn)),
+                                                      enabled: true,
+                                                      stopCents: e.target.value,
+                                                    },
+                                                  }))
+                                                }
+                                                onBlur={() => {
+                                                  const d = ppDraftsRef.current[p.id];
+                                                  if (d) void commitProfitProtectDraft(p.id, p, d);
+                                                }}
+                                                className="w-14 h-6 px-1 text-[10px] rounded border border-border bg-background"
+                                              />
+                                              <span>¢</span>
+                                            </>
+                                          )}
+                                        {(ppDrafts[p.id]?.enabled ??
+                                          effectiveProfitProtectEnabled(p, globalProfitProtectOn)) &&
+                                          p.profitProtectMode !== "cents" &&
+                                          profitProtectMode !== "cents" && (
+                                            <>
+                                              <span>激活</span>
+                                              <input
+                                                type="number"
+                                                min={0}
+                                                max={500}
+                                                value={
+                                                  ppDrafts[p.id]?.armPct ??
+                                                  String(p.profitProtectArmPct ?? 30)
+                                                }
+                                                disabled={patchingKey === `${p.id}:pp`}
+                                                onChange={(e) =>
+                                                  setPpDrafts((prev) => ({
+                                                    ...prev,
+                                                    [p.id]: {
+                                                      ...(prev[p.id] ??
+                                                        profitProtectDraftFor(p, globalProfitProtectOn)),
+                                                      enabled: true,
+                                                      armPct: e.target.value,
+                                                    },
+                                                  }))
+                                                }
+                                                onBlur={() => {
+                                                  const d = ppDraftsRef.current[p.id];
+                                                  if (d) void commitProfitProtectDraft(p.id, p, d);
+                                                }}
+                                                className="w-14 h-6 px-1 text-[10px] rounded border border-border bg-background"
+                                              />
+                                              <span>% 回撤</span>
+                                              <input
+                                                type="number"
+                                                min={1}
+                                                max={100}
+                                                value={
+                                                  ppDrafts[p.id]?.drawdownPct ??
+                                                  String(p.profitProtectDrawdownPct ?? 10)
+                                                }
+                                                disabled={patchingKey === `${p.id}:pp`}
+                                                onChange={(e) =>
+                                                  setPpDrafts((prev) => ({
+                                                    ...prev,
+                                                    [p.id]: {
+                                                      ...(prev[p.id] ??
+                                                        profitProtectDraftFor(p, globalProfitProtectOn)),
+                                                      enabled: true,
+                                                      drawdownPct: e.target.value,
+                                                    },
+                                                  }))
+                                                }
+                                                onBlur={() => {
+                                                  const d = ppDraftsRef.current[p.id];
+                                                  if (d) void commitProfitProtectDraft(p.id, p, d);
+                                                }}
+                                                className="w-14 h-6 px-1 text-[10px] rounded border border-border bg-background"
+                                              />
+                                              <span>%</span>
+                                            </>
+                                          )}
+                                        {positionHasProfitProtectOverride(p) && (
+                                          <button
+                                            type="button"
+                                            className="text-[9px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                                            disabled={patchingKey === `${p.id}:pp`}
+                                            onClick={() => {
+                                              const next = profitProtectDraftFor(
+                                                p,
+                                                globalProfitProtectOn,
+                                              );
+                                              setPpDrafts((prev) => ({ ...prev, [p.id]: next }));
+                                              void commitProfitProtectDraft(p.id, p, next, {
+                                                resetGlobal: true,
+                                              });
+                                            }}
+                                          >
+                                            恢复全局
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                             </td>

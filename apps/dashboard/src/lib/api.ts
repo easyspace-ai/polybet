@@ -358,10 +358,112 @@ export interface RiskPositionRow {
   potentialProfitUsd: number;
   status: string;
   source?: string;
+  profitProtectEnabled?: boolean;
+  profitProtectMode?: "pct" | "cents";
+  profitProtectCustom?: boolean;
+  profitProtectUseEnableOverride?: boolean;
+  profitProtectEnableOverride?: boolean;
+  profitProtectEnabledEffective?: boolean;
+  profitProtectArmed?: boolean;
+  profitProtectEffectiveArmed?: boolean;
+  peakProfitPct?: number;
+  peakMarkCents?: number;
+  profitPct?: number;
+  profitProtectArmPct?: number;
+  profitProtectDrawdownPct?: number;
+  profitProtectTriggerPct?: number;
+  profitProtectArmCents?: number;
+  profitProtectStopCents?: number;
+  profitProtectTriggerCents?: number;
+  profitProtectArmPctOverride?: number;
+  profitProtectDrawdownOverride?: number;
+  profitProtectArmCentsOverride?: number;
+  profitProtectStopCentsOverride?: number;
   bids?: OrderBookLevel[];
   asks?: OrderBookLevel[];
   bookSub?: RiskBookSubscriptionStatus;
 }
+
+export interface AnalyticsDailyRow {
+  date: string;
+  totalInvestedUsd: number;
+  tradeCount: number;
+  winCount: number;
+  winRate: number;
+  profitUsd: number;
+  profitAmountRate: number;
+}
+
+export interface AnalyticsTradeRow {
+  positionId: string;
+  title: string;
+  polyEventSlug?: string;
+  investedUsd: number;
+  profitUsd: number;
+  returnPct: number;
+  settlementAt: string;
+  settlementSource: string;
+  settlementDate: string;
+  pendingOfficial: boolean;
+  closedAt: string;
+}
+
+export interface AnalyticsTradesResponse {
+  accountId: string;
+  from: string;
+  to: string;
+  result: string;
+  offset: number;
+  limit: number;
+  total: number;
+  rows: AnalyticsTradeRow[];
+  totals: {
+    totalInvestedUsd: number;
+    totalProfitUsd: number;
+    returnPct: number;
+    tradeCount: number;
+  };
+}
+
+export const getAnalyticsDaily = (from: string, to: string) => {
+  const q = new URLSearchParams();
+  if (from) q.set("from", from);
+  if (to) q.set("to", to);
+  const qs = q.toString();
+  return apiFetch<{ rows: AnalyticsDailyRow[]; from: string; to: string }>(
+    `/api/analytics/daily${qs ? `?${qs}` : ""}`,
+  );
+};
+
+export const getAnalyticsTrades = (opts: {
+  from?: string;
+  to?: string;
+  result?: "all" | "win" | "loss";
+  limit?: number;
+  offset?: number;
+}) => {
+  const q = new URLSearchParams();
+  if (opts.from) q.set("from", opts.from);
+  if (opts.to) q.set("to", opts.to);
+  if (opts.result && opts.result !== "all") q.set("result", opts.result);
+  if (opts.limit != null) q.set("limit", String(opts.limit));
+  if (opts.offset != null) q.set("offset", String(opts.offset));
+  const qs = q.toString();
+  return apiFetch<AnalyticsTradesResponse>(`/api/analytics/trades${qs ? `?${qs}` : ""}`);
+};
+
+export interface AnalyticsFullSyncStats {
+  fetched: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  resolutions: number;
+}
+
+export const syncAnalyticsFull = () =>
+  apiFetch<{ ok: boolean; stats: AnalyticsFullSyncStats }>("/api/analytics/full-sync", {
+    method: "POST",
+  });
 
 export interface RiskBookSubscriptionStatus {
   tokenId: string;
@@ -626,6 +728,101 @@ export interface GammaSport {
 
 export const getSports = () => apiFetch<GammaSport[]>("/api/sports");
 
+export interface GammaTeam {
+  id: number;
+  name: string;
+  abbreviation: string;
+  league: string;
+}
+
+export const getTeams = (league: string) =>
+  apiFetch<GammaTeam[]>(`/api/teams?league=${encodeURIComponent(league)}`);
+
+export interface AutoOrderDailyPool {
+  mode: "percent_balance" | "fixed_usd";
+  value: number;
+}
+
+export interface AutoOrderOutcomePolicy {
+  side: "popular";
+  minImpliedOdds: number;
+}
+
+export interface AutoOrderPriceGate {
+  minCents: number;
+  maxCents: number;
+}
+
+export interface AutoOrderOddsBand {
+  minCents: number;
+  maxCents: number;
+  stakePct: number;
+}
+
+export interface AutoOrderTriggers {
+  minutesBeforeStart: number;
+  minEventVolumeUsd: number;
+}
+
+export interface AutoOrderTeam {
+  id: number;
+  name: string;
+  abbreviation: string;
+}
+
+export interface AutoOrderGroup {
+  id: string;
+  name: string;
+  enabled: boolean;
+  league: string;
+  fundUsd: number;
+  budgetPct?: number;
+  teams: AutoOrderTeam[];
+  priceGate: AutoOrderPriceGate;
+  oddsBands: AutoOrderOddsBand[];
+  triggers: AutoOrderTriggers;
+}
+
+export interface AutoOrderConfig {
+  enabled: boolean;
+  dailyPool: AutoOrderDailyPool;
+  outcomePolicy: AutoOrderOutcomePolicy;
+  groups: AutoOrderGroup[];
+}
+
+export interface AutoOrderConfigResponse extends AutoOrderConfig {
+  dryRun: boolean;
+  tickSec: number;
+  readOnlyMode: boolean;
+}
+
+export interface AutoOrderRun {
+  at: string;
+  groupId: string;
+  groupName: string;
+  eventId: string;
+  match: string;
+  outcomeId?: string;
+  outcomeLabel?: string;
+  sizeUsd?: number;
+  odds?: number;
+  status: "skipped" | "dry_run" | "filled" | "failed";
+  reason?: string;
+  tradeId?: string;
+}
+
+export const getAutoOrderConfig = () => apiFetch<AutoOrderConfigResponse>("/api/auto-order/config");
+
+export const putAutoOrderConfig = (body: AutoOrderConfig & { dryRun?: boolean }) =>
+  apiFetch<AutoOrderConfigResponse>("/api/auto-order/config", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+export const getAutoOrderRuns = (limit = 30) =>
+  apiFetch<{ runs: AutoOrderRun[] }>(`/api/auto-order/runs?limit=${limit}`);
+
 export interface RiskRuntimeLogEnvelope {
   seq: number;
   ts: string;
@@ -697,6 +894,17 @@ export const postMonitorStopLossTrigger = (body: {
     },
   );
 
+export const postMonitorProfitProtectEvaluate = (body: {
+  positionId: string;
+  bidCents: number;
+  askCents?: number;
+}) =>
+  apiFetch<{ ok: boolean; positionId: string }>("/api/monitor/profit-protect/evaluate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
 export const postMonitorPositionsSync = () =>
   apiFetch<{ ok: boolean }>("/api/monitor/positions/sync", { method: "POST" });
 
@@ -733,7 +941,17 @@ export const postMonitorOfficialRefresh = () =>
 
 export const patchMonitorPosition = (
   id: string,
-  body: { stopLossPct?: number; highWaterCents?: number },
+  body: {
+    stopLossPct?: number;
+    highWaterCents?: number;
+    profitProtectCustom?: boolean;
+    profitProtectUseEnableOverride?: boolean;
+    profitProtectEnableOverride?: boolean;
+    profitProtectArmPct?: number;
+    profitProtectDrawdownPct?: number;
+    profitProtectArmCents?: number;
+    profitProtectStopCents?: number;
+  },
 ) =>
   apiFetch<{ ok: boolean; position: RiskPositionRow }>(
     monitorPath(`/positions/${encodeURIComponent(id)}`),

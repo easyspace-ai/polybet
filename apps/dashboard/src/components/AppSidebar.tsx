@@ -1,6 +1,6 @@
 import React from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Activity, LineChart, Radio, History, Wallet, Settings, Loader2, Copy } from "lucide-react";
+import { Activity, Bot, LineChart, Radio, History, BarChart3, Wallet, Settings, Loader2, Copy } from "lucide-react";
 import { useBalanceCache } from "@/hooks/useBalanceCache";
 import { useAccounts } from "@/hooks/useAccounts";
 import { useMonitorCache } from "@/hooks/useMonitorCache";
@@ -9,8 +9,10 @@ import { toast } from "sonner";
 
 const items = [
   { title: "监控", url: "/monitor", icon: Radio },
+  { title: "自动下单", url: "/auto-order", icon: Bot },
   { title: "市场", url: "/market", icon: LineChart },
   { title: "历史", url: "/history", icon: History },
+  { title: "统计", url: "/analytics", icon: BarChart3 },
   { title: "账号", url: "/accounts", icon: Wallet },
   { title: "设置", url: "/settings", icon: Settings },
 ];
